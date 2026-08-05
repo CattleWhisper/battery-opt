@@ -11,7 +11,8 @@ on:
     branches:
       - main
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   hassfest: # https://developers.home-assistant.io/blog/2020/04/16/hassfest
@@ -32,6 +33,10 @@ jobs:
     steps:
       - name: Run HACS validation
         uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
+        env:
+          # Required on a private repository: with `permissions: {}` the
+          # default token has no scopes and HACS reports invalid_token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           category: integration
           # Remove this 'ignore' key when you have added brand images for your integration
