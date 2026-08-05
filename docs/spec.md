@@ -158,11 +158,11 @@ Summer = last Sunday of March → last Sunday of October.
 
 | Entity | Description |
 |---|---|
-| `sensor.battery_opt_plan` | 96-interval plan, in attributes |
+| `sensor.battery_opt_plan` | 96-interval plan, in attributes; also `tomorrow_charge_w` / `tomorrow_discharge_w` once D+1's own price series builds (seeded at the reserve floor, not chained from today — decision 9) |
 | `sensor.battery_opt_forecast_savings` | Forecast saving vs. not cycling |
 | `sensor.battery_opt_vs_static` | **Forecast gain vs. the fixed schedule — the metric that justifies the project** |
 | `sensor.battery_opt_realised_savings` | Ex-post, from actual SoC and prices |
-| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; full day vector and TAR period in attributes |
+| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; full day vector and TAR period in attributes; also `tomorrow_prices_eur_kwh` once D+1's own price series builds |
 | `sensor.battery_opt_load_mae` | Mean absolute error (W) of yesterday's load forecast vs. observed, computed at day close; unavailable until a load meter is configured and one full day has closed (plan Task 11) |
 | `sensor.battery_opt_cost_today` | Grid-import cost today, EUR, excl. VAT (Task 13 pulled forward): variable = Σ(meter delta × delivered price at that instant, negative deltas from a meter reset counting as 0) + the daily fixed term (K3 + TAR potência); `state_class` TOTAL, `last_reset` at local midnight; attributes `variable_eur`, `fixed_eur`, `energy_today_kwh`; unavailable without a configured grid-import energy sensor |
 | `binary_sensor.battery_opt_healthy` | False on missing prices, Modbus failure, or an invalid plan |

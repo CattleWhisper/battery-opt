@@ -147,6 +147,10 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
             # invalid solve) and the fixed seasonal schedule is
             # published instead; None otherwise.
             "fallback": data.get("fallback"),
+            # Decision 9: only set once D+1 itself builds; seeded at
+            # the reserve floor since today has not finished yet.
+            "tomorrow_charge_w": data.get("tomorrow_charge_w"),
+            "tomorrow_discharge_w": data.get("tomorrow_discharge_w"),
         }
         if self._executor is not None:
             attributes["executor_status"] = self._executor.status
@@ -209,6 +213,8 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
                 [round(p, 5) for p in prices] if prices is not None else None
             ),
             "prices_padded": data.get("prices_padded"),
+            # Decision 9: D+1 preview, only when D+1 itself builds.
+            "tomorrow_prices_eur_kwh": data.get("tomorrow_prices_eur_kwh"),
         }
 
 

@@ -33,6 +33,71 @@ asks for the `marstek_venus_modbus` entities (mode select, power
 number, SoC sensor), an OMIE price sensor, and the battery
 parameters (defaults from `CONTEXT.md`).
 
+## Dashboards
+
+`sensor.battery_opt_current_price` carries the whole day's delivered
+price vector in its `prices_eur_kwh` attribute (and, once OMIE
+publishes D+1, `tomorrow_prices_eur_kwh`); `sensor.battery_opt_plan`
+carries the matching `charge_w` / `discharge_w` vectors (and their
+`tomorrow_*` previews). All four are 96-entry arrays, one value per
+quarter-hour starting at local midnight (`plan_date`). An
+[ApexCharts card](https://github.com/RomRider/apexcharts-card) (HACS)
+can graph both against each other:
+
+```yaml
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Battery Opt — today's plan
+graph_span: 24h
+span:
+  start: day
+series:
+  - entity: sensor.battery_opt_current_price
+    name: Price (EUR/kWh)
+    type: line
+    data_generator: |
+      const prices = entity.attributes.prices_eur_kwh || [];
+      const start = new Date(entity.attributes.plan_date + "T00:00:00");
+      return prices.map((p, i) => [start.getTime() + i * 15 * 60 * 1000, p]);
+  - entity: sensor.battery_opt_plan
+    name: Charge (W)
+    type: column
+    yaxis_id: power
+    data_generator: |
+      const w = entity.attributes.charge_w || [];
+      const start = new Date(entity.attributes.plan_date + "T00:00:00");
+      return w.map((v, i) => [start.getTime() + i * 15 * 60 * 1000, v]);
+  - entity: sensor.battery_opt_plan
+    name: Discharge (W)
+    type: column
+    yaxis_id: power
+    data_generator: |
+      const w = entity.attributes.discharge_w || [];
+      const start = new Date(entity.attributes.plan_date + "T00:00:00");
+      return w.map((v, i) => [start.getTime() + i * 15 * 60 * 1000, -v]);
+yaxis:
+  - id: price
+    decimals: 3
+    apex_config:
+      title:
+        text: EUR/kWh
+  - id: power
+    opposite: true
+    apex_config:
+      title:
+        text: W
+```
+
+**Energy dashboard:** `sensor.battery_opt_current_price` is declared
+exactly like core OMIE's own price sensor (EUR/kWh, `state_class`
+measurement), so Settings → Dashboards → Energy accepts it directly
+as the grid consumption tab's "use an entity with current price"
+source — no template sensor needed. If a grid-import energy sensor is
+configured (`CONF_GRID_ENERGY_SENSOR`), `sensor.battery_opt_cost_today`
+can be added there too as a daily cost entity (`state_class` TOTAL,
+resets at local midnight).
+
 ## Development
 
 ```bash

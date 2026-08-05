@@ -147,7 +147,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["soc_percent"] = soc_percent
             data["soc_kwh"] = soc_percent / 100.0 * params.cap_usable_kwh
         today = dt_util.now().date()
-        series = await self._today_prices()
+        series = await self._prices_for_day(today)
         prices = list(series.delivered_eur_kwh) if series is not None else None
         n = len(prices) if prices is not None else _INTERVALS_PER_DAY
         load = await self._forecast_load_vector(today, n)
@@ -159,7 +159,52 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Decision 4: archive every successful full-day build; the
             # same path is overwritten once a padded tail resolves.
             await async_archive_day(self.hass, today, series)
+        data.update(await self._tomorrow_preview(today, params))
         return data
+
+    async def _tomorrow_preview(
+        self,
+        today: date,
+        params: BatteryParams,
+    ) -> dict[str, Any]:
+        """
+        D+1 preview (decision 9): published only when D+1 itself builds.
+
+        Tomorrow's own Lisbon day needs market dates D+1 and D+2; D+2
+        is never published this far ahead, so tomorrow structurally
+        always relies on the same tail-padding tolerance
+        `_prices_for_day` already applies for today. Seeded at the
+        reserve floor rather than chained from today's plan, since
+        today has not finished executing yet — this is a speculative
+        preview, not a committed plan.
+        """
+        empty: dict[str, Any] = {
+            "tomorrow_prices_eur_kwh": None,
+            "tomorrow_charge_w": None,
+            "tomorrow_discharge_w": None,
+        }
+        tomorrow = today + timedelta(days=1)
+        series = await self._prices_for_day(tomorrow)
+        if series is None:
+            return empty
+        prices = list(series.delivered_eur_kwh)
+        load = await self._forecast_load_vector(tomorrow, len(prices))
+        solar = [0.0] * len(load)
+        plan_params = dataclasses.replace(params, soc_start_kwh=params.cap_min_kwh)
+        solve_params = dataclasses.replace(
+            plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
+        )
+        result = solve(prices, load, solar, solve_params)
+        if validate_plan(result.plan, load, solar, plan_params):
+            # Fail closed like today's plan (decision 6's spirit): a
+            # speculative preview that fails validation just doesn't
+            # publish a plan, but the prices are still worth showing.
+            return {**empty, "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices]}
+        return {
+            "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices],
+            "tomorrow_charge_w": list(result.plan.charge_w),
+            "tomorrow_discharge_w": list(result.plan.discharge_w),
+        }
 
     async def _forecast_load_vector(self, today: date, n: int) -> list[float]:
         """
@@ -177,22 +222,22 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         solar = [0.0] * n
         return forecast_load(today, samples, solar, n_intervals=n)
 
-    async def _today_prices(self) -> DaySeries | None:
+    async def _prices_for_day(self, day: date) -> DaySeries | None:
         """
-        Today's price series from core OMIE.
+        Price series for a Lisbon-local day from core OMIE.
 
         `omie.get_prices_for_date` needs market dates D and D+1 to
         cover a Lisbon day; a missing D+1 pads the final hour,
-        flagged on the returned series.
+        flagged on the returned series. Shared by today's plan
+        (decisions 4/6) and tomorrow's preview (decision 9).
         """
-        today = dt_util.now().date()
         if not self.hass.services.has_service(
             OMIE_SERVICE_DOMAIN, OMIE_SERVICE_GET_PRICES
         ):
             return None
         entries: list[dict[str, Any]] = []
         for offset in (0, 1):
-            market_date = today + timedelta(days=offset)
+            market_date = day + timedelta(days=offset)
             try:
                 response = await self.hass.services.async_call(
                     OMIE_SERVICE_DOMAIN,
@@ -211,7 +256,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entries.extend(payload.get("pt") or payload.get("PT") or [])
         if not entries:
             return None
-        return day_series_from_service(today, entries)
+        return day_series_from_service(day, entries)
 
     def _advisory_plan(
         self,
