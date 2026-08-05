@@ -8,15 +8,17 @@ service with a response in the shape verified from
 home-assistant/core sources.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import ServiceCall, SupportsResponse
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -55,6 +57,19 @@ PARAMETERS = {
 VALID_INPUT = {**BATTERY_ENTITIES, **PARAMETERS}
 
 
+# Mirrors SERVICE_GET_PRICES_SCHEMA in home-assistant/core: `countries`
+# coerces to the Country enum, whose values are LOWERCASE "es"/"pt".
+# Sending "PT" must fail here exactly as it does in production.
+_OMIE_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Required("date"): cv.date,
+        vol.Required("countries", default=["es", "pt"]): vol.All(
+            cv.ensure_list, [vol.In(["es", "pt"])]
+        ),
+    }
+)
+
+
 def _register_core_omie_service(hass: HomeAssistant, days_available: int = 2) -> None:
     """Stub HA core's omie.get_prices_for_date service."""
     cet = ZoneInfo("Europe/Madrid")
@@ -62,8 +77,6 @@ def _register_core_omie_service(hass: HomeAssistant, days_available: int = 2) ->
 
     async def handler(call: ServiceCall) -> dict:
         market_date = call.data["date"]
-        if isinstance(market_date, str):
-            market_date = date.fromisoformat(market_date)
         if (market_date - first_served).days >= days_available:
             msg = "data_not_available"
             raise ServiceValidationError(msg)
@@ -71,7 +84,7 @@ def _register_core_omie_service(hass: HomeAssistant, days_available: int = 2) ->
             market_date.year, market_date.month, market_date.day, tzinfo=cet
         )
         return {
-            "PT": [
+            country: [
                 {
                     "start": (midnight + timedelta(minutes=15 * i)).isoformat(),
                     "end": (midnight + timedelta(minutes=15 * (i + 1))).isoformat(),
@@ -79,12 +92,15 @@ def _register_core_omie_service(hass: HomeAssistant, days_available: int = 2) ->
                 }
                 for i in range(96)
             ]
+            for country in call.data["countries"]
+            if country == "pt"
         }
 
     hass.services.async_register(
         "omie",
         "get_prices_for_date",
         handler,
+        schema=_OMIE_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 

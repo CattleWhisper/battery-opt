@@ -145,7 +145,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 response = await self.hass.services.async_call(
                     OMIE_SERVICE_DOMAIN,
                     OMIE_SERVICE_GET_PRICES,
-                    {"date": market_date.isoformat(), "countries": ["PT"]},
+                    {"date": market_date.isoformat(), "countries": ["pt"]},
                     blocking=True,
                     return_response=True,
                 )
@@ -153,7 +153,10 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # D+1 is simply not published before ~13:30 CET.
                 _LOGGER.debug("OMIE prices for %s: %s", market_date, err)
                 continue
-            entries.extend((response or {}).get("PT", []))
+            payload = response or {}
+            # Response keys are Country enum values ("pt"); tolerate a
+            # future upstream switch back to uppercase codes.
+            entries.extend(payload.get("pt") or payload.get("PT") or [])
         if not entries:
             return None, False
         return day_price_vector_from_service(today, entries)
