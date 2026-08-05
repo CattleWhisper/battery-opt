@@ -18,6 +18,13 @@ CONF_CAPACITY_KWH = "capacity_kwh"
 CONF_RESERVE_FLOOR_PCT = "reserve_floor_pct"
 CONF_WEAR_COST = "wear_cost_eur_kwh"
 CONF_PLAN_WEAR = "plan_wear_eur_kwh"
+# Both optional, both meter entities (plan Tasks 11/13, decision 1):
+# owner picks them once the meter is known. Everything degrades
+# gracefully when unset — flat load, cost sensor unavailable. Kept as
+# two separate keys even though this house has no solar and they will
+# likely point at the same entity.
+CONF_LOAD_SENSOR = "load_sensor"  # house consumption: power W or energy kWh
+CONF_GRID_ENERGY_SENSOR = "grid_energy_sensor"  # grid-import energy kWh
 
 DEFAULT_CAPACITY_KWH = 5.0
 DEFAULT_RESERVE_FLOOR_PCT = 27.0

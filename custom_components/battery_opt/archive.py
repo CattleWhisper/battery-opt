@@ -1,11 +1,16 @@
 """
-Daily price archive (plan Task 10, decision 4).
+Daily price and load archives (plan Tasks 10 and 11).
 
 One JSON file per Lisbon-local day at
-`<config>/battery_opt/prices/YYYY-MM-DD.json`. Written on every
+`<config>/battery_opt/prices/YYYY-MM-DD.json`, written on every
 successful full-day price build (padded or not) — when a padded
 day's tail later resolves to real prices, the coordinator refreshes
-and writes to the same path again, which is the overwrite.
+and writes to the same path again, which is the overwrite. A second
+archive at `<config>/battery_opt/load/YYYY-MM-DD.json` accumulates
+one day per meter-configured day close, at quarter-hour resolution —
+this is the future quarter-resolution forecast dataset that
+supersedes the hourly recorder-statistics adapter (`load_history.py`)
+once enough days have accumulated.
 
 Thin and HA-side only: `core/` stays free of homeassistant imports
 (ADR-0001). File IO runs off the event loop via
@@ -26,9 +31,11 @@ if TYPE_CHECKING:
 
     from homeassistant.core import HomeAssistant
 
+    from .core.forecast import DaySample
     from .prices_source import DaySeries
 
 ARCHIVE_SUBDIR = "battery_opt/prices"
+LOAD_ARCHIVE_SUBDIR = "battery_opt/load"
 
 
 def _archive_path(hass: HomeAssistant, day: date) -> Path:
@@ -62,4 +69,28 @@ async def async_archive_day(
     """Write today's price series to the archive, overwriting in place."""
     path = _archive_path(hass, day)
     payload = _build_payload(day, series)
+    await hass.async_add_executor_job(_write_file, path, payload)
+
+
+def _load_archive_path(hass: HomeAssistant, day: date) -> Path:
+    """Return the load-archive file path for a given day."""
+    return Path(hass.config.path(LOAD_ARCHIVE_SUBDIR)) / f"{day.isoformat()}.json"
+
+
+def _build_load_payload(day: date, sample: DaySample) -> dict[str, Any]:
+    return {
+        "date": day.isoformat(),
+        "archived_at": dt_util.utcnow().isoformat(),
+        "load_w": list(sample.load_w),
+    }
+
+
+async def async_archive_load_day(
+    hass: HomeAssistant,
+    day: date,
+    sample: DaySample,
+) -> None:
+    """Write yesterday's observed load curve to the archive (decision 5)."""
+    path = _load_archive_path(hass, day)
+    payload = _build_load_payload(day, sample)
     await hass.async_add_executor_job(_write_file, path, payload)

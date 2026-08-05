@@ -27,16 +27,18 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 from homeassistant.util import dt as dt_util
 
-from .archive import async_archive_day
+from .archive import async_archive_day, async_archive_load_day
 from .const import (
     BASE_LOAD_W,
     CONF_CAPACITY_KWH,
+    CONF_LOAD_SENSOR,
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_WEAR_COST,
@@ -47,10 +49,12 @@ from .const import (
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
+from .core.forecast import forecast_load
 from .core.optimiser import solve
 from .core.plan import BatteryParams, saving_vs_no_cycling, validate_plan
 from .core.static_schedule import static_plan
 from .driver import DriverError
+from .load_history import LOOKBACK_DAYS, async_load_samples
 from .prices_source import day_series_from_service
 
 # A normal day; DST-short/long days (92/100) are a fallback-only edge
@@ -62,6 +66,9 @@ _INTERVALS_PER_DAY = 96
 OMIE_SERVICE_DOMAIN = "omie"
 OMIE_SERVICE_GET_PRICES = "get_prices_for_date"
 
+# Plan Task 11, decision 7: MAE persists across restarts.
+_MAE_STORE_VERSION = 1
+
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -70,6 +77,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
+    from .core.forecast import DaySample
     from .driver import BatteryDriver
     from .prices_source import DaySeries
 
@@ -92,6 +100,16 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.entry = entry
         self.driver = driver
+        self._load_mae_w: float | None = None
+        self._mae_store: Store[dict[str, Any]] = Store(
+            hass, _MAE_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_load_mae"
+        )
+
+    async def async_restore_load_mae(self) -> None:
+        """Restore the persisted load-forecast MAE (decision 7), if any."""
+        stored = await self._mae_store.async_load()
+        if stored is not None:
+            self._load_mae_w = stored.get("mae_w")
 
     @property
     def planning_only(self) -> bool:
@@ -131,14 +149,33 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         today = dt_util.now().date()
         series = await self._today_prices()
         prices = list(series.delivered_eur_kwh) if series is not None else None
-        data.update(self._advisory_plan(params, data["soc_kwh"], prices))
+        n = len(prices) if prices is not None else _INTERVALS_PER_DAY
+        load = await self._forecast_load_vector(today, n)
+        data.update(self._advisory_plan(params, data["soc_kwh"], prices, load))
         data["prices_eur_kwh"] = prices if data["prices_ok"] else None
         data["prices_padded"] = series.padded if series is not None else False
+        data["load_mae_w"] = self._load_mae_w
         if series is not None:
             # Decision 4: archive every successful full-day build; the
             # same path is overwritten once a padded tail resolves.
             await async_archive_day(self.hass, today, series)
         return data
+
+    async def _forecast_load_vector(self, today: date, n: int) -> list[float]:
+        """
+        Net load forecast (W) for advisory-plan input only (Task 11).
+
+        Flat `BASE_LOAD_W` without a configured meter, or when history
+        is too thin — `forecast_load` itself applies the <4-same-
+        weekday-occurrences fallback per slot and for the whole day.
+        """
+        merged = {**self.entry.data, **self.entry.options}
+        entity_id = merged.get(CONF_LOAD_SENSOR)
+        if not entity_id:
+            return [BASE_LOAD_W] * n
+        samples: list[DaySample] = await async_load_samples(self.hass, entity_id, today)
+        solar = [0.0] * n
+        return forecast_load(today, samples, solar, n_intervals=n)
 
     async def _today_prices(self) -> DaySeries | None:
         """
@@ -181,12 +218,11 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         params: BatteryParams,
         soc_kwh: float | None,
         prices: list[float] | None,
+        load: list[float],
     ) -> dict[str, Any]:
         """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
-        n = len(prices) if prices is not None else _INTERVALS_PER_DAY
-        load = [BASE_LOAD_W] * n
-        solar = [0.0] * n
+        solar = [0.0] * len(load)
         # Virtual battery starts at the floor until a real SoC exists.
         start_soc = params.cap_min_kwh if soc_kwh is None else soc_kwh
         plan_params = dataclasses.replace(params, soc_start_kwh=start_soc)
@@ -238,6 +274,57 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "vs_static_eur": None,
             "fallback": "static",
         }
+
+    async def async_day_close(self, now: datetime) -> None:
+        """
+        Day close at 00:05 local (plan Task 11, decision 5).
+
+        With a load meter configured: archive yesterday's OBSERVED
+        load curve to `battery_opt/load/YYYY-MM-DD.json` (accumulating
+        the future quarter-resolution forecast dataset) and compute
+        the MAE of the forecast that *would have been* made for
+        yesterday — using only history available before yesterday —
+        against what was actually observed. Persisted so the MAE
+        sensor survives restarts. Realised savings stays battery-
+        gated and is intentionally not computed here. A no-op without
+        a meter, or before yesterday has any observed data yet.
+        """
+        merged = {**self.entry.data, **self.entry.options}
+        entity_id = merged.get(CONF_LOAD_SENSOR)
+        if not entity_id:
+            return
+        today = now.date()
+        yesterday = today - timedelta(days=1)
+        observed_samples: list[DaySample] = await async_load_samples(
+            self.hass, entity_id, today, lookback_days=1
+        )
+        observed = next((s for s in observed_samples if s.day == yesterday), None)
+        if observed is None:
+            _LOGGER.debug("Day close: no observed load for %s yet", yesterday)
+            return
+        await async_archive_load_day(self.hass, yesterday, observed)
+        forecast_samples = await async_load_samples(
+            self.hass, entity_id, yesterday, lookback_days=LOOKBACK_DAYS
+        )
+        forecast = forecast_load(
+            yesterday, forecast_samples, [0.0] * len(observed.load_w)
+        )
+        errors = [
+            abs(forecast_value - observed_value)
+            for forecast_value, observed_value in zip(
+                forecast, observed.load_w, strict=True
+            )
+            if observed_value is not None
+        ]
+        if not errors:
+            _LOGGER.debug("Day close: no comparable slots for %s", yesterday)
+            return
+        mae = sum(errors) / len(errors)
+        await self._mae_store.async_save(
+            {"mae_w": mae, "computed_for": yesterday.isoformat()}
+        )
+        self._load_mae_w = mae
+        await self.async_request_refresh()
 
     def planned_action_now(self) -> str:
         """Return the advisory plan action for the current quarter-hour."""

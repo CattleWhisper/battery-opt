@@ -110,13 +110,14 @@ async def test_price_fetch_schedule_registers_four_triggers(
 
     # minute=[0, 15, 30, 45] calls (the executor tick / QuarterHourMixin
     # listeners) pass no `hour`, so filtering on hour is not None keeps
-    # only the price-fetch registrations.
+    # only the hour-anchored registrations (price fetch + day close).
     registered = {
         (kwargs.get("hour"), kwargs.get("minute")): args[1]
         for args, kwargs in mock_track.call_args_list
         if kwargs.get("hour") is not None
     }
-    assert set(registered) == set(_PRICE_FETCH_TIMES)
+    assert set(_PRICE_FETCH_TIMES) <= set(registered)
+    assert (0, 5) in registered  # day-close (Task 11, decision 5)
 
     coordinator = entry.runtime_data.coordinator
     calls: list[None] = []
@@ -125,7 +126,10 @@ async def test_price_fetch_schedule_registers_four_triggers(
         calls.append(None)
 
     coordinator.async_request_refresh = AsyncMock(side_effect=_counting_refresh)
-    for action in registered.values():
+    price_fetch_actions = [
+        action for time, action in registered.items() if time in _PRICE_FETCH_TIMES
+    ]
+    for action in price_fetch_actions:
         await action(dt_util.utcnow())
     assert len(calls) == len(_PRICE_FETCH_TIMES)
 

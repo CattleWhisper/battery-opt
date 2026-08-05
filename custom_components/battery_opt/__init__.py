@@ -95,6 +95,7 @@ async def async_setup_entry(
         )
         driver = MarstekDriver(hass, entities)
     coordinator = BatteryOptCoordinator(hass, entry, driver)
+    await coordinator.async_restore_load_mae()
     await coordinator.async_config_entry_first_refresh()
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -128,6 +129,13 @@ async def async_setup_entry(
                 hass, _on_price_fetch_time, hour=hour, minute=minute, second=0
             )
         )
+
+    async def _on_day_close(now: datetime) -> None:
+        await coordinator.async_day_close(dt_util.as_local(now))
+
+    entry.async_on_unload(
+        async_track_time_change(hass, _on_day_close, hour=0, minute=5, second=0)
+    )
 
     if executor is not None:
         actuator = executor

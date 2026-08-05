@@ -31,6 +31,8 @@ from .const import (
     CONF_CAPACITY_KWH,
     CONF_CHARGE_POWER_NUMBER,
     CONF_DISCHARGE_POWER_NUMBER,
+    CONF_GRID_ENERGY_SENSOR,
+    CONF_LOAD_SENSOR,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
@@ -121,6 +123,15 @@ def _entity_schema(current: dict[str, Any]) -> dict[vol.Marker, Any]:
         vol.Optional(CONF_SOC_SENSOR, description=suggested(CONF_SOC_SENSOR)): (
             _entity("sensor")
         ),
+        # Meter entities (plan Tasks 11/13): optional, independent of
+        # the battery entities above. Unset -> flat load forecast and
+        # an unavailable cost sensor; nothing else changes.
+        vol.Optional(CONF_LOAD_SENSOR, description=suggested(CONF_LOAD_SENSOR)): (
+            _entity("sensor")
+        ),
+        vol.Optional(
+            CONF_GRID_ENERGY_SENSOR, description=suggested(CONF_GRID_ENERGY_SENSOR)
+        ): _entity("sensor"),
     }
 
 

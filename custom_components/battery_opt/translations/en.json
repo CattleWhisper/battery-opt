@@ -3,12 +3,14 @@
     "step": {
       "user": {
         "title": "Battery Opt",
-        "description": "Prices come from Home Assistant's own OMIE integration - set it up first (Settings > Devices & services > Add > OMIE). The marstek_modbus entities are optional until the battery arrives: leave all four empty for planning-only mode (plans and savings are computed, nothing actuates). Note: force_mode, set_charge_power and set_discharge_power ship disabled by default in the Marstek integration - enable them first.",
+        "description": "Prices come from Home Assistant's own OMIE integration - set it up first (Settings > Devices & services > Add > OMIE). The marstek_modbus entities are optional until the battery arrives: leave all four empty for planning-only mode (plans and savings are computed, nothing actuates). Note: force_mode, set_charge_power and set_discharge_power ship disabled by default in the Marstek integration - enable them first. The load and grid-import sensors are also optional - leave them empty for now and add them once you know which entity measures your house's consumption; everything degrades gracefully (flat load forecast, cost sensor unavailable) until then.",
         "data": {
           "mode_select": "Battery mode select entity (force_mode)",
           "charge_power_number": "Charge power entity (set_charge_power)",
           "discharge_power_number": "Discharge power entity (set_discharge_power)",
           "soc_sensor": "Battery state-of-charge sensor",
+          "load_sensor": "House load sensor (power W or energy kWh, optional)",
+          "grid_energy_sensor": "Grid import energy sensor (kWh, optional)",
           "capacity_kwh": "Usable capacity (kWh)",
           "reserve_floor_pct": "Reserve floor (%)",
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
@@ -30,6 +32,8 @@
           "charge_power_number": "Charge power entity (set_charge_power)",
           "discharge_power_number": "Discharge power entity (set_discharge_power)",
           "soc_sensor": "Battery state-of-charge sensor",
+          "load_sensor": "House load sensor (power W or energy kWh, optional)",
+          "grid_energy_sensor": "Grid import energy sensor (kWh, optional)",
           "capacity_kwh": "Usable capacity (kWh)",
           "reserve_floor_pct": "Reserve floor (%)",
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",

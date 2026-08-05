@@ -32,6 +32,8 @@ from custom_components.battery_opt.const import (
     CONF_CAPACITY_KWH,
     CONF_CHARGE_POWER_NUMBER,
     CONF_DISCHARGE_POWER_NUMBER,
+    CONF_GRID_ENERGY_SENSOR,
+    CONF_LOAD_SENSOR,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
@@ -204,6 +206,40 @@ async def test_options_flow_edits_parameters(hass: HomeAssistant) -> None:
     assert coordinator.plan_wear_eur_kwh == pytest.approx(0.06)
 
 
+async def test_meter_sensors_are_optional_and_editable_later(
+    hass: HomeAssistant,
+) -> None:
+    """
+    Plan Tasks 11/13, decision 1: two independent optional meter keys.
+
+    An entry created without them reloads cleanly (no new required
+    field); the options flow can add them later, same as the battery
+    entities.
+    """
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            **PARAMETERS,
+            CONF_LOAD_SENSOR: "sensor.house_power",
+            CONF_GRID_ENERGY_SENSOR: "sensor.grid_import_energy",
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    merged = {**entry.data, **entry.options}
+    assert merged[CONF_LOAD_SENSOR] == "sensor.house_power"
+    assert merged[CONF_GRID_ENERGY_SENSOR] == "sensor.grid_import_energy"
+
+
 async def test_planning_only_computes_plan_from_core_omie(
     hass: HomeAssistant,
 ) -> None:
@@ -340,7 +376,8 @@ async def test_all_entities_group_under_one_service_device(
 
     entity_registry = er.async_get(hass)
     grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
-    assert len(grouped) == 5  # plan, forecast savings, vs static, price, healthy
+    # plan, forecast savings, vs static, price, load MAE, healthy
+    assert len(grouped) == 6
 
 
 async def test_entities_exist_and_health_follows_the_executor(

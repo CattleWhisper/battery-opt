@@ -14,6 +14,10 @@ Sensors for battery_opt (spec §8).
   now per the EDP Indexada formula (core.prices.price), EUR/kWh excl.
   fixed terms and VAT. Declared exactly like core OMIE's price sensor
   so the Energy dashboard accepts it as a grid price entity.
+- sensor.battery_opt_load_mae: mean absolute error (W) of yesterday's
+  load forecast vs the observed load, computed at day close (plan
+  Task 11, decision 7). Unknown until a load meter is configured and
+  one full day has closed.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
-from homeassistant.const import CURRENCY_EURO, UnitOfEnergy
+from homeassistant.const import CURRENCY_EURO, UnitOfEnergy, UnitOfPower
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -46,7 +50,7 @@ async def async_setup_entry(
     entry: BatteryOptConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create the plan, savings and price sensors."""
+    """Create the plan, savings, price and load-MAE sensors."""
     runtime = entry.runtime_data
     async_add_entities(
         [
@@ -54,6 +58,7 @@ async def async_setup_entry(
             ForecastSavingsSensor(runtime.coordinator, entry.entry_id),
             VsStaticSensor(runtime.coordinator, entry.entry_id),
             CurrentPriceSensor(runtime.coordinator, entry.entry_id),
+            LoadMaeSensor(runtime.coordinator, entry.entry_id),
         ]
     )
 
@@ -219,3 +224,36 @@ class VsStaticSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
     def native_value(self) -> float | None:
         """EUR/day, excl. fixed terms and VAT; None until prices exist."""
         return (self.coordinator.data or {}).get("vs_static_eur")
+
+
+class LoadMaeSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
+    """Mean absolute error of yesterday's load forecast (plan Task 11)."""
+
+    _attr_has_entity_name = True
+    # "Load MAE" (not "Load forecast MAE"): the object id is derived
+    # from this name's slug, and the decision-mandated entity_id is
+    # sensor.battery_opt_load_mae.
+    _attr_name = "Load MAE"
+    _attr_suggested_object_id = "battery_opt_load_mae"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_suggested_display_precision = 0
+    _attr_icon = "mdi:chart-bell-curve"
+
+    def __init__(self, coordinator: BatteryOptCoordinator, entry_id: str) -> None:
+        """Bind to the coordinator."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_load_mae"
+        self._attr_device_info = device_info_for(entry_id)
+
+    @property
+    def native_value(self) -> float | None:
+        """
+        W; unknown until a load meter is configured and one day closed.
+
+        Computed at 00:05 local against the forecast that would have
+        been made for yesterday using only history available before
+        yesterday (decisions 5/7) — not a same-day self-comparison.
+        """
+        value = (self.coordinator.data or {}).get("load_mae_w")
+        return round(value, 1) if value is not None else None

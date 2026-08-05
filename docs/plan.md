@@ -334,16 +334,42 @@ wrapper over it and is unchanged for existing callers.
 
 **Description:** Median of the last 4 same-weekday occurrences, per interval. Fallback: flat 1.04 kW.
 
+**Delivered 2026-08-06, planning-only** (overnight session, Task B):
+`core/forecast.py::forecast_load` is the pure per-slot median-of-4
+function (HA-free, exhaustively unit-tested in `tests/test_forecast.py`
+— fewer-than-4-days flat fallback, per-slot fallback on a missing
+sample, most-recent-4-only, solar subtraction and its floor at zero).
+`load_history.py` is the HA-side adapter that feeds it from recorder
+long-term statistics.
+
+**Deliberate resolution deviation from this task's wording:** recorder
+long-term statistics are HOURLY, not quarter-hourly — short-term
+5-minute stats only survive ~10 days, too short for a 4-same-weekday
+(4-week) lookback. `load_history.py` expands each hour into its 4
+identical quarters. True quarter resolution arrives later from our
+own load archive (`archive.py`'s new `battery_opt/load/` path,
+accumulated at day close) once enough days have accumulated —
+tracked, not solved, by this delivery.
+
+The coordinator uses the forecast as the advisory plan's load input
+whenever `CONF_LOAD_SENSOR` is configured (flat `BASE_LOAD_W`
+otherwise); the meter selector is optional and existing entries reload
+unchanged without it. Day close at 00:05 archives yesterday's observed
+load and computes `sensor.battery_opt_load_mae` (W, unknown until a
+meter exists and one day has closed), persisted across restarts via
+`homeassistant.helpers.storage.Store`.
+
 **Acceptance criteria:**
-- [ ] Uses `recorder` history
-- [ ] With <4 weeks of data, uses the constant
-- [ ] Subtracts the solar forecast before returning
+- [x] Uses `recorder` history
+- [x] With <4 weeks of data, uses the constant
+- [x] Subtracts the solar forecast before returning
 
 **Verification:**
-- [ ] Mean absolute error vs. actual exposed as a sensor, for monitoring
+- [x] Mean absolute error vs. actual exposed as a sensor, for monitoring (`sensor.battery_opt_load_mae`)
+- [ ] Real-world accuracy check — needs several weeks of accumulated same-weekday history in production; nothing to measure yet the night this landed
 
 **Dependencies:** Task 10
-**Files:** `core/forecast.py`
+**Files:** `core/forecast.py`, `load_history.py`, `coordinator.py`, `sensor.py`, `config_flow.py`, `strings.json`, `translations/en.json`, `archive.py`, `__init__.py`
 **Scope:** M
 
 ---
