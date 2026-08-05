@@ -276,6 +276,30 @@ async def test_options_flow_adds_battery_entities_later(
     assert not entry.runtime_data.coordinator.planning_only
 
 
+async def test_all_entities_group_under_one_service_device(
+    hass: HomeAssistant,
+) -> None:
+    """A single service-type device (like core OMIE's) owns everything."""
+    from homeassistant.helpers import device_registry as dr  # noqa: PLC0415
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+    from homeassistant.helpers.device_registry import DeviceEntryType  # noqa: PLC0415
+
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    assert device is not None
+    assert device.entry_type is DeviceEntryType.SERVICE
+    assert device.name == "Battery Opt"
+
+    entity_registry = er.async_get(hass)
+    grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
+    assert len(grouped) == 4  # plan, forecast savings, vs static, healthy
+
+
 async def test_entities_exist_and_health_follows_the_executor(
     hass: HomeAssistant,
 ) -> None:

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .entity import device_info_for
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -37,7 +39,8 @@ async def async_setup_entry(
 class HealthySensor(CoordinatorEntity["BatteryOptCoordinator"], BinarySensorEntity):
     """The executor's latch — or, planning-only, price/plan health."""
 
-    _attr_name = "Battery Opt Healthy"
+    _attr_has_entity_name = True
+    _attr_name = "Healthy"
     _attr_suggested_object_id = "battery_opt_healthy"
     _attr_icon = "mdi:heart-pulse"
 
@@ -51,6 +54,7 @@ class HealthySensor(CoordinatorEntity["BatteryOptCoordinator"], BinarySensorEnti
         super().__init__(coordinator)
         self._executor = executor
         self._attr_unique_id = f"{entry_id}_healthy"
+        self._attr_device_info = device_info_for(entry_id)
 
     async def async_added_to_hass(self) -> None:
         """Refresh on every executor state change."""

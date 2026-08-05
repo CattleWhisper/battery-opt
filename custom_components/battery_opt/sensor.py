@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .entity import device_info_for
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -47,7 +49,8 @@ async def async_setup_entry(
 class PlanSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
     """Current action plus the advisory day plan."""
 
-    _attr_name = "Battery Opt Plan"
+    _attr_has_entity_name = True
+    _attr_name = "Plan"
     _attr_suggested_object_id = "battery_opt_plan"
     _attr_icon = "mdi:calendar-clock"
 
@@ -61,6 +64,7 @@ class PlanSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
         super().__init__(coordinator)
         self._executor = executor
         self._attr_unique_id = f"{entry_id}_plan"
+        self._attr_device_info = device_info_for(entry_id)
 
     async def async_added_to_hass(self) -> None:
         """Also refresh whenever the executor state changes."""
@@ -101,7 +105,8 @@ class PlanSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
 class ForecastSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
     """Advisory plan's forecast saving vs not cycling, EUR/day."""
 
-    _attr_name = "Battery Opt Forecast Savings"
+    _attr_has_entity_name = True
+    _attr_name = "Forecast savings"
     _attr_suggested_object_id = "battery_opt_forecast_savings"
     _attr_native_unit_of_measurement = "EUR"
     _attr_icon = "mdi:cash-clock"
@@ -110,6 +115,7 @@ class ForecastSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
         """Bind to the coordinator."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_forecast_savings"
+        self._attr_device_info = device_info_for(entry_id)
 
     @property
     def native_value(self) -> float | None:
@@ -120,7 +126,8 @@ class ForecastSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
 class VsStaticSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
     """Forecast gain of the capped greedy over the static schedule."""
 
-    _attr_name = "Battery Opt Vs Static"
+    _attr_has_entity_name = True
+    _attr_name = "Vs static"
     _attr_suggested_object_id = "battery_opt_vs_static"
     _attr_native_unit_of_measurement = "EUR"
     _attr_icon = "mdi:scale-balance"
@@ -129,6 +136,7 @@ class VsStaticSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
         """Bind to the coordinator."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_vs_static"
+        self._attr_device_info = device_info_for(entry_id)
 
     @property
     def native_value(self) -> float | None:
