@@ -199,16 +199,16 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 
 ### Task 7: Driver
 
-**Description:** Thin layer over the `marstek_venus_modbus` integration. Interface: `set_mode()`, `set_power()`, `read_soc()`. **Never direct Modbus** (ADR-0004).
+**Description:** Thin layer over the `marstek_venus_modbus` integration. Interface: `set_mode()`, `set_charge_power()`, `set_discharge_power()`, `read_soc()` — the device has separate charge/discharge power registers (42020/42021), verified from the integration source. **Never direct Modbus** (ADR-0004).
 
 **Acceptance criteria:**
-- [ ] Abstract interface + real implementation + fake implementation for tests
-- [ ] All writes via `hass.services.async_call`
-- [ ] 3 consecutive failures → raises a handleable exception
+- [x] Abstract interface + real implementation + fake implementation for tests
+- [x] All writes via `hass.services.async_call`
+- [x] 3 consecutive failures → raises a handleable exception (`DriverUnavailableError`)
 
 **Verification:**
-- [ ] Fake-driver tests verify the call sequence
-- [ ] Manual test: force 500 W charge and confirm on the device
+- [x] Fake-driver tests verify the call sequence
+- [ ] Manual test: force 500 W charge and confirm on the device — **blocked: battery not yet arrived**. Mode labels (`charge`/`discharge`/`standby`) verified against the integration source meanwhile; entities ship disabled by default and must be enabled in HA first
 
 **Dependencies:** None (parallelisable with Phase 0)
 **Files:** `custom_components/battery_opt/driver.py`, `tests/test_driver.py`
@@ -221,13 +221,13 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 **Description:** `manifest.json`, `config_flow.py`, `__init__.py`, `coordinator.py`. The config flow collects: battery entities, price entity, capacity, reserve floor, `WEAR_COST`.
 
 **Acceptance criteria:**
-- [ ] Installable via HACS from the repository
-- [ ] Config flow works; options editable afterwards
-- [ ] `DataUpdateCoordinator` performs no blocking work on the event loop
+- [x] Installable via HACS from the repository (hacs.json/manifest/README; blueprint template removed)
+- [x] Config flow works; options editable afterwards (battery entities optional as a group — planning-only mode until the battery arrives)
+- [x] `DataUpdateCoordinator` performs no blocking work on the event loop
 
 **Verification:**
-- [ ] `pytest` with `pytest-homeassistant-custom-component`
-- [ ] Clean install on a test HA instance
+- [x] `pytest` with `pytest-homeassistant-custom-component` (0.13.340, HA 2026.6.4)
+- [x] Clean install on a test HA instance (`scripts/develop`, 2026-08-05: zero battery_opt errors at boot)
 
 **Dependencies:** Task 7
 **Files:** `manifest.json`, `config_flow.py`, `__init__.py`, `coordinator.py`, `strings.json`
@@ -240,14 +240,14 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 **Description:** 15-minute trigger applying the current interval's setpoint. Plan, savings and health sensors.
 
 **Acceptance criteria:**
-- [ ] Applies the plan interval by interval
-- [ ] `binary_sensor.battery_opt_healthy` reflects real state
-- [ ] Never actuates when `healthy` is false
-- [ ] Validates the plan against C-1..C-7 before each actuation
+- [x] Applies the plan interval by interval (setpoints floored DOWN to the 50 W device step — up would export on C-1 or breach the C-3 margin)
+- [x] `binary_sensor.battery_opt_healthy` reflects real state
+- [x] Never actuates when `healthy` is false
+- [x] Validates the plan against C-1..C-7 before each actuation
 
 **Verification:**
-- [ ] 48 h in production on the static plan: zero export, SoC within bounds
-- [ ] Power off the battery → `healthy` goes off within 45 min
+- [ ] 48 h in production on the static plan: zero export, SoC within bounds — **blocked: battery not yet arrived**
+- [ ] Power off the battery → `healthy` goes off within 45 min — **blocked: battery not yet arrived**
 
 **Dependencies:** Task 8
 **Files:** `sensor.py`, `binary_sensor.py`, `executor.py`
@@ -255,7 +255,25 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 
 ---
 
+### Delivered ahead of plan: planning-only mode (2026-08-05)
+
+The battery had not arrived, so the shell runs without it: leave the four
+Marstek entities empty in the config flow and the integration computes the
+day's advisory plan from the OMIE price sensor — capped greedy (plan-wear
+0.0467 per the Checkpoint B decision, savings booked at the true wear),
+virtual battery from the reserve floor, nothing actuates. Sensors
+`battery_opt_plan`, `battery_opt_forecast_savings` and
+`battery_opt_vs_static` are live from real prices. This pulls forward the
+safe parts of Task 10 (basic price reading) and Task 12 (dry-run +
+`vs_static` sensor); their remaining criteria stand. It also settled the
+production half of open question #1 from the `hass_omie` source:
+quarter-hourly (`docs/spec.md` §12).
+
+---
+
 ### Checkpoint C
+
+**Blocked until the battery arrives and Tasks 7/9 manual verifications run.**
 
 - [ ] 2 weeks in production on the static plan
 - [ ] Zero export recorded
@@ -270,6 +288,8 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 ### Task 10: Production price ingestion
 
 **Description:** Read the `omie` integration entity, build the 96-price vector, with retry and fallback.
+
+*Partially delivered early (planning-only mode, 2026-08-05): `prices_source.py` reads the entity and builds the delivered-price vector, verified against the `hass_omie` attribute shape. The 13:45 trigger/retry schedule, the `healthy=off`+static fallback and price archiving remain.*
 
 **Acceptance criteria:**
 - [ ] Trigger at 13:45; retry at 14:15, 15:00, 16:00
@@ -306,6 +326,8 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 ### Task 12: Enable the optimiser
 
 **Description:** Replace the static plan with the greedy, keeping static as fallback.
+
+*Partially delivered early (planning-only mode, 2026-08-05): the advisory capped-greedy plan and `sensor.battery_opt_vs_static` already run as a permanent dry-run. What remains is exactly the actuation swap — executor running the greedy with static fallback — gated on Checkpoint C.*
 
 **Acceptance criteria:**
 - [ ] `sensor.battery_opt_vs_static` publishes the daily forecast gain
