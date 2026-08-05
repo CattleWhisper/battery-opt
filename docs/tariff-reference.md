@@ -86,27 +86,27 @@ Rejected: exposes 46% more consumption to ponta, costing ~€105/year more.
 
 ```python
 # Summer
-assert period(datetime(2026, 7, 15,  9, 14)) == "cheias"   # 1 min before ponta
-assert period(datetime(2026, 7, 15,  9, 15)) == "ponta"    # exact start
-assert period(datetime(2026, 7, 15, 12, 14)) == "ponta"    # 1 min before end
-assert period(datetime(2026, 7, 15, 12, 15)) == "cheias"   # exact end
-assert period(datetime(2026, 7, 15, 19,  0)) == "cheias"   # summer has no evening ponta
-assert period(datetime(2026, 7, 18, 10,  0)) == "cheias"   # Saturday: no ponta
-assert period(datetime(2026, 7, 18, 15,  0)) == "vazio"    # Saturday afternoon
-assert period(datetime(2026, 7, 19, 10,  0)) == "vazio"    # Sunday: all vazio
+assert period(datetime(2026, 7, 15, 9, 14)) == "cheias"  # 1 min before ponta
+assert period(datetime(2026, 7, 15, 9, 15)) == "ponta"  # exact start
+assert period(datetime(2026, 7, 15, 12, 14)) == "ponta"  # 1 min before end
+assert period(datetime(2026, 7, 15, 12, 15)) == "cheias"  # exact end
+assert period(datetime(2026, 7, 15, 19, 0)) == "cheias"  # summer has no evening ponta
+assert period(datetime(2026, 7, 18, 10, 0)) == "cheias"  # Saturday: no ponta
+assert period(datetime(2026, 7, 18, 15, 0)) == "vazio"  # Saturday afternoon
+assert period(datetime(2026, 7, 19, 10, 0)) == "vazio"  # Sunday: all vazio
 
 # Winter
-assert period(datetime(2026, 1, 15,  9, 29)) == "cheias"
-assert period(datetime(2026, 1, 15,  9, 30)) == "ponta"
-assert period(datetime(2026, 1, 15, 12,  0)) == "cheias"
-assert period(datetime(2026, 1, 15, 19,  0)) == "ponta"    # evening ponta
-assert period(datetime(2026, 1, 15, 21,  0)) == "cheias"
-assert period(datetime(2026, 1, 17, 19,  0)) == "cheias"   # Saturday
-assert period(datetime(2026, 1, 18, 19,  0)) == "vazio"    # Sunday
+assert period(datetime(2026, 1, 15, 9, 29)) == "cheias"
+assert period(datetime(2026, 1, 15, 9, 30)) == "ponta"
+assert period(datetime(2026, 1, 15, 12, 0)) == "cheias"
+assert period(datetime(2026, 1, 15, 19, 0)) == "ponta"  # evening ponta
+assert period(datetime(2026, 1, 15, 21, 0)) == "cheias"
+assert period(datetime(2026, 1, 17, 19, 0)) == "cheias"  # Saturday
+assert period(datetime(2026, 1, 18, 19, 0)) == "vazio"  # Sunday
 
 # Season switches
-assert season(date(2026, 3, 28)) == "winter"   # day before
-assert season(date(2026, 3, 29)) == "summer"   # last Sunday of March
+assert season(date(2026, 3, 28)) == "winter"  # day before
+assert season(date(2026, 3, 29)) == "summer"  # last Sunday of March
 assert season(date(2026, 10, 24)) == "summer"
 assert season(date(2026, 10, 25)) == "winter"  # last Sunday of October
 

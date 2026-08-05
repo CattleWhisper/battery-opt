@@ -15,8 +15,9 @@ The calendar is a data structure indexed by effective date, not code:
 ```python
 CALENDARS = [
     (date(2026, 1, 1), CALENDAR_2026),
-    (date(2027, 1, 1), CALENDAR_2027),   # to be filled when ERSE publishes
+    (date(2027, 1, 1), CALENDAR_2027),  # to be filled when ERSE publishes
 ]
+
 
 def period(dt: datetime) -> Period:
     table = _effective_table(dt.date())

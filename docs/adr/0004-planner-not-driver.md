@@ -14,7 +14,8 @@ This integration **never opens a Modbus connection**. It actuates exclusively th
 
 ```python
 await hass.services.async_call(
-    "number", "set_value",
+    "number",
+    "set_value",
     {"entity_id": "number.marstek_charge_power", "value": watts},
 )
 ```

@@ -42,38 +42,38 @@ Portuguese period names (`ponta`, `cheias`, `vazio`) are kept untranslated throu
 
 ```python
 # --- Tariff: EDP Eletricidade Indexada Horária DD+FE ---
-K1      = 1.08          # Indexada Horária. Indexada Média uses 1.10
-K2      = 0.0185        # EUR/kWh
-K3      = 0.1171        # EUR/day - fixed term, not part of the optimisation
-PERDAS  = 0.164         # loss coefficient; on Horária this varies per quarter-hour
+K1 = 1.08  # Indexada Horária. Indexada Média uses 1.10
+K2 = 0.0185  # EUR/kWh
+K3 = 0.1171  # EUR/day - fixed term, not part of the optimisation
+PERDAS = 0.164  # loss coefficient; on Horária this varies per quarter-hour
 
 # --- TAR energia, ERSE 2026, BTN <=20.7 kVA, tri-horária (EUR/kWh) ---
-TAR_PONTA  = 0.2452
+TAR_PONTA = 0.2452
 TAR_CHEIAS = 0.0412
-TAR_VAZIO  = 0.0158
-TAR_POTENCIA = 0.2291   # EUR/day @ 4.6 kVA - constant, outside the optimisation
+TAR_VAZIO = 0.0158
+TAR_POTENCIA = 0.2291  # EUR/day @ 4.6 kVA - constant, outside the optimisation
 
-VAT = 1.23              # uniform multiplier; reporting only
+VAT = 1.23  # uniform multiplier; reporting only
 
 # --- Battery: Marstek Venus E 3.0 ---
-CAP_NOMINAL = 5.12      # kWh
-CAP_USABLE  = 5.00      # kWh
-CAP_MIN     = 1.35      # kWh (27% - reserve floor, zero arbitrage cost)
-P_CHG_MAX   = 2000      # W (limited by margin against contracted power)
-P_DIS_MAX   = 2500      # W
-ETA_RT      = 0.90      # round-trip efficiency
+CAP_NOMINAL = 5.12  # kWh
+CAP_USABLE = 5.00  # kWh
+CAP_MIN = 1.35  # kWh (27% - reserve floor, zero arbitrage cost)
+P_CHG_MAX = 2000  # W (limited by margin against contracted power)
+P_DIS_MAX = 2500  # W
+ETA_RT = 0.90  # round-trip efficiency
 RATED_CYCLES = 6000
-PRICE_PAID  = 1400      # EUR
+PRICE_PAID = 1400  # EUR
 
 # --- Installation ---
-CONTRACTED_VA = 4600    # VA
-P_USABLE      = 4400    # W (200 W margin)
-BASE_LOAD     = 1040    # W - flat 24/7 load (AC + homelab)
-DAILY_KWH     = 24.6
+CONTRACTED_VA = 4600  # VA
+P_USABLE = 4400  # W (200 W margin)
+BASE_LOAD = 1040  # W - flat 24/7 load (AC + homelab)
+DAILY_KWH = 24.6
 
 # --- Solar (if installed) ---
-PANEL_WP      = 460
-ANNUAL_YIELD  = 501     # kWh/year, estimated
+PANEL_WP = 460
+ANNUAL_YIELD = 501  # kWh/year, estimated
 ```
 
 ### Wear cost
