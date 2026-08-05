@@ -71,6 +71,25 @@ def test_simulate_chains_soc_across_days() -> None:
     assert results[1].discharge_kwh > 3.0  # morning ponta served from carryover
 
 
+def test_group_by_local_day_with_shifted_boundary() -> None:
+    """
+    boundary_hour=13 splits planning days at 13:00 local.
+
+    The 12:45 record belongs to the previous planning day; the 13:00
+    record opens a new one. Used to quantify open question #4 (the
+    midnight boundary blocks midday-charge -> next-morning-ponta
+    pairing for the per-day greedy).
+    """
+    records = _day_records(date(2026, 7, 15)) + _day_records(date(2026, 7, 16))
+    groups = group_by_local_day(records, boundary_hour=13)
+    # Three planning days: [.., 15th 13:00), [15th 13:00, 16th 13:00), [16th 13:00, ..)
+    assert sorted(groups) == [date(2026, 7, 14), date(2026, 7, 15), date(2026, 7, 16)]
+    middle = groups[date(2026, 7, 15)]
+    assert len(middle) == 96
+    assert middle[0].start.hour == 13
+    assert middle[-1].start.hour == 12
+
+
 def test_simulate_handles_negative_prices() -> None:
     """A day with negative OMIE flows through with no special-casing."""
     day = date(2026, 4, 15)  # Wednesday

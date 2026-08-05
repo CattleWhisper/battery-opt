@@ -115,6 +115,90 @@ exact reference matches above also confirm the column-order assumption
 
 ---
 
+## Task 6 — Backtest results and Checkpoint B numbers (2026-08-05)
+
+Method: `backtest/run.py` replays each strategy over the 11
+quarter-hourly months (Oct 1 2025 – Aug 6 2026, 310 days), chaining
+each day's ending SoC into the next start. Cost accounting is the
+core evaluator; every daily plan is re-validated against C-1..C-7.
+Annual figures are season-weighted (154 winter / 211 summer days),
+include VAT where stated, and are net of the €0.020/kWh wear cost.
+Flat 1,040 W load, no solar, both strategies at default parameters
+unless noted. Sep-2025 (hourly-only data) is reported separately.
+
+| Configuration | Saving €/yr incl. VAT | Cycles/yr |
+|---|---|---|
+| Static, 5 kWh | **196.10** | 179 |
+| Greedy, 5 kWh | **326.73** | 417 |
+| Greedy, 10 kWh | 437.37 | 350 (of 10 kWh) |
+| Greedy, Média billing (K₁ 1.10) | 229.05 | 254 |
+| Greedy, hourly-degraded prices | 319.73 | 421 |
+| Greedy, 13:00 planning boundary | 331.68 | 354 |
+
+### The four Checkpoint B answers
+
+1. **Dynamic vs static: +€130.64/yr** (326.73 vs 196.10) — 4.4× the
+   €30 go/no-go threshold. Robust to wear: the gain is €161.28 at
+   wear 0, €130.64 at 0.020, €96.90 at the €0.0467 maximum.
+2. **Second unit: +€110.64/yr** (437.37 vs 326.73) — above the €100
+   reconsideration threshold, well above the docs' ~€45 estimate.
+   Drivers: winter weekdays demand 5.2 kWh of ponta but one unit
+   delivers only 3.46 past the floor, and the larger unit also runs
+   more cheias arbitrage. At ~€1,400 the payback is ~12.7 years.
+3. **Horária vs Média: Horária wins by €135.40/yr** billed
+   (1,482.98 vs 1,618.38). Under Média the dynamic-vs-static gain
+   collapses to €55.65 — intra-period selection is most of the
+   dynamic edge, and Média bills it away. Confirms the tariff choice.
+4. **Switch when the 35% promo expires: yes by these numbers —
+   €263.36/yr** (billed 1,482.98 on Horária+greedy vs 1,746.34 on
+   Simples-15) vs the ~€183 estimate in CONTEXT.md. Above the €100
+   threshold. On Simples-15 the battery must idle: running the
+   static schedule anyway would *lose* €38.43/yr (wear + round-trip
+   losses at a flat price). Caveat: the Simples-15 run assumes the
+   same daily fixed terms as the indexed tariff, so the comparison
+   is the energy component only.
+
+### Flags for the human review
+
+- **Cheias cycling (spec §11 "ask first").** The greedy runs 417
+  cycles/yr vs the static's 179 — much of the dynamic gain comes
+  from extra low-margin cycles into cheias, each clearing the C-8
+  bar net of wear. Cycle life at 6,000 rated: ~14 years (greedy) vs
+  ~34 (static); the 10-year warranty still binds first, and wear is
+  priced into every figure above. This behaviour needs an explicit
+  blessing before Phase 2 enables it in production.
+- **The ~€267 static reference is superseded: measured €196.10.**
+  Causes, in order: the docs assumed 100% ponta coverage but winter
+  weekdays demand 5.2 kWh against 3.46 deliverable (67%); wear was
+  not netted (~€21/yr at 0.020); the MA30 seasonal misalignment.
+  `CONTEXT.md` §Reference figures and `docs/plan.md` Task 5/6 lines
+  (~€267, €300–345 dynamic, ~€45 second unit) need updating —
+  **pending owner confirmation, not edited**.
+- Dynamic €326.73 lands inside the docs' €300–345 target band.
+
+### Side measurements
+
+- **Quarter-hourly resolution is worth ~€7.00/yr** (326.73 native vs
+  319.73 with prices degraded to hourly means). Sep-2025 being
+  hourly-only is therefore immaterial; hourly fallbacks in
+  production would cost ~2% of the saving.
+- **Sep-2025 (hourly data, separate):** greedy €0.70/day vs static
+  €0.39/day excl. VAT — consistent with the main window's ratio.
+- **Day boundary (open question #4): not material.** Re-planning on
+  a 13:00–13:00 window (letting the greedy pair the midday trough
+  with next morning's ponta) adds €4.95/yr (+1.5%) and cuts cycles
+  from 417 to 354. The midnight boundary with SoC chaining is fine
+  for v1; a 48 h horizon is an efficiency refinement, not a
+  materially different answer.
+- Wear sensitivity (greedy, 5 kWh): €378.22 / €326.73 / €265.17 at
+  wear 0 / 0.020 / 0.0467 — cycling volume responds (471/417/375),
+  the decision does not.
+
+Per-day CSVs for these runs are under `backtest/data/results/`
+(gitignored; regenerate with the commands in `backtest/run.py`).
+
+---
+
 ## Negative OMIE prices
 
 Delivered price = OMIE/1000 × 1.164 × 1.08 + 0.0185 + TAR. K2 and TAR are added

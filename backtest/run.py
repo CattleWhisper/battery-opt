@@ -36,7 +36,7 @@ import dataclasses
 import sys
 import time
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -132,11 +132,22 @@ def simples_15_price_model() -> PriceModel:
     return model
 
 
-def group_by_local_day(records: list[PriceRecord]) -> dict[date, list[PriceRecord]]:
-    """Bucket records by Lisbon-local date, sorted within each day."""
+def group_by_local_day(
+    records: list[PriceRecord],
+    boundary_hour: int = 0,
+) -> dict[date, list[PriceRecord]]:
+    """
+    Bucket records by Lisbon-local planning day, sorted within each.
+
+    `boundary_hour` shifts where the planning day starts (13 = plan
+    13:00-to-13:00): used to quantify open question #4, since the
+    per-day greedy cannot pair yesterday's midday trough with this
+    morning's ponta across a midnight boundary. The bucket key is the
+    date on which the planning day STARTS.
+    """
     groups: dict[date, list[PriceRecord]] = defaultdict(list)
     for record in records:
-        groups[record.start.date()].append(record)
+        groups[(record.start - timedelta(hours=boundary_hour)).date()].append(record)
     return {
         day: sorted(day_records, key=lambda r: r.start)
         for day, day_records in groups.items()
@@ -277,6 +288,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--csv", type=Path, default=None, help="write per-day rows to this path"
     )
+    parser.add_argument(
+        "--day-boundary-hour",
+        type=int,
+        default=0,
+        help="planning-day start hour (open question #4); greedy only",
+    )
     return parser
 
 
@@ -292,10 +309,16 @@ def _price_model_from_args(
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one backtest configuration and print the annual summary."""
-    args = _build_arg_parser().parse_args(argv)
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.day_boundary_hour and args.strategy == "static":
+        parser.error(
+            "--day-boundary-hour applies to the greedy only; "
+            "the static schedule is calendar-day-indexed"
+        )
     started = time.monotonic()
     records = load_series(DATA_DIR, args.start, args.end)
-    groups = group_by_local_day(records)
+    groups = group_by_local_day(records, args.day_boundary_hour)
     days = [
         (day, groups[day]) for day in sorted(groups) if args.start <= day <= args.end
     ]
@@ -304,8 +327,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     params = BatteryParams(cap_usable_kwh=args.cap, wear_cost_eur_kwh=args.wear)
     model = _price_model_from_args(args, records)
     results = simulate(days, args.strategy, params, model)
+    # The static comparison only makes sense on calendar days: the
+    # static schedule is day-indexed, so shifted planning windows
+    # would feed it garbage.
     static_results = (
-        simulate(days, "static", params, model) if args.strategy == "greedy" else None
+        simulate(days, "static", params, model)
+        if args.strategy == "greedy" and not args.day_boundary_hour
+        else None
     )
     annual = annualize(results, params)
     print(
