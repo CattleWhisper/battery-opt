@@ -27,9 +27,10 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_CAPACITY_KWH,
+    CONF_CHARGE_POWER_NUMBER,
+    CONF_DISCHARGE_POWER_NUMBER,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
-    CONF_POWER_NUMBER,
     CONF_PRICE_SENSOR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_SOC_SENSOR,
@@ -90,7 +91,8 @@ def _parameter_schema(defaults: dict[str, Any]) -> dict[vol.Marker, Any]:
 _USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_MODE_SELECT): _entity("select"),
-        vol.Required(CONF_POWER_NUMBER): _entity("number"),
+        vol.Required(CONF_CHARGE_POWER_NUMBER): _entity("number"),
+        vol.Required(CONF_DISCHARGE_POWER_NUMBER): _entity("number"),
         vol.Required(CONF_SOC_SENSOR): _entity("sensor"),
         vol.Required(CONF_PRICE_SENSOR): _entity("sensor"),
         **_parameter_schema({}),

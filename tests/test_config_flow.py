@@ -19,9 +19,10 @@ if TYPE_CHECKING:
 
 from custom_components.battery_opt.const import (
     CONF_CAPACITY_KWH,
+    CONF_CHARGE_POWER_NUMBER,
+    CONF_DISCHARGE_POWER_NUMBER,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
-    CONF_POWER_NUMBER,
     CONF_PRICE_SENSOR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_SOC_SENSOR,
@@ -30,8 +31,9 @@ from custom_components.battery_opt.const import (
 )
 
 VALID_INPUT = {
-    CONF_MODE_SELECT: "select.marstek_mode",
-    CONF_POWER_NUMBER: "number.marstek_power",
+    CONF_MODE_SELECT: "select.marstek_force_mode",
+    CONF_CHARGE_POWER_NUMBER: "number.marstek_set_charge_power",
+    CONF_DISCHARGE_POWER_NUMBER: "number.marstek_set_discharge_power",
     CONF_SOC_SENSOR: "sensor.marstek_soc",
     CONF_PRICE_SENSOR: "sensor.omie_spot_price",
     CONF_CAPACITY_KWH: 5.0,

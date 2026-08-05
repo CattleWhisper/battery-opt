@@ -30,14 +30,15 @@ Mode = Literal["charge", "discharge", "idle"]
 
 MAX_CONSECUTIVE_FAILURES = 3
 
-# Select-option labels on the marstek_venus_modbus mode entity.
-# Placeholder mapping — verify against the real integration during the
-# Task 7 manual test (force 500 W charge, confirm on the device) and
-# make it configurable in the config flow if the labels differ.
+# Option labels of the `force_mode` select (register 42010), verified
+# against ViperRNMC/marstek_venus_modbus registers/e_v3.yaml — the
+# select entity exposes the YAML keys verbatim. Note: force_mode and
+# the set_(dis)charge_power numbers ship disabled by default in that
+# integration; the user must enable them in HA before setup.
 DEFAULT_MODE_OPTIONS: dict[Mode, str] = {
-    "charge": "Charge",
-    "discharge": "Discharge",
-    "idle": "Stop",
+    "charge": "charge",
+    "discharge": "discharge",
+    "idle": "standby",
 }
 
 _BAD_STATES = frozenset({"unavailable", "unknown", "none", ""})
@@ -53,23 +54,33 @@ class DriverUnavailableError(DriverError):
 
 @dataclass(frozen=True)
 class MarstekEntities:
-    """Entity ids of the marstek_venus_modbus integration, user-chosen."""
+    """
+    Entity ids of the marstek_modbus integration, user-chosen.
+
+    The device exposes separate charge and discharge power registers
+    (42020 / 42021, both 0-2500 W), hence two number entities.
+    """
 
     mode_select: str
-    power_number: str
+    charge_power_number: str
+    discharge_power_number: str
     soc_sensor: str
 
 
 class BatteryDriver(ABC):
-    """What the executor needs from a battery: mode, power, SoC."""
+    """What the executor needs from a battery: mode, powers, SoC."""
 
     @abstractmethod
     async def set_mode(self, mode: Mode) -> None:
         """Switch the battery between charge, discharge and idle."""
 
     @abstractmethod
-    async def set_power(self, watts: float) -> None:
-        """Set the active power setpoint in W."""
+    async def set_charge_power(self, watts: float) -> None:
+        """Set the charge power setpoint in W."""
+
+    @abstractmethod
+    async def set_discharge_power(self, watts: float) -> None:
+        """Set the discharge power setpoint in W."""
 
     @abstractmethod
     async def read_soc(self) -> float:
@@ -119,12 +130,20 @@ class MarstekDriver(BatteryDriver):
             },
         )
 
-    async def set_power(self, watts: float) -> None:
-        """Set the W setpoint via number.set_value on the power entity."""
+    async def set_charge_power(self, watts: float) -> None:
+        """Set the charge W setpoint via number.set_value."""
         await self._call(
             "number",
             "set_value",
-            {"entity_id": self._entities.power_number, "value": watts},
+            {"entity_id": self._entities.charge_power_number, "value": watts},
+        )
+
+    async def set_discharge_power(self, watts: float) -> None:
+        """Set the discharge W setpoint via number.set_value."""
+        await self._call(
+            "number",
+            "set_value",
+            {"entity_id": self._entities.discharge_power_number, "value": watts},
         )
 
     async def read_soc(self) -> float:
@@ -152,9 +171,13 @@ class FakeDriver(BatteryDriver):
         """Record the mode change."""
         self.calls.append(("set_mode", mode))
 
-    async def set_power(self, watts: float) -> None:
-        """Record the power setpoint."""
-        self.calls.append(("set_power", watts))
+    async def set_charge_power(self, watts: float) -> None:
+        """Record the charge setpoint."""
+        self.calls.append(("set_charge_power", watts))
+
+    async def set_discharge_power(self, watts: float) -> None:
+        """Record the discharge setpoint."""
+        self.calls.append(("set_discharge_power", watts))
 
     async def read_soc(self) -> float:
         """Record the read and return the configured SoC."""

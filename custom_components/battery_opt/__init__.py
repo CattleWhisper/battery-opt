@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .const import CONF_MODE_SELECT, CONF_POWER_NUMBER, CONF_SOC_SENSOR
+from .const import (
+    CONF_CHARGE_POWER_NUMBER,
+    CONF_DISCHARGE_POWER_NUMBER,
+    CONF_MODE_SELECT,
+    CONF_SOC_SENSOR,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -39,7 +44,8 @@ async def async_setup_entry(
 
     entities = MarstekEntities(
         mode_select=entry.data[CONF_MODE_SELECT],
-        power_number=entry.data[CONF_POWER_NUMBER],
+        charge_power_number=entry.data[CONF_CHARGE_POWER_NUMBER],
+        discharge_power_number=entry.data[CONF_DISCHARGE_POWER_NUMBER],
         soc_sensor=entry.data[CONF_SOC_SENSOR],
     )
     driver = MarstekDriver(hass, entities)

@@ -2,10 +2,16 @@
 Tests for the battery driver (custom_components/battery_opt/driver.py).
 
 ADR-0004: the integration never opens Modbus; every write goes through
-hass.services.async_call against marstek_venus_modbus entities. The
-hass object is duck-typed, so these tests run without homeassistant
+hass.services.async_call against marstek_modbus entities. The hass
+object is duck-typed, so these tests run without homeassistant
 installed — a stub records the calls the real driver makes, and the
 FakeDriver stands in for the executor tests of Task 9.
+
+Entity surface verified against ViperRNMC/marstek_venus_modbus
+(registers/e_v3.yaml): mode is the `force_mode` select with options
+"standby"/"charge"/"discharge" (the YAML keys verbatim — select.py
+exposes them unmodified), and power is TWO number entities,
+`set_charge_power` and `set_discharge_power` (0-2500 W).
 """
 
 import asyncio
@@ -22,9 +28,10 @@ from custom_components.battery_opt.driver import (
 )
 
 ENTITIES = MarstekEntities(
-    mode_select="select.marstek_mode",
-    power_number="number.marstek_power",
-    soc_sensor="sensor.marstek_soc",
+    mode_select="select.marstek_force_mode",
+    charge_power_number="number.marstek_set_charge_power",
+    discharge_power_number="number.marstek_set_discharge_power",
+    soc_sensor="sensor.marstek_battery_soc",
 )
 
 
@@ -65,25 +72,48 @@ def _hass(
     return SimpleNamespace(services=StubServices(), states=StubStates(soc_state))
 
 
-def test_set_power_calls_number_set_value() -> None:
-    """Writes go through number.set_value on the configured entity."""
+def test_set_charge_power_targets_the_charge_entity() -> None:
+    """Charge setpoints go to set_charge_power via number.set_value."""
     hass = _hass()
     driver = MarstekDriver(hass, ENTITIES)
-    asyncio.run(driver.set_power(500.0))
+    asyncio.run(driver.set_charge_power(500.0))
     assert hass.services.calls == [
-        ("number", "set_value", {"entity_id": "number.marstek_power", "value": 500.0})
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.marstek_set_charge_power", "value": 500.0},
+        )
     ]
 
 
-def test_set_mode_calls_select_option() -> None:
-    """Mode changes go through select.select_option with mapped labels."""
+def test_set_discharge_power_targets_the_discharge_entity() -> None:
+    """Discharge setpoints go to set_discharge_power."""
+    hass = _hass()
+    driver = MarstekDriver(hass, ENTITIES)
+    asyncio.run(driver.set_discharge_power(1040.0))
+    assert hass.services.calls == [
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.marstek_set_discharge_power", "value": 1040.0},
+        )
+    ]
+
+
+def test_set_mode_uses_the_force_mode_option_labels() -> None:
+    """Options are the e_v3.yaml keys: charge/discharge/standby."""
     hass = _hass()
     driver = MarstekDriver(hass, ENTITIES)
     asyncio.run(driver.set_mode("charge"))
-    domain, service, data = hass.services.calls[0]
-    assert (domain, service) == ("select", "select_option")
-    assert data["entity_id"] == "select.marstek_mode"
-    assert data["option"]  # mapped label, verified on-device in Task 8
+    asyncio.run(driver.set_mode("discharge"))
+    asyncio.run(driver.set_mode("idle"))
+    options = [data["option"] for _, _, data in hass.services.calls]
+    assert options == ["charge", "discharge", "standby"]
+    assert all(
+        (domain, service) == ("select", "select_option")
+        and data["entity_id"] == "select.marstek_force_mode"
+        for domain, service, data in hass.services.calls
+    )
 
 
 def test_read_soc_parses_the_sensor_state() -> None:
@@ -109,10 +139,10 @@ def test_three_consecutive_failures_raise_unavailable() -> None:
     driver = MarstekDriver(hass, ENTITIES)
     for _ in range(2):
         with pytest.raises(DriverError) as err:
-            asyncio.run(driver.set_power(500.0))
+            asyncio.run(driver.set_charge_power(500.0))
         assert not isinstance(err.value, DriverUnavailableError)
     with pytest.raises(DriverUnavailableError):
-        asyncio.run(driver.set_power(500.0))
+        asyncio.run(driver.set_charge_power(500.0))
 
 
 def test_success_resets_the_failure_counter() -> None:
@@ -123,8 +153,8 @@ def test_success_resets_the_failure_counter() -> None:
         hass.services.fail_next = fail_batch
         for _ in range(fail_batch):
             with pytest.raises(DriverError):
-                asyncio.run(driver.set_power(500.0))
-        asyncio.run(driver.set_power(500.0))  # success resets
+                asyncio.run(driver.set_charge_power(500.0))
+        asyncio.run(driver.set_charge_power(500.0))  # success resets
     assert len(hass.services.calls) == 2
 
 
@@ -133,7 +163,7 @@ def test_fake_driver_records_the_call_sequence() -> None:
 
     async def scenario(driver: FakeDriver) -> float:
         await driver.set_mode("charge")
-        await driver.set_power(2000.0)
+        await driver.set_charge_power(2000.0)
         await driver.set_mode("idle")
         return await driver.read_soc()
 
@@ -141,7 +171,7 @@ def test_fake_driver_records_the_call_sequence() -> None:
     soc = asyncio.run(scenario(fake))
     assert fake.calls == [
         ("set_mode", "charge"),
-        ("set_power", 2000.0),
+        ("set_charge_power", 2000.0),
         ("set_mode", "idle"),
         ("read_soc", None),
     ]

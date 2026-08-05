@@ -10,7 +10,8 @@ plan-wear 0.0467 is the chosen cheias-cycling cap.
 DOMAIN = "battery_opt"
 
 CONF_MODE_SELECT = "mode_select"
-CONF_POWER_NUMBER = "power_number"
+CONF_CHARGE_POWER_NUMBER = "charge_power_number"
+CONF_DISCHARGE_POWER_NUMBER = "discharge_power_number"
 CONF_SOC_SENSOR = "soc_sensor"
 CONF_PRICE_SENSOR = "price_sensor"
 CONF_CAPACITY_KWH = "capacity_kwh"
