@@ -60,6 +60,12 @@ def test_winter_weekday_boundaries() -> None:
     assert period(datetime(2026, 1, 15, 21, 0)) == "cheias"
 
 
+def test_winter_evening_ponta_start_boundary() -> None:
+    """The 18:30 boundary, minute-exact (Checkpoint A criterion)."""
+    assert period(datetime(2026, 1, 15, 18, 29)) == "cheias"  # 1 min before
+    assert period(datetime(2026, 1, 15, 18, 30)) == "ponta"  # exact start
+
+
 def test_winter_weekend() -> None:
     """Winter Saturday has no ponta; Sunday is entirely vazio."""
     assert period(datetime(2026, 1, 17, 19, 0)) == "cheias"  # Saturday
