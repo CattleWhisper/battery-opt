@@ -216,6 +216,40 @@ async def test_flow_rejects_a_non_omie_price_sensor(hass: HomeAssistant) -> None
     assert result["errors"] == {CONF_PRICE_SENSOR: "price_sensor_not_omie"}
 
 
+async def test_flow_accepts_a_warming_up_omie_sensor(hass: HomeAssistant) -> None:
+    """
+    An OMIE sensor without data yet (attributes None) is accepted.
+
+    hass_omie clears its attributes until both today's and yesterday's
+    prices are in, but its EUR/MWh unit exists from birth — that is
+    the discriminator against a genuinely wrong sensor.
+    """
+    hass.states.async_set(
+        "sensor.omie_portugal_spot_price",
+        "unknown",
+        attributes={"unit_of_measurement": "€/MWh"},
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_PRICE_SENSOR: "sensor.omie_portugal_spot_price",
+            **{
+                key: VALID_INPUT[key]
+                for key in (
+                    CONF_CAPACITY_KWH,
+                    CONF_RESERVE_FLOOR_PCT,
+                    CONF_WEAR_COST,
+                    CONF_PLAN_WEAR,
+                )
+            },
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
 async def test_options_flow_can_fix_the_price_sensor(hass: HomeAssistant) -> None:
     """Re-pointing the price entity via options reloads and takes effect."""
     hass.states.async_set("sensor.omie_correct", "60.0", attributes=_omie_attributes())
@@ -235,6 +269,120 @@ async def test_options_flow_can_fix_the_price_sensor(hass: HomeAssistant) -> Non
     # The entry reloaded with the new sensor: plan computed.
     assert entry.runtime_data.coordinator.data["prices_ok"] is True
     assert hass.states.get("binary_sensor.battery_opt_healthy").state == "on"
+
+
+def _register_core_omie_service(hass: HomeAssistant, days_available: int = 2) -> None:
+    """Stub HA core's omie.get_prices_for_date service."""
+    from datetime import date  # noqa: PLC0415
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    from homeassistant.core import ServiceCall, SupportsResponse  # noqa: PLC0415
+    from homeassistant.exceptions import ServiceValidationError  # noqa: PLC0415
+    from homeassistant.util import dt as dt_util  # noqa: PLC0415
+
+    cet = ZoneInfo("Europe/Madrid")
+    first_served = dt_util.now().date()
+
+    async def handler(call: ServiceCall) -> dict:
+        market_date = call.data["date"]
+        if isinstance(market_date, str):
+            market_date = date.fromisoformat(market_date)
+        if (market_date - first_served).days >= days_available:
+            msg = "data_not_available"
+            raise ServiceValidationError(msg)
+        midnight = datetime(
+            market_date.year, market_date.month, market_date.day, tzinfo=cet
+        )
+        return {
+            "PT": [
+                {
+                    "start": (midnight + timedelta(minutes=15 * i)).isoformat(),
+                    "end": (midnight + timedelta(minutes=15 * (i + 1))).isoformat(),
+                    "price": 0.06,
+                }
+                for i in range(96)
+            ]
+        }
+
+    hass.services.async_register(
+        "omie",
+        "get_prices_for_date",
+        handler,
+        supports_response=SupportsResponse.ONLY,
+    )
+
+
+async def test_planning_only_with_core_omie_service(hass: HomeAssistant) -> None:
+    """HA core OMIE: EUR/kWh sensor, day series via the service."""
+    _register_core_omie_service(hass)
+    hass.states.async_set(
+        "sensor.omie_portugal_spot_price",
+        "0.18264",
+        attributes={
+            "state_class": "measurement",
+            "unit_of_measurement": "€/kWh",
+            "attribution": "Data provided by OMIE.es",
+            "friendly_name": "OMIE Portugal spot price",
+        },
+    )
+    data = {CONF_PRICE_SENSOR: "sensor.omie_portugal_spot_price"}
+    entry = MockConfigEntry(domain=DOMAIN, data=data)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data.coordinator
+    assert coordinator.data["prices_ok"] is True
+    assert coordinator.data["prices_padded"] is False
+    assert len(coordinator.data["plan_charge_w"]) == 96
+    assert hass.states.get("binary_sensor.battery_opt_healthy").state == "on"
+
+
+async def test_core_omie_pads_before_tomorrow_publishes(hass: HomeAssistant) -> None:
+    """Only market date D available: the final hour pads, flagged."""
+    _register_core_omie_service(hass, days_available=1)
+    hass.states.async_set(
+        "sensor.omie_portugal_spot_price",
+        "0.18",
+        attributes={"unit_of_measurement": "€/kWh"},
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_PRICE_SENSOR: "sensor.omie_portugal_spot_price"}
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data.coordinator
+    assert coordinator.data["prices_ok"] is True
+    assert coordinator.data["prices_padded"] is True
+
+
+async def test_flow_accepts_core_omie_kwh_sensor(hass: HomeAssistant) -> None:
+    """With the core service registered, the EUR/kWh sensor validates."""
+    _register_core_omie_service(hass)
+    hass.states.async_set(
+        "sensor.omie_portugal_spot_price",
+        "0.18264",
+        attributes={"unit_of_measurement": "€/kWh"},
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_PRICE_SENSOR: "sensor.omie_portugal_spot_price",
+            **{
+                key: VALID_INPUT[key]
+                for key in (
+                    CONF_CAPACITY_KWH,
+                    CONF_RESERVE_FLOOR_PCT,
+                    CONF_WEAR_COST,
+                    CONF_PLAN_WEAR,
+                )
+            },
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_flow_rejects_partial_battery_entities(hass: HomeAssistant) -> None:

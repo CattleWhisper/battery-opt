@@ -90,6 +90,7 @@ class PlanSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
             "charge_w": data.get("plan_charge_w"),
             "discharge_w": data.get("plan_discharge_w"),
             "prices_ok": data.get("prices_ok"),
+            "prices_padded": data.get("prices_padded"),
         }
         if self._executor is not None:
             attributes["executor_status"] = self._executor.status

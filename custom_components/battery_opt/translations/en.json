@@ -19,7 +19,7 @@
     },
     "error": {
       "battery_entities_all_or_none": "Provide all four battery entities, or none of them (planning-only mode until the battery arrives).",
-      "price_sensor_not_omie": "This sensor does not look like an OMIE spot-price sensor (missing today_hours/tomorrow_hours attributes). Pick the hass_omie spot sensor - or, if OMIE just started, wait a minute for its data and retry."
+      "price_sensor_not_omie": "This sensor does not look like an OMIE spot-price sensor. Pick the OMIE Portugal spot price sensor from the core OMIE integration, or the hass_omie spot sensor. If OMIE just started, wait a minute for its data and retry."
     }
   },
   "options": {
@@ -42,7 +42,7 @@
     },
     "error": {
       "battery_entities_all_or_none": "Provide all four battery entities, or none of them (planning-only mode until the battery arrives).",
-      "price_sensor_not_omie": "This sensor does not look like an OMIE spot-price sensor (missing today_hours/tomorrow_hours attributes). Pick the hass_omie spot sensor - or, if OMIE just started, wait a minute for its data and retry."
+      "price_sensor_not_omie": "This sensor does not look like an OMIE spot-price sensor. Pick the OMIE Portugal spot price sensor from the core OMIE integration, or the hass_omie spot sensor. If OMIE just started, wait a minute for its data and retry."
     }
   }
 }

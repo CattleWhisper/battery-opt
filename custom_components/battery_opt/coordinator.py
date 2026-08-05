@@ -25,6 +25,7 @@ import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -49,7 +50,12 @@ from .core.optimiser import solve
 from .core.plan import BatteryParams, saving_vs_no_cycling, validate_plan
 from .core.static_schedule import static_plan
 from .driver import DriverError
-from .prices_source import day_price_vector
+from .prices_source import day_price_vector, day_price_vector_from_service
+
+# HA core's OMIE integration exposes the day-ahead series through this
+# service (sensors carry only the current price).
+OMIE_SERVICE_DOMAIN = "omie"
+OMIE_SERVICE_GET_PRICES = "get_prices_for_date"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,15 +120,55 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise UpdateFailed(msg) from err
             data["soc_percent"] = soc_percent
             data["soc_kwh"] = soc_percent / 100.0 * params.cap_usable_kwh
-        data.update(self._advisory_plan(params, data["soc_kwh"]))
+        prices, padded = await self._today_prices()
+        data.update(self._advisory_plan(params, data["soc_kwh"], prices))
+        data["prices_padded"] = padded
         return data
+
+    async def _today_prices(self) -> tuple[list[float] | None, bool]:
+        """
+        Today's delivered price vector from whichever OMIE exists.
+
+        Tries the hass_omie attribute shape on the configured sensor
+        first, then HA core's `omie.get_prices_for_date` service
+        (which needs market dates D and D+1 to cover a Lisbon day; a
+        missing D+1 pads the final hour, flagged in the return).
+        """
+        merged = {**self.entry.data, **self.entry.options}
+        today = dt_util.now().date()
+        price_state = self.hass.states.get(merged[CONF_PRICE_SENSOR])
+        if price_state is not None:
+            vector = day_price_vector(price_state.attributes, today)
+            if vector is not None:
+                return vector, False
+        if self.hass.services.has_service(OMIE_SERVICE_DOMAIN, OMIE_SERVICE_GET_PRICES):
+            entries: list[dict[str, Any]] = []
+            for offset in (0, 1):
+                market_date = today + timedelta(days=offset)
+                try:
+                    response = await self.hass.services.async_call(
+                        OMIE_SERVICE_DOMAIN,
+                        OMIE_SERVICE_GET_PRICES,
+                        {"date": market_date.isoformat(), "countries": ["PT"]},
+                        blocking=True,
+                        return_response=True,
+                    )
+                except HomeAssistantError as err:
+                    # D+1 is simply not published before ~13:30 CET.
+                    _LOGGER.debug("OMIE prices for %s: %s", market_date, err)
+                    continue
+                entries.extend((response or {}).get("PT", []))
+            if entries:
+                return day_price_vector_from_service(today, entries)
+        return None, False
 
     def _advisory_plan(
         self,
         params: BatteryParams,
         soc_kwh: float | None,
+        prices: list[float] | None,
     ) -> dict[str, Any]:
-        """Compute today's capped-greedy plan from the OMIE sensor."""
+        """Compute today's capped-greedy plan from the price vector."""
         empty = {
             "prices_ok": False,
             "plan_date": None,
@@ -131,12 +177,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "forecast_saving_eur": None,
             "vs_static_eur": None,
         }
-        merged = {**self.entry.data, **self.entry.options}
-        price_state = self.hass.states.get(merged[CONF_PRICE_SENSOR])
-        if price_state is None:
-            return empty
         today = dt_util.now().date()
-        prices = day_price_vector(price_state.attributes, today)
         if prices is None:
             return empty
         n = len(prices)

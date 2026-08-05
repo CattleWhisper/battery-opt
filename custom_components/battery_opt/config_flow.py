@@ -135,13 +135,24 @@ def _validate(hass: Any, merged: dict[str, Any]) -> dict[str, str]:
         errors["base"] = "battery_entities_all_or_none"
         return errors
     state = hass.states.get(merged[CONF_PRICE_SENSOR])
-    if state is not None and not any(
-        key in state.attributes for key in ("today_hours", "tomorrow_hours")
-    ):
-        # An OMIE (hass_omie) spot sensor carries these attributes once
-        # it has data. A freshly-started OMIE sensor briefly lacks them
-        # too — retry in a minute in that case.
-        errors[CONF_PRICE_SENSOR] = "price_sensor_not_omie"
+    if state is not None:
+        # An OMIE (hass_omie) spot sensor carries today_hours /
+        # tomorrow_hours once it has data — but sets attributes to
+        # None until BOTH today's and yesterday's prices are fetched,
+        # so a warming-up sensor has none of them. Its EUR/MWh unit is
+        # set from birth though, which separates it from a genuinely
+        # wrong pick (kWh sensors, power sensors, ...).
+        attributes = state.attributes
+        has_omie_keys = any(
+            key in attributes for key in ("today_hours", "tomorrow_hours")
+        )
+        unit = str(attributes.get("unit_of_measurement", ""))
+        # HA core's omie integration: EUR/kWh sensors, day series via
+        # the get_prices_for_date service.
+        core_omie = hass.services.has_service("omie", "get_prices_for_date")
+        unit_ok = "MWh" in unit or (core_omie and "kWh" in unit)
+        if not has_omie_keys and not unit_ok:
+            errors[CONF_PRICE_SENSOR] = "price_sensor_not_omie"
     return errors
 
 
