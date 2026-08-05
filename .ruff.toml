@@ -19,7 +19,8 @@ ignore = [
 # S101: pytest tests use bare assert. PLR2004: the tariff tables ARE magic
 # numbers — naming each would obscure the cross-check against the docs.
 # DTZ001: naive datetimes are the calendar API contract (local legal time).
-"tests/**" = ["S101", "PLR2004", "DTZ001"]
+# S311: property tests use seeded pseudo-random days; nothing cryptographic.
+"tests/**" = ["S101", "PLR2004", "DTZ001", "S311"]
 "backtest/**" = ["T201", "PLR2004", "DTZ001"]
 
 [lint.flake8-pytest-style]

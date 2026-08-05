@@ -1,0 +1,96 @@
+"""
+Static seasonal schedule — the reference baseline and production fallback.
+
+Consults no prices. The rules, from docs/plan.md Task 5:
+
+- charge in vazio (the 00:00-07:00 stretch) November-April, and at
+  midday (13:00-17:00) May-October — the seasonal inversion follows
+  the month, matching the docs' wording "vazio Nov-Apr, midday May-Oct";
+- discharge during ponta at the net load (zero-export), while energy
+  above the reserve floor remains;
+- days without ponta under the weekly cycle (Saturday, Sunday) do
+  nothing: charging into a day with no discharge window would strand
+  the energy.
+
+Single-day semantics: the plan starts at params.start_soc_kwh. The
+summer schedule charges at midday AFTER the morning ponta, so its
+steady state relies on multi-day chaining (end SoC feeding the next
+day's start) — that is Task 6's job; here a summer day starting at the
+floor simply cannot serve its morning ponta. Intervals are indexed
+from local midnight at params.interval_hours; DST switch days are
+Sundays (no-op days), so the 92/100-interval irregularity never
+intersects a charging or discharging window.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
+
+from .calendar import CALENDARS, Calendars, period
+from .plan import BatteryParams, Plan
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from datetime import date
+
+# Months whose charging window is overnight vazio; the rest use midday.
+VAZIO_CHARGE_MONTHS = frozenset({11, 12, 1, 2, 3, 4})
+MIDDAY_CHARGE_START_H = 13.0
+MIDDAY_CHARGE_END_H = 17.0
+OVERNIGHT_END_H = 7.0
+
+_SATURDAY = 5
+
+
+def static_plan(
+    day: date,
+    load_w: Sequence[float],
+    solar_w: Sequence[float],
+    params: BatteryParams,
+    calendars: Calendars = CALENDARS,
+) -> Plan:
+    """Build the fixed seasonal plan for one day. No prices consulted."""
+    n = len(load_w)
+    dt = params.interval_hours
+    eta = params.eta_one_way
+    charge = [0.0] * n
+    discharge = [0.0] * n
+
+    if day.weekday() >= _SATURDAY:  # no ponta on Sat/Sun: do nothing
+        return Plan(charge_w=tuple(charge), discharge_w=tuple(discharge))
+
+    charge_overnight = day.month in VAZIO_CHARGE_MONTHS
+    soc = params.start_soc_kwh
+    for i in range(n):
+        hour = i * dt
+        # Naive = Portugal legal time, the calendar API contract.
+        when = datetime(day.year, day.month, day.day) + timedelta(  # noqa: DTZ001
+            hours=hour
+        )
+        interval_period = period(when, calendars)
+
+        if interval_period == "ponta":
+            net_load = max(0.0, load_w[i] - solar_w[i])
+            available_kwh = max(0.0, soc - params.cap_min_kwh) * eta
+            discharge[i] = min(
+                params.p_discharge_max_w, net_load, available_kwh / dt * 1000
+            )
+            soc -= discharge[i] * dt / 1000 / eta
+            continue
+
+        in_window = (
+            interval_period == "vazio" and hour < OVERNIGHT_END_H
+            if charge_overnight
+            else MIDDAY_CHARGE_START_H <= hour < MIDDAY_CHARGE_END_H
+        )
+        if in_window:
+            headroom_kwh = max(0.0, params.cap_usable_kwh - soc) / eta
+            charge[i] = min(
+                params.p_charge_max_w,
+                max(0.0, params.p_usable_w - load_w[i]),
+                headroom_kwh / dt * 1000,
+            )
+            soc += charge[i] * dt / 1000 * eta
+
+    return Plan(charge_w=tuple(charge), discharge_w=tuple(discharge))
