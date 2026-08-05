@@ -166,6 +166,7 @@ tariff wins by ~€118/yr, so do not switch early.
 - **Summer ponta (09:15–12:15) coincides with the Iberian solar peak**, when OMIE is at its lowest. The ERSE reform expected around January 2027 moves ponta to the end of the day while preserving daily durations — this should **improve** arbitrage.
 - **Solar cannibalises the battery.** A solar kWh during ponta displaces battery discharge, not grid import. It is worth ~€0.129/kWh, not €0.329. Do not add the two savings together.
 - **VAT and fixed terms do not change the optimum.** They are uniform constants. Include them in reporting only.
+- **OMIE prices can be negative.** Nothing may assume `price >= 0` — no `abs()`, no `max(0, price)`; property-test generators draw from roughly −50 to +300 €/MWh. The parser rejects values outside the SDAC clearing limits (~−500 to +4000 €/MWh) as errors. Delivered price stays positive in practice (K₂ + TAR are added regardless of sign) and a negative OMIE can never invert the ponta/vazio ranking. See `docs/findings.md` §Negative OMIE prices.
 
 ---
 

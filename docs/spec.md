@@ -118,6 +118,8 @@ Summer = last Sunday of March → last Sunday of October.
 
 `net_load[i] = max(0, house_load[i] - solar[i])` — solar is self-consumed first; it never charges the battery via the grid.
 
+**Prices may be negative.** OMIE can clear below zero (SDAC floor ~−500 €/MWh); nothing in the constraints or the algorithm may assume `price >= 0` — no `abs()`, no `max(0, price)`. C-8 handles the sign correctly as written: a negative `price[c]` divided by `eta_rt` becomes more negative, which is the right economics. Delivered price stays positive in practice because K₂ and the TAR are added regardless of sign. Full analysis: `docs/findings.md` §Negative OMIE prices.
+
 ---
 
 ## 7. Algorithm (v1: greedy)
