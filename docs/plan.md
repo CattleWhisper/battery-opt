@@ -269,6 +269,12 @@ safe parts of Task 10 (basic price reading) and Task 12 (dry-run +
 production half of open question #1 from the `hass_omie` source:
 quarter-hourly (`docs/spec.md` §12).
 
+Added alongside (2026-08-05): `sensor.battery_opt_current_price` — the
+delivered price for the current quarter-hour per the EDP Indexada
+formula, declared like core OMIE's price sensor (€/kWh, state_class
+measurement) so it plugs into the Energy dashboard as the grid price
+entity; the full day vector and TAR period ride in the attributes.
+
 ---
 
 ### Checkpoint C

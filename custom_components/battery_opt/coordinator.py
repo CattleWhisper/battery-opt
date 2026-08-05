@@ -60,6 +60,8 @@ OMIE_SERVICE_GET_PRICES = "get_prices_for_date"
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
@@ -122,6 +124,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["soc_kwh"] = soc_percent / 100.0 * params.cap_usable_kwh
         prices, padded = await self._today_prices()
         data.update(self._advisory_plan(params, data["soc_kwh"], prices))
+        data["prices_eur_kwh"] = prices if data["prices_ok"] else None
         data["prices_padded"] = padded
         return data
 
@@ -210,10 +213,28 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         discharge = data.get("plan_discharge_w")
         if not charge or data.get("plan_date") != dt_util.now().date():
             return "unknown"
-        now = dt_util.now()
-        index = min((now.hour * 60 + now.minute) // 15, len(charge) - 1)
+        index = _quarter_index(dt_util.now(), len(charge))
         if charge[index] > 0:
             return "charge"
         if discharge[index] > 0:
             return "discharge"
         return "idle"
+
+    def current_price_eur_kwh(self) -> float | None:
+        """Delivered price (EDP formula) for the current quarter-hour."""
+        data = self.data or {}
+        prices = data.get("prices_eur_kwh")
+        now = dt_util.now()
+        if not prices or data.get("plan_date") != now.date():
+            return None
+        return prices[_quarter_index(now, len(prices))]
+
+
+def _quarter_index(now: datetime, length: int) -> int:
+    """
+    Wall-clock quarter-hour index into a day vector.
+
+    Deliberately naive on the two DST days (92/100 quarters): off by
+    at most one hour there, exact on every other day.
+    """
+    return min((now.hour * 60 + now.minute) // 15, length - 1)

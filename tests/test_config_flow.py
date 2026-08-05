@@ -39,6 +39,7 @@ from custom_components.battery_opt.const import (
     CONF_WEAR_COST,
     DOMAIN,
 )
+from custom_components.battery_opt.core.prices import price
 
 BATTERY_ENTITIES = {
     CONF_MODE_SELECT: "select.marstek_force_mode",
@@ -240,6 +241,32 @@ async def test_planning_only_computes_plan_from_core_omie(
     assert "planning only" in healthy.attributes["status"]
 
 
+async def test_current_price_sensor_tracks_the_edp_formula(
+    hass: HomeAssistant,
+) -> None:
+    """
+    The price sensor carries the delivered price for right now.
+
+    Declared exactly like core OMIE's price sensor (EUR/kWh,
+    state_class measurement) so the Energy dashboard accepts it.
+    The stub serves a flat 0.06 EUR/kWh spot = 60 EUR/MWh, so the
+    expected state is the EDP formula applied to 60 at this instant.
+    """
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.battery_opt_current_price")
+    assert state is not None
+    assert float(state.state) == pytest.approx(price(60.0, dt_util.now()))
+    assert state.attributes["unit_of_measurement"] == "€/kWh"
+    assert state.attributes["state_class"] == "measurement"
+    assert state.attributes["tar_period"] in ("ponta", "cheias", "vazio")
+    assert len(state.attributes["prices_eur_kwh"]) == 96
+
+
 async def test_core_omie_pads_before_tomorrow_publishes(hass: HomeAssistant) -> None:
     """Only market date D available: the final hour pads, flagged."""
     _register_core_omie_service(hass, days_available=1)
@@ -313,7 +340,7 @@ async def test_all_entities_group_under_one_service_device(
 
     entity_registry = er.async_get(hass)
     grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
-    assert len(grouped) == 4  # plan, forecast savings, vs static, healthy
+    assert len(grouped) == 5  # plan, forecast savings, vs static, price, healthy
 
 
 async def test_entities_exist_and_health_follows_the_executor(

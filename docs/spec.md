@@ -162,6 +162,7 @@ Summer = last Sunday of March → last Sunday of October.
 | `sensor.battery_opt_forecast_savings` | Forecast saving vs. not cycling |
 | `sensor.battery_opt_vs_static` | **Forecast gain vs. the fixed schedule — the metric that justifies the project** |
 | `sensor.battery_opt_realised_savings` | Ex-post, from actual SoC and prices |
+| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; full day vector and TAR period in attributes |
 | `binary_sensor.battery_opt_healthy` | False on missing prices, Modbus failure, or an invalid plan |
 
 ### Actuation

@@ -10,18 +10,29 @@ Sensors for battery_opt (spec §8).
   and VAT), from real OMIE prices.
 - sensor.battery_opt_vs_static: forecast gain vs the fixed seasonal
   schedule — the metric that justifies the project (spec §8).
+- sensor.battery_opt_current_price: the delivered energy price right
+  now per the EDP Indexada formula (core.prices.price), EUR/kWh excl.
+  fixed terms and VAT. Declared exactly like core OMIE's price sensor
+  so the Energy dashboard accepts it as a grid price entity.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.const import CURRENCY_EURO, UnitOfEnergy
+from homeassistant.core import callback
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
+from .core.calendar import period
 from .entity import device_info_for
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -35,18 +46,42 @@ async def async_setup_entry(
     entry: BatteryOptConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create the plan and savings sensors."""
+    """Create the plan, savings and price sensors."""
     runtime = entry.runtime_data
     async_add_entities(
         [
             PlanSensor(runtime.coordinator, runtime.executor, entry.entry_id),
             ForecastSavingsSensor(runtime.coordinator, entry.entry_id),
             VsStaticSensor(runtime.coordinator, entry.entry_id),
+            CurrentPriceSensor(runtime.coordinator, entry.entry_id),
         ]
     )
 
 
-class PlanSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
+class QuarterHourMixin(SensorEntity):
+    """
+    Rewrite state on quarter-hour boundaries.
+
+    The coordinator refresh is not wall-clock aligned, but prices and
+    plan slots change exactly at :00/:15/:30/:45 — without this the
+    state lags the boundary by up to a full update interval.
+    """
+
+    async def async_added_to_hass(self) -> None:
+        """Register the quarter-hour rewrite."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_track_time_change(
+                self.hass, self._on_quarter_hour, minute=[0, 15, 30, 45], second=0
+            )
+        )
+
+    @callback
+    def _on_quarter_hour(self, _now: datetime) -> None:
+        self.async_write_ha_state()
+
+
+class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
     """Current action plus the advisory day plan."""
 
     _attr_has_entity_name = True
@@ -121,6 +156,43 @@ class ForecastSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
     def native_value(self) -> float | None:
         """Excl. fixed terms and VAT (spec §4); None until prices exist."""
         return (self.coordinator.data or {}).get("forecast_saving_eur")
+
+
+class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
+    """Delivered energy price now, per the EDP Indexada formula."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Current price"
+    _attr_suggested_object_id = "battery_opt_current_price"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = f"{CURRENCY_EURO}/{UnitOfEnergy.KILO_WATT_HOUR}"
+    _attr_suggested_display_precision = 4
+    _attr_icon = "mdi:currency-eur"
+
+    def __init__(self, coordinator: BatteryOptCoordinator, entry_id: str) -> None:
+        """Bind to the coordinator."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_current_price"
+        self._attr_device_info = device_info_for(entry_id)
+
+    @property
+    def native_value(self) -> float | None:
+        """EUR/kWh excl. fixed terms and VAT; None until prices exist."""
+        return self.coordinator.current_price_eur_kwh()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the TAR period and the whole day for graphing."""
+        data = self.coordinator.data or {}
+        prices = data.get("prices_eur_kwh")
+        return {
+            "tar_period": period(dt_util.now()),
+            "plan_date": str(data.get("plan_date") or ""),
+            "prices_eur_kwh": (
+                [round(p, 5) for p in prices] if prices is not None else None
+            ),
+            "prices_padded": data.get("prices_padded"),
+        }
 
 
 class VsStaticSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
