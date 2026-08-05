@@ -143,7 +143,7 @@ not for capturing savings.
 - [x] Switches the charging window by season
 
 **Verification:**
-- [ ] Annual backtest yields ~€267 incl. VAT (±10%) — pending Task 6 harness; the real-data backtest supersedes this MA30-derived estimate
+- [x] Annual backtest (Task 6) yields **€196.10/yr incl. VAT** — supersedes the MA30-derived ~€267 estimate, which assumed full ponta coverage (winter weekdays demand 5.2 kWh vs 3.46 deliverable) and did not net wear. See `docs/findings.md`.
 
 **Dependencies:** Tasks 1, 4
 **Files:** `core/static_schedule.py`, `tests/test_static.py`
@@ -156,14 +156,14 @@ not for capturing savings.
 **Description:** `backtest/run.py` — runs a strategy over N months of data and produces a comparative report.
 
 **Acceptance criteria:**
-- [ ] Accepts strategy, capacity and tariff parameters as arguments
-- [ ] Produces: annual cost, saving vs. no-cycling, saving vs. static, cycles/year, throughput
-- [ ] Writes results to CSV for inspection
+- [x] Accepts strategy, capacity and tariff parameters as arguments
+- [x] Produces: annual cost, saving vs. no-cycling, saving vs. static, cycles/year, throughput
+- [x] Writes results to CSV for inspection
 
 **Verification:**
-- [ ] `python backtest/run.py --strategy static` reproduces ~€267
-- [ ] Runs 12 months in <10 s
-- [ ] Handles negative OMIE prices without special-casing — no `abs()`, no `max(0, price)` (`docs/findings.md` §Negative OMIE prices)
+- [x] `python backtest/run.py --strategy static` yields €196.10/yr incl. VAT (measured; supersedes the ~€267 MA30 estimate — see `docs/findings.md`)
+- [x] Runs 12 months in <10 s (measured ~0.3–1.3 s per strategy)
+- [x] Handles negative OMIE prices without special-casing — no `abs()`, no `max(0, price)` (`docs/findings.md` §Negative OMIE prices)
 
 **Dependencies:** Tasks 3, 4, 5
 **Files:** `backtest/run.py`, `backtest/report.py`
@@ -171,7 +171,9 @@ not for capturing savings.
 
 ---
 
-### Checkpoint B — the three answers
+### Checkpoint B — the four answers
+
+**Answered 2026-08-05** — numbers and the owner's decisions are in `docs/findings.md` (§Checkpoint B decisions): Phase 1 GO; cheias cycling capped via planning-wear margin; reference figures updated to measured; second unit not purchased.
 
 Run the backtest in the following configurations and record results in `docs/findings.md`:
 

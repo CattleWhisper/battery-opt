@@ -115,6 +115,31 @@ exact reference matches above also confirm the column-order assumption
 
 ---
 
+## Checkpoint B decisions (2026-08-05, owner review)
+
+1. **Phase 1: GO.** The €30/yr gate was cleared 4.4× and the owner
+   confirmed proceeding to Tasks 7–9. Open question #3 (is
+   zero-export enforced by the device or must the plan limit power?)
+   still blocks Task 7 and needs a check on the physical device.
+2. **Cheias cycling: capped, not unlimited.** The full-greedy 417
+   cycles/yr is not blessed as-is; the production optimiser will run
+   with a selectivity cap chosen from the gain-vs-cycles frontier
+   (see below in this section once measured). Implementation note:
+   the cap is expressed as a planning wear margin — the optimiser
+   plans with a wear cost above the true €0.020/kWh, which prunes the
+   least profitable cycles first; savings are always evaluated at the
+   true wear.
+3. **Reference figures: updated to measured.** CONTEXT.md
+   §Reference figures and the docs/plan.md Task 5/6 lines now carry
+   the backtested numbers (static €196.10, dynamic €326.73, second
+   unit +€110.64); the superseded MA30-derived estimates (~€267,
+   €300–345, ~€45) are noted as such.
+4. **Second unit: not purchased.** Threshold met marginally
+   (+€110.64/yr) but ~12.7-yr payback; recommendation accepted.
+   Revisit only if the ERSE 2027 reform reshapes the economics.
+
+---
+
 ## Task 6 — Backtest results and Checkpoint B numbers (2026-08-05)
 
 Method: `backtest/run.py` replays each strategy over the 11

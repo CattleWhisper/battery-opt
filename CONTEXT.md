@@ -125,18 +125,20 @@ Violating any of these is a bug, not a configuration choice.
 
 ## Reference figures
 
-Any change to the optimiser is measured against these:
+Any change to the optimiser is measured against these — **measured by the
+Task 6 backtest** (11 quarter-hourly months of real OMIE data, net of
+€0.020/kWh wear; method and superseded MA30 estimates in `docs/findings.md`):
 
 | Scenario | Annual saving (incl. VAT) |
 |---|---|
 | No cycling | €0 |
-| **Static seasonal schedule** | **~€267** |
-| Dynamic (target) | €300–345 |
+| **Static seasonal schedule** | **€196** (was est. ~€267: full-coverage assumption, wear not netted) |
+| **Dynamic (greedy, uncapped)** | **€327** (est. band was €300–345) |
 | Theoretical ceiling | Bounded by household load, not battery capacity |
 
-Battery payback at €1,400: ~5.4 years. Cycle life: ~29 years (the 10-year warranty and calendar ageing bind, not cycles).
+Battery payback at €1,400: ~7.1 years static, ~4.3 dynamic. Cycle life at the uncapped greedy's 417 cycles/yr: ~14 years — the 10-year warranty still binds first; production runs capped (see `docs/findings.md` §Checkpoint B decisions).
 
-**Second unit: ~€45/year, ~30-year payback.** Under evaluation, but the binding constraint is the household load (1.04 kW), not capacity. Adding storage does not create hours in the day.
+**Second unit: measured +€111/year, ~12.7-year payback. Decision: not purchased** (Checkpoint B). The binding constraint is the household load (1.04 kW), not capacity — adding storage does not create hours in the day.
 
 ---
 
@@ -146,7 +148,7 @@ Battery payback at €1,400: ~5.4 years. Cycle life: ~29 years (the 10-year warr
 |---|---|---|---|
 | Now → month 3 | Simples, 35% discount | 0.1086 | **None** — simples has no period differentiation |
 | Month 3 → Mar 2027 | Simples, 15% discount | 0.1420 | None |
-| Target | Indexada Horária, tri-horária, weekly | variable | ~€267/yr static, €300–345 dynamic |
+| Target | Indexada Horária, tri-horária, weekly | variable | €196/yr static, €327 dynamic (measured, Task 6) |
 
 The battery earns nothing until the tariff option changes. Phase 0 exists
 because of this, not in spite of it.
@@ -155,7 +157,9 @@ because of this, not in spite of it.
 moving to Indexada Horária tri-horária with the battery costs ~€1,254/yr —
 a €183/yr advantage for switching. That margin absorbs a ~16 €/MWh rise in
 average OMIE before it becomes neutral. During the 35% promotion the fixed
-tariff wins by ~€118/yr, so do not switch early.
+tariff wins by ~€118/yr, so do not switch early. (The Task 6 backtest
+measures the switching advantage at €263/yr on real data, energy component
+only — see `docs/findings.md`.)
 
 ---
 
