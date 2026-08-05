@@ -1,0 +1,378 @@
+# Implementation Plan
+
+**Preceded by:** `docs/spec.md` · **Context:** `CONTEXT.md`
+
+---
+
+## Overview
+
+Four phases. Phase 0 runs **entirely outside Home Assistant** and answers the three open questions (is the dynamic optimiser worth it? is a second unit worth it? is Horária the right tariff?) before any integration code exists. Only then is the HA shell built.
+
+This is not excessive caution: the total gain of dynamic over static is €30–80/year. If the backtest shows €15, the correct decision is to run the fixed schedule and stop.
+
+---
+
+## Architecture Decisions
+
+See `docs/adr/`. In brief:
+
+- **ADR-0001** — Single repository; `core/` free of HA dependencies
+- **ADR-0002** — Custom integration, not pyscript or AppDaemon
+- **ADR-0003** — Own greedy before EMHASS
+- **ADR-0004** — Planner, not driver: never open Modbus directly
+- **ADR-0005** — Tariff calendar versioned by effective date
+
+---
+
+## Dependency Graph
+
+```
+calendar.py  --+
+               +--> prices.py --> optimiser.py --> backtest/run.py   [PHASE 0]
+OMIE data    --+                       |
+                                       +--> coordinator.py --> sensor.py   [PHASE 1-2]
+forecast.py  --------------------------+          |
+                                                  +--> executor --> driver.py
+```
+
+Build bottom-up. `calendar.py` first, always — it is the most likely source of error in the system and everything depends on it.
+
+---
+
+## PHASE 0 — Observation (no Home Assistant)
+
+**Goal:** produce real numbers for the three open decisions.
+**Deadline:** March 2027 (tariff switch date).
+
+### Task 1: Tariff calendar
+
+**Description:** Pure function `period(dt) -> Literal["ponta","cheias","vazio"]` for tri-horária weekly, with season detection and a structure versioned by effective date.
+
+**Acceptance criteria:**
+- [ ] Returns the correct period for any `datetime`
+- [ ] Detects summer/winter from the daylight-saving switches (last Sunday of March/October)
+- [ ] `CALENDARS = [(effective_date, table), ...]` structure allows adding 2027 without code changes
+
+**Verification:**
+- [ ] `pytest tests/test_calendar.py` — the case table from `docs/tariff-reference.md`
+- [ ] Weekly totals: 15 h ponta in summer, 25 h in winter, computed by iterating a full week
+- [ ] Exact boundaries: 09:14 vs 09:15, 12:14 vs 12:15, 18:29 vs 18:30
+
+**Dependencies:** None
+**Files:** `custom_components/battery_opt/core/calendar.py`, `tests/test_calendar.py`
+**Scope:** S
+
+---
+
+### Task 2: Price model
+
+**Description:** `price(omie_eur_mwh, dt) -> float` implementing the EDP formula, with parameterisable constants so Horária (K₁=1.08) and Média (K₁=1.10) can be compared.
+
+**Acceptance criteria:**
+- [ ] Implements `OMIE/1000 * (1+PERDAS) * K1 + K2 + TAR(period)`
+- [ ] `K1`, `K2`, `PERDAS` injectable, defaulting to Horária
+- [ ] Separate `total_daily_cost()` adding K₃ + TAR potência + VAT, for reporting
+
+**Verification:**
+- [ ] Reconstruct the energy price for a known month and compare against the invoice (1% tolerance)
+- [ ] `pytest tests/test_prices.py`
+
+**Dependencies:** Task 1
+**Files:** `core/prices.py`, `tests/test_prices.py`
+**Scope:** S
+
+---
+
+### Task 3: Historical OMIE ingestion
+
+**Description:** Load the quarter-hourly OMIE series (or hourly, if that is what exists) into a tabular form usable by the backtest. Resolves Open Question #1.
+
+**Acceptance criteria:**
+- [ ] Loads 12 months into a timestamp-indexed structure
+- [ ] Documents the real granularity available
+- [ ] Validates against the known monthly period averages (see `docs/tariff-reference.md`)
+
+**Verification:**
+- [ ] Per-period averages computed from raw data match the known MA30 series (2% tolerance)
+
+**Dependencies:** Task 1
+**Files:** `backtest/load_omie.py`, `backtest/data/`
+**Scope:** S
+
+---
+
+### Checkpoint A
+
+- [ ] `pytest` green
+- [ ] Calendar validated against the real invoice: 8.7% of consumption in ponta for the June period
+- [ ] **Human review before proceeding** — if the calendar is wrong, everything downstream is wrong
+
+---
+
+### Task 4: Greedy optimiser
+
+**Description:** `solve(prices, load, solar, params) -> Plan`. Implements the algorithm in spec §7, honouring C-1..C-8.
+
+**Acceptance criteria:**
+- [ ] Returns a 96-interval plan respecting C-1..C-7
+- [ ] `WEAR_COST` parameterisable; at zero it cycles more
+- [ ] `CAP_USABLE` parameterisable — this is how the second unit gets tested
+- [ ] Also returns the forecast saving, for comparison
+
+**Verification:**
+- [ ] Property test: 1000 random days, no constraint violations
+- [ ] Property test: saving ≥ the fixed schedule's saving, always
+- [ ] Degenerate case: flat prices → no cycling
+
+**Dependencies:** Tasks 1, 2
+**Files:** `core/optimiser.py`, `tests/test_optimiser.py`
+**Scope:** M
+
+---
+
+### Task 5: Static baseline
+
+**Description:** `static_plan(day, params) -> Plan` — the fixed seasonal schedule. Charge in vazio Nov–Apr, midday May–Oct; discharge in ponta. Serves as both the comparison reference and the production fallback.
+
+**Acceptance criteria:**
+- [ ] Produces a valid plan without consulting prices
+- [ ] Respects C-1..C-7
+- [ ] Switches the charging window by season
+
+**Verification:**
+- [ ] Annual backtest yields ~€267 incl. VAT (±10%)
+
+**Dependencies:** Tasks 1, 4
+**Files:** `core/static_schedule.py`, `tests/test_static.py`
+**Scope:** S
+
+---
+
+### Task 6: Backtest harness
+
+**Description:** `backtest/run.py` — runs a strategy over N months of data and produces a comparative report.
+
+**Acceptance criteria:**
+- [ ] Accepts strategy, capacity and tariff parameters as arguments
+- [ ] Produces: annual cost, saving vs. no-cycling, saving vs. static, cycles/year, throughput
+- [ ] Writes results to CSV for inspection
+
+**Verification:**
+- [ ] `python backtest/run.py --strategy static` reproduces ~€267
+- [ ] Runs 12 months in <10 s
+
+**Dependencies:** Tasks 3, 4, 5
+**Files:** `backtest/run.py`, `backtest/report.py`
+**Scope:** M
+
+---
+
+### Checkpoint B — the three answers
+
+Run the backtest in the following configurations and record results in `docs/findings.md`:
+
+| Question | Command | Decision criterion |
+|---|---|---|
+| Is dynamic worth it? | `--strategy greedy` vs `--strategy static` | Gain ≥ €30/year → proceed to Phase 1 |
+| Is a second unit worth it? | `--cap 5` vs `--cap 10` | Gain ≥ €100/year → reconsider the purchase |
+| Horária or Média? | `--k1 1.08 --hourly` vs `--k1 1.10 --monthly` | Confirms the tariff choice |
+
+**If dynamic yields <€30/year: stop here.** Run the static schedule manually or with a trivial YAML automation. Phase 1 onward stops being justified.
+
+---
+
+## PHASE 1 — HA shell, static execution
+
+**Goal:** actuate the battery safely, with the simplest possible plan.
+
+### Task 7: Driver
+
+**Description:** Thin layer over the `marstek_venus_modbus` integration. Interface: `set_mode()`, `set_power()`, `read_soc()`. **Never direct Modbus** (ADR-0004).
+
+**Acceptance criteria:**
+- [ ] Abstract interface + real implementation + fake implementation for tests
+- [ ] All writes via `hass.services.async_call`
+- [ ] 3 consecutive failures → raises a handleable exception
+
+**Verification:**
+- [ ] Fake-driver tests verify the call sequence
+- [ ] Manual test: force 500 W charge and confirm on the device
+
+**Dependencies:** None (parallelisable with Phase 0)
+**Files:** `custom_components/battery_opt/driver.py`, `tests/test_driver.py`
+**Scope:** S
+
+---
+
+### Task 8: Integration skeleton
+
+**Description:** `manifest.json`, `config_flow.py`, `__init__.py`, `coordinator.py`. The config flow collects: battery entities, price entity, capacity, reserve floor, `WEAR_COST`.
+
+**Acceptance criteria:**
+- [ ] Installable via HACS from the repository
+- [ ] Config flow works; options editable afterwards
+- [ ] `DataUpdateCoordinator` performs no blocking work on the event loop
+
+**Verification:**
+- [ ] `pytest` with `pytest-homeassistant-custom-component`
+- [ ] Clean install on a test HA instance
+
+**Dependencies:** Task 7
+**Files:** `manifest.json`, `config_flow.py`, `__init__.py`, `coordinator.py`, `strings.json`
+**Scope:** M
+
+---
+
+### Task 9: Executor + sensors
+
+**Description:** 15-minute trigger applying the current interval's setpoint. Plan, savings and health sensors.
+
+**Acceptance criteria:**
+- [ ] Applies the plan interval by interval
+- [ ] `binary_sensor.battery_opt_healthy` reflects real state
+- [ ] Never actuates when `healthy` is false
+- [ ] Validates the plan against C-1..C-7 before each actuation
+
+**Verification:**
+- [ ] 48 h in production on the static plan: zero export, SoC within bounds
+- [ ] Power off the battery → `healthy` goes off within 45 min
+
+**Dependencies:** Task 8
+**Files:** `sensor.py`, `binary_sensor.py`, `executor.py`
+**Scope:** M
+
+---
+
+### Checkpoint C
+
+- [ ] 2 weeks in production on the static plan
+- [ ] Zero export recorded
+- [ ] SoC never below 27%
+- [ ] Ponta coverage ≥95%
+- [ ] **Human review before enabling dynamic**
+
+---
+
+## PHASE 2 — Dynamic
+
+### Task 10: Production price ingestion
+
+**Description:** Read the `omie` integration entity, build the 96-price vector, with retry and fallback.
+
+**Acceptance criteria:**
+- [ ] Trigger at 13:45; retry at 14:15, 15:00, 16:00
+- [ ] No prices after the final retry → `healthy=off` + static plan
+- [ ] Prices archived to `/config/battery_opt/prices/`
+
+**Verification:**
+- [ ] Simulate source failure and confirm the fallback
+
+**Dependencies:** Tasks 2, 9
+**Files:** `coordinator.py`, `core/prices.py`
+**Scope:** S
+
+---
+
+### Task 11: Load forecast
+
+**Description:** Median of the last 4 same-weekday occurrences, per interval. Fallback: flat 1.04 kW.
+
+**Acceptance criteria:**
+- [ ] Uses `recorder` history
+- [ ] With <4 weeks of data, uses the constant
+- [ ] Subtracts the solar forecast before returning
+
+**Verification:**
+- [ ] Mean absolute error vs. actual exposed as a sensor, for monitoring
+
+**Dependencies:** Task 10
+**Files:** `core/forecast.py`
+**Scope:** M
+
+---
+
+### Task 12: Enable the optimiser
+
+**Description:** Replace the static plan with the greedy, keeping static as fallback.
+
+**Acceptance criteria:**
+- [ ] `sensor.battery_opt_vs_static` publishes the daily forecast gain
+- [ ] If the greedy fails or produces an invalid plan, fall back to static
+- [ ] `dry_run` mode that computes and publishes but does not actuate
+
+**Verification:**
+- [ ] 1 week in `dry_run`, comparing the planned schedule against what would have been optimal
+- [ ] 3 months in production: realised saving > static
+
+**Dependencies:** Tasks 6, 11
+**Files:** `coordinator.py`, `core/optimiser.py`
+**Scope:** S
+
+---
+
+### Task 13: Reporting and reconciliation
+
+**Description:** Ex-post realised saving, and monthly comparison against the invoice.
+
+**Acceptance criteria:**
+- [ ] `sensor.battery_opt_realised_savings` computed from actual SoC and prices
+- [ ] Monthly report: forecast vs. invoiced, with deviation
+- [ ] Deviation >10% raises a notification
+
+**Verification:**
+- [ ] First invoice month reconciled manually
+
+**Dependencies:** Task 12
+**Files:** `core/reporting.py`, `sensor.py`
+**Scope:** M
+
+---
+
+### Checkpoint D
+
+- [ ] 3 months in production
+- [ ] Realised saving > static, confirmed by invoice
+- [ ] No invariant violations recorded
+
+---
+
+## PHASE 3 — Extensions (only if justified)
+
+| Task | Condition to proceed |
+|---|---|
+| Integrate solar forecast into the model | Panel installed |
+| Evaluate EMHASS / LP | Backtest shows >€10/year of headroom vs. optimal |
+| ERSE 2027 calendar | ERSE publishes the new hours |
+| Second unit | Checkpoint B shows gain ≥€100/year |
+| Publish `pt-erse-tariff` as a package | Third-party interest |
+
+---
+
+## Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| **Wrong calendar** | **High** — discharges into cheias for months without any signal | Mandatory test table; validation against the real invoice at Checkpoint A |
+| OMIE only hourly, not quarter-hourly | Medium — loses resolution | Task 3 resolves it early; quantify before investing in Phase 2 |
+| Variable losses not modelled | Low — a few € of bias | Record deviation against the invoice; correct if material |
+| Dynamic gain < €30/year | Medium — project not justified | **This is exactly what Checkpoint B exists for** |
+| ERSE 2027 reform changes the economics | Medium | Versioned calendar (ADR-0005); expected to be favourable |
+| Modbus conflict with another integration | High — loses control | ADR-0004; never open our own connection |
+| Solar cannibalises the battery | Low — already modelled | Reconcile after installation |
+
+---
+
+## Parallelisation
+
+- **Parallelisable:** Task 7 (driver) alongside all of Phase 0 — no dependency between them
+- **Strictly sequential:** Task 1 → 2 → 4 → 6; Task 8 → 9
+- **Needs coordination:** Tasks 11 and 12 share the load-vector contract — define the signature first
+
+---
+
+## Open Questions
+
+See `docs/spec.md` §12. The ones that block work:
+
+- **#1 (OMIE granularity)** blocks Task 3 → resolve first
+- **#3 (zero-export internal or external)** blocks Task 7 → confirm on the device

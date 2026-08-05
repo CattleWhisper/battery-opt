@@ -1,0 +1,223 @@
+# Spec: Charge/Discharge Optimiser
+
+**Version:** 0.2
+**Status:** draft for review
+**Precedes:** `docs/plan.md`
+
+> Constants, glossary and invariants live in `CONTEXT.md`. This document does not repeat them.
+
+---
+
+## 1. Objective
+
+A Home Assistant integration that, each day after OMIE publishes day-ahead prices, computes the optimal charge/discharge plan for the next day's 96 fifteen-minute intervals and executes it through the `marstek_venus_modbus` integration.
+
+**Why:** the static seasonal schedule yields ~€267/year. The dynamic optimiser should add **€30–80/year** by exploiting:
+
+1. picking the cheapest quarter-hour within each period;
+2. the seasonal inversion of the charging window (vazio in winter, midday in summer);
+3. the decision **not** to cycle on days without sufficient spread.
+
+**Non-goal:** forecasting prices. Next-day prices are the result of an auction that has already cleared. This is deterministic optimisation, not forecasting.
+
+**Non-goal:** replacing the `marstek_venus_modbus` integration. This integration is a **planner**, not a driver (see ADR-0004).
+
+### Success Criteria
+
+| # | Criterion | Verification |
+|---|---|---|
+| SC-1 | Zero-export respected | Export meter at zero over 30 days |
+| SC-2 | Contracted power respected | No breaker trips; `total_load <= 4400 W` in the plan |
+| SC-3 | Reserve floor respected | `SoC >= 27%` in every interval |
+| SC-4 | Beats the static baseline | Realised saving ≥ static + €30/year |
+| SC-5 | Graceful degradation | With no prices, runs the fixed seasonal schedule without intervention |
+| SC-6 | Ponta covered | ≥95% of ponta consumption served by battery or solar, monthly |
+| SC-7 | Calendar correct | Weekly totals: 15 h ponta (summer), 25 h (winter) |
+
+---
+
+## 2. Assumptions
+
+**Correct these now, or development proceeds on them:**
+
+1. **Marstek Venus E 3.0** already purchased, 5.0 kWh usable, 2500 W, 90% round-trip.
+2. Marstek smart meter installed; **zero-export active**.
+3. Contracted power **4.6 kVA**, no intention to increase.
+4. Household load **flat at ~1.04 kW**, dominated by AC and homelab running 24/7.
+5. Target tariff: **EDP Indexada Horária DD+FE, tri-horária, weekly cycle**, from **March 2027** (the current fixed tariff's 15% discount remains competitive until then).
+6. Control via **local Modbus TCP**, through the `marstek_venus_modbus` integration.
+7. A 460 W balcony solar panel may or may not be installed. The system works either way.
+
+---
+
+## 3. Tech Stack
+
+| Component | Choice | ADR |
+|---|---|---|
+| Form factor | **Custom integration** (HACS) | ADR-0002 |
+| Repository | **Single**, with `core/` free of HA dependencies | ADR-0001 |
+| Optimiser | **Own greedy** in v1; EMHASS reconsidered in v2 | ADR-0003 |
+| OMIE prices | HACS `omie` integration (pyomie) | — |
+| Battery | `marstek_venus_modbus` via service calls | ADR-0004 |
+| Tests | `pytest` + `pytest-homeassistant-custom-component` | — |
+| Solar | `forecast_solar` or `solcast` | — |
+
+---
+
+## 4. Price Model
+
+```
+price[i] = P_OMIE[i]/1000 x (1 + PERDAS) x K1 + K2 + TAR_energia(period(i))
+```
+
+Terms deliberately **excluded** from the optimisation, being uniform constants that cannot change the optimum:
+
+- `K3` (€/day) and `TAR_POTENCIA` (€/day) — additive constants
+- `VAT` — uniform multiplier
+
+Include both in the reporting module only.
+
+**Known risk:** on Indexada Horária the loss coefficient varies per quarter-hour rather than being fixed at 16.4%. Overnight losses tend to run below average and peak losses above — which works slightly **against** us, since we charge off-peak and discharge on-peak. Use 16.4% flat in v1 and record the deviation against the invoice.
+
+---
+
+## 5. Tri-horária Weekly Calendar
+
+A pure function, no I/O, versioned by effective date (ADR-0005). See `docs/tariff-reference.md` for the full tables and the mandatory test cases.
+
+Summary:
+
+| | Vazio | Ponta | Cheias |
+|---|---|---|---|
+| **Summer, Mon–Fri** | 00:00–07:00 | **09:15–12:15** | remainder |
+| **Summer, Saturday** | 00:00–09:00, 14:00–20:00, 22:00–24:00 | — | 09:00–14:00, 20:00–22:00 |
+| **Winter, Mon–Fri** | 00:00–07:00 | **09:30–12:00, 18:30–21:00** | remainder |
+| **Winter, Saturday** | 00:00–09:30, 13:00–18:30, 22:00–24:00 | — | 09:30–13:00, 18:30–22:00 |
+| **Sunday** | all day | — | — |
+
+Summer = last Sunday of March → last Sunday of October.
+
+---
+
+## 6. Constraints
+
+| ID | Constraint | Expression |
+|---|---|---|
+| C-1 | Zero-export | `discharge[i] <= net_load[i]` |
+| C-2 | Discharge power | `discharge[i] <= P_DIS_MAX` |
+| C-3 | Charge power | `charge[i] <= min(P_CHG_MAX, P_USABLE - house_power[i])` |
+| C-4 | Reserve floor | `SoC[i] >= CAP_MIN` |
+| C-5 | Ceiling | `SoC[i] <= CAP_USABLE` |
+| C-6 | Efficiency | `SoC[i+1] = SoC[i] + charge[i]*eta_c - discharge[i]/eta_d`, `eta_c = eta_d = sqrt(0.90)` |
+| C-7 | Exclusivity | `charge[i] * discharge[i] = 0` |
+| C-8 | Wear cost | `price[d] > price[c]/eta_rt + WEAR_COST` |
+
+`net_load[i] = max(0, house_load[i] - solar[i])` — solar is self-consumed first; it never charges the battery via the grid.
+
+---
+
+## 7. Algorithm (v1: greedy)
+
+```
+1. Compute per-interval capacities (C-1..C-3)
+2. REPEAT:
+     d = highest-price interval with remaining discharge capacity
+     c = lowest-price interval BEFORE d with remaining charge capacity
+     IF price[d] <= price[c]/eta_rt + WEAR_COST: STOP
+     q = min(discharge_cap[d], charge_cap[c]*eta_rt, energy_available)
+     record pair; update residual capacities
+3. Check the SoC trajectory (C-4, C-5); drop the least profitable pair if violated
+4. Return the plan
+```
+
+**Complexity:** O(n²), n = 96 → milliseconds.
+
+**Known limitation:** greedy picks pairs locally. With one battery and 96 intervals, the gap to optimal is typically <2%. If the backtest shows more than €10/year of headroom, reconsider EMHASS (ADR-0003).
+
+---
+
+## 8. Interfaces
+
+### Inputs
+
+| Source | Availability | Fallback |
+|---|---|---|
+| OMIE D+1 prices | ~13:30 daily | Fixed seasonal schedule |
+| TAR calendar | pure function | — |
+| Load forecast | median of the last 4 same-weekday occurrences | flat 1.04 kW |
+| Solar forecast | `forecast_solar` | 0 |
+| SoC | `marstek_venus_modbus` | last reading |
+
+### Outputs (entities)
+
+| Entity | Description |
+|---|---|
+| `sensor.battery_opt_plan` | 96-interval plan, in attributes |
+| `sensor.battery_opt_forecast_savings` | Forecast saving vs. not cycling |
+| `sensor.battery_opt_vs_static` | **Forecast gain vs. the fixed schedule — the metric that justifies the project** |
+| `sensor.battery_opt_realised_savings` | Ex-post, from actual SoC and prices |
+| `binary_sensor.battery_opt_healthy` | False on missing prices, Modbus failure, or an invalid plan |
+
+### Actuation
+
+Service calls against `marstek_venus_modbus` entities. **Never direct Modbus writes** (ADR-0004).
+
+---
+
+## 9. Triggers
+
+| Time | Action | On failure |
+|---|---|---|
+| 13:45 | Fetch D+1 prices, compute, archive | Retry 14:15, 15:00, 16:00; then `healthy=off` and fixed schedule |
+| 23:55 | Validate plan against real SoC | Recompute if deviation >20% |
+| Every 15 min | Apply the current interval's setpoint | 3 Modbus failures → `healthy=off` + notification |
+| 00:05 | Close the day: realised saving, archive | — |
+| Last Sunday of Mar/Oct, 02:00 | Seasonal switch | Notification for manual verification |
+
+---
+
+## 10. Testing Strategy
+
+| Level | Target | Method |
+|---|---|---|
+| **Unit** | `calendar.py` | Mandatory test table (`docs/tariff-reference.md`). Verify weekly totals |
+| **Unit** | `prices.py` | Reconstruct a known price from real OMIE data and compare against the invoice |
+| **Property** | `optimiser.py` | No plan violates C-1..C-7, over 1000 random days |
+| **Property** | `optimiser.py` | Saving ≥ the fixed schedule's saving, always |
+| **Backtest** | system | 12 months of OMIE; compare dynamic vs. static vs. no-cycling |
+| **Integration** | driver | Fake driver; verify the service-call sequence |
+| **Acceptance** | production | Real invoice vs. `reporting.py`, monthly |
+
+---
+
+## 11. Boundaries
+
+**Always**
+- Validate the plan against every constraint **before** actuating
+- Archive every plan and every outcome — without this there is no backtest and no second-unit evaluation
+- Keep the fixed seasonal schedule working and tested
+- Record the deviation between forecast and invoiced saving
+
+**Ask first**
+- Increasing contracted power
+- Lowering the reserve floor below 27%
+- Charging above 2000 W
+- Enabling additional cycles into cheias
+
+**Never**
+- Export to the grid, even at a favourable price
+- Actuate without checking `binary_sensor.battery_opt_healthy`
+- Open a second Modbus connection
+- Hardcode the calendar to the current year
+- Import `homeassistant` inside `core/`
+
+---
+
+## 12. Open Questions
+
+1. **OMIE granularity.** Does the `omie` integration expose hourly or quarter-hourly prices? EDP bills quarter-hourly. If only hourly is available, quantify the loss of resolution.
+2. **Variable losses.** Where does E-Redes publish the quarter-hourly loss profiles?
+3. **Zero-export.** Is it enforced internally by the device, or must the plan limit power? This changes C-1 from an active constraint to a passive check.
+4. **End-of-day SoC target.** Fix at 27%, or plan 48 h and let the optimiser decide?
+5. **2027 calendar.** The ERSE reform has no published dates or hours yet.
+6. **Solar interaction.** Validate the model (solar as load reduction) against real data after installation.
