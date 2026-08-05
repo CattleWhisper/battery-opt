@@ -2,3 +2,5 @@
 colorlog==6.10.1
 homeassistant==2026.6.4
 pytest-homeassistant-custom-component==0.13.340
+# usb/bluetooth (default_config) fail to import without this on a fresh venv
+aioesphomeapi==45.7.0
