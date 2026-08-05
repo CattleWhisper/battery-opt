@@ -4,7 +4,8 @@ Data update coordinator for battery_opt.
 Two modes, decided by whether the Marstek entities are configured:
 
 - planning-only (battery not yet installed): no driver — each refresh
-  reads the OMIE price sensor, computes the day's advisory plan with
+  pulls the day series from core OMIE's get_prices_for_date
+  service, computes the advisory plan with
   the capped greedy (plans at the plan-wear from the Checkpoint B
   decision, books savings at the true wear), and publishes plan +
   forecast saving + the vs-static delta. Nothing actuates. The
@@ -36,7 +37,6 @@ from .const import (
     BASE_LOAD_W,
     CONF_CAPACITY_KWH,
     CONF_PLAN_WEAR,
-    CONF_PRICE_SENSOR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_WEAR_COST,
     DEFAULT_CAPACITY_KWH,
@@ -50,7 +50,7 @@ from .core.optimiser import solve
 from .core.plan import BatteryParams, saving_vs_no_cycling, validate_plan
 from .core.static_schedule import static_plan
 from .driver import DriverError
-from .prices_source import day_price_vector, day_price_vector_from_service
+from .prices_source import day_price_vector_from_service
 
 # HA core's OMIE integration exposes the day-ahead series through this
 # service (sensors carry only the current price).
@@ -127,40 +127,36 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _today_prices(self) -> tuple[list[float] | None, bool]:
         """
-        Today's delivered price vector from whichever OMIE exists.
+        Today's delivered price vector from core OMIE.
 
-        Tries the hass_omie attribute shape on the configured sensor
-        first, then HA core's `omie.get_prices_for_date` service
-        (which needs market dates D and D+1 to cover a Lisbon day; a
-        missing D+1 pads the final hour, flagged in the return).
+        `omie.get_prices_for_date` needs market dates D and D+1 to
+        cover a Lisbon day; a missing D+1 pads the final hour,
+        flagged in the return.
         """
-        merged = {**self.entry.data, **self.entry.options}
         today = dt_util.now().date()
-        price_state = self.hass.states.get(merged[CONF_PRICE_SENSOR])
-        if price_state is not None:
-            vector = day_price_vector(price_state.attributes, today)
-            if vector is not None:
-                return vector, False
-        if self.hass.services.has_service(OMIE_SERVICE_DOMAIN, OMIE_SERVICE_GET_PRICES):
-            entries: list[dict[str, Any]] = []
-            for offset in (0, 1):
-                market_date = today + timedelta(days=offset)
-                try:
-                    response = await self.hass.services.async_call(
-                        OMIE_SERVICE_DOMAIN,
-                        OMIE_SERVICE_GET_PRICES,
-                        {"date": market_date.isoformat(), "countries": ["PT"]},
-                        blocking=True,
-                        return_response=True,
-                    )
-                except HomeAssistantError as err:
-                    # D+1 is simply not published before ~13:30 CET.
-                    _LOGGER.debug("OMIE prices for %s: %s", market_date, err)
-                    continue
-                entries.extend((response or {}).get("PT", []))
-            if entries:
-                return day_price_vector_from_service(today, entries)
-        return None, False
+        if not self.hass.services.has_service(
+            OMIE_SERVICE_DOMAIN, OMIE_SERVICE_GET_PRICES
+        ):
+            return None, False
+        entries: list[dict[str, Any]] = []
+        for offset in (0, 1):
+            market_date = today + timedelta(days=offset)
+            try:
+                response = await self.hass.services.async_call(
+                    OMIE_SERVICE_DOMAIN,
+                    OMIE_SERVICE_GET_PRICES,
+                    {"date": market_date.isoformat(), "countries": ["PT"]},
+                    blocking=True,
+                    return_response=True,
+                )
+            except HomeAssistantError as err:
+                # D+1 is simply not published before ~13:30 CET.
+                _LOGGER.debug("OMIE prices for %s: %s", market_date, err)
+                continue
+            entries.extend((response or {}).get("PT", []))
+        if not entries:
+            return None, False
+        return day_price_vector_from_service(today, entries)
 
     def _advisory_plan(
         self,

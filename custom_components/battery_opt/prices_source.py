@@ -1,17 +1,14 @@
 """
-Parse hass_omie sensor attributes into a day's delivered price vector.
+Build a day's delivered price vector from HA core's OMIE integration.
 
-Source of truth for the attribute shape: luuuis/hass_omie sensor.py
-(verified 2026-08-05) — `today_hours` / `tomorrow_hours` are dicts of
-LOCAL quarter-hour-start datetimes -> EUR/MWh spot prices; values can
-be None while the day is provisional. This also settled the
-production half of open question #1: the integration is quarter-
-hourly.
-
-HA-free module (the state attributes come in as plain Python
-objects); delivered prices go through core.prices.price(), so K1 and
-the TAR versioning apply exactly as in the backtest. Nothing here
-assumes prices are positive.
+The core `omie` integration (home-assistant/core, verified from
+source) exposes the day-ahead series through the
+`omie.get_prices_for_date` service: [{"start": CET ISO datetime,
+"end": ..., "price": EUR/kWh (spot / 1000)}, ...] per market date.
+Its sensors carry only the current price, so the service is the one
+and only price source. Delivered prices go through
+core.prices.price(), so K1 and the TAR versioning apply exactly as
+in the backtest. Nothing here assumes prices are positive.
 """
 
 from __future__ import annotations
@@ -25,43 +22,8 @@ from .core.prices import price
 if TYPE_CHECKING:
     from datetime import date
 
-# Accepted entry counts per local day: quarter-hourly (DST short/long
-# included) or an hourly fallback that gets expanded x4 (costs ~2% of
-# the saving — docs/findings.md, Task 6 side measurements).
-_QUARTER_COUNTS = frozenset({92, 96, 100})
-_HOURLY_COUNTS = frozenset({23, 24, 25})
-
-
-def day_price_vector(
-    attributes: dict[str, Any],
-    day: date,
-) -> list[float] | None:
-    """
-    Return the day's delivered EUR/kWh vector, or None if not ready.
-
-    Searches both `today_hours` and `tomorrow_hours` (the wanted day
-    shifts across them at midnight). A day counts as ready only when
-    every interval is present and non-None.
-    """
-    entries: dict[Any, Any] = {}
-    for key in ("today_hours", "tomorrow_hours"):
-        hours = attributes.get(key)
-        if isinstance(hours, dict):
-            entries.update(hours)
-    day_entries = sorted(
-        (start, omie) for start, omie in entries.items() if start.date() == day
-    )
-    if not day_entries or any(omie is None for _, omie in day_entries):
-        return None
-    if len(day_entries) in _QUARTER_COUNTS:
-        return [price(omie, start) for start, omie in day_entries]
-    if len(day_entries) in _HOURLY_COUNTS:
-        vector: list[float] = []
-        for start, omie in day_entries:
-            vector.extend([price(omie, start)] * 4)
-        return vector
-    return None
-
+_TZ_LISBON = ZoneInfo("Europe/Lisbon")
+_ONE_DAY = timedelta(days=1)
 
 # Only the Lisbon day's final hour lives in the NEXT market date
 # (published ~13:30 CET), so at most four tail quarters can be
@@ -76,13 +38,10 @@ def day_price_vector_from_service(
     """
     Build a Lisbon day from core OMIE service entries.
 
-    The HA core `omie` integration's `get_prices_for_date` service
-    returns [{"start": CET ISO datetime, "end": ..., "price": EUR/kWh
-    (spot / 1000)}, ...] per market date (verified from
-    home-assistant/core sources). Market dates are CET days, so the
-    Lisbon-local day D needs market D plus the first hour of D+1;
-    before D+1 publishes (~13:30 CET) the missing tail is padded with
-    the last known price and flagged in the second return value.
+    Market dates are CET days, so the Lisbon-local day D needs market
+    D plus the first hour of D+1; before D+1 publishes (~13:30 CET)
+    the missing tail is padded with the last known price and flagged
+    in the second return value.
 
     Returns (delivered EUR/kWh vector, tail_padded) — (None, False)
     when the day cannot be built.
@@ -110,10 +69,6 @@ def day_price_vector_from_service(
         vector.extend([vector[-1]] * (expected - len(vector)))
         return vector, True
     return None, False
-
-
-_TZ_LISBON = ZoneInfo("Europe/Lisbon")
-_ONE_DAY = timedelta(days=1)
 
 
 def _lisbon_date(start: datetime) -> date:

@@ -2,11 +2,12 @@
 Config flow for battery_opt.
 
 Collects the marstek_modbus entity ids (ADR-0004: entity ids are
-chosen by the user, never hardcoded), the OMIE price entity, and the
-battery parameters. Everything is editable afterwards through the
-options flow — including re-pointing the price sensor and adding the
-battery entities when the battery arrives; the entry reloads on save.
-The price sensor is validated against the hass_omie attribute shape.
+chosen by the user, never hardcoded) and the battery parameters.
+Prices need no entity: they come exclusively from HA core's OMIE
+integration via its get_prices_for_date service, whose presence is
+validated here. Everything is editable afterwards through the
+options flow — including adding the battery entities when the
+battery arrives; the entry reloads on save.
 
 Note on the reserve floor: 27% is the documented default and spec §11
 lists lowering it as an ask-first action — the form allows it because
@@ -32,7 +33,6 @@ from .const import (
     CONF_DISCHARGE_POWER_NUMBER,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
-    CONF_PRICE_SENSOR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_SOC_SENSOR,
     CONF_WEAR_COST,
@@ -121,38 +121,19 @@ def _entity_schema(current: dict[str, Any]) -> dict[vol.Marker, Any]:
         vol.Optional(CONF_SOC_SENSOR, description=suggested(CONF_SOC_SENSOR)): (
             _entity("sensor")
         ),
-        vol.Required(
-            CONF_PRICE_SENSOR, description=suggested(CONF_PRICE_SENSOR)
-        ): _entity("sensor"),
     }
 
 
 def _validate(hass: Any, merged: dict[str, Any]) -> dict[str, str]:
-    """Shared validation: battery all-or-none, price sensor shape."""
+    """Shared validation: OMIE must be set up, battery all-or-none."""
     errors: dict[str, str] = {}
+    if not hass.services.has_service("omie", "get_prices_for_date"):
+        # Prices come exclusively from HA core's OMIE integration.
+        errors["base"] = "omie_not_set_up"
+        return errors
     provided = sum(1 for key in BATTERY_ENTITY_KEYS if merged.get(key))
     if provided not in (0, len(BATTERY_ENTITY_KEYS)):
         errors["base"] = "battery_entities_all_or_none"
-        return errors
-    state = hass.states.get(merged[CONF_PRICE_SENSOR])
-    if state is not None:
-        # An OMIE (hass_omie) spot sensor carries today_hours /
-        # tomorrow_hours once it has data — but sets attributes to
-        # None until BOTH today's and yesterday's prices are fetched,
-        # so a warming-up sensor has none of them. Its EUR/MWh unit is
-        # set from birth though, which separates it from a genuinely
-        # wrong pick (kWh sensors, power sensors, ...).
-        attributes = state.attributes
-        has_omie_keys = any(
-            key in attributes for key in ("today_hours", "tomorrow_hours")
-        )
-        unit = str(attributes.get("unit_of_measurement", ""))
-        # HA core's omie integration: EUR/kWh sensors, day series via
-        # the get_prices_for_date service.
-        core_omie = hass.services.has_service("omie", "get_prices_for_date")
-        unit_ok = "MWh" in unit or (core_omie and "kWh" in unit)
-        if not has_omie_keys and not unit_ok:
-            errors[CONF_PRICE_SENSOR] = "price_sensor_not_omie"
     return errors
 
 
