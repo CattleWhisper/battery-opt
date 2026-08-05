@@ -121,14 +121,30 @@ exact reference matches above also confirm the column-order assumption
    confirmed proceeding to Tasks 7–9. Open question #3 (is
    zero-export enforced by the device or must the plan limit power?)
    still blocks Task 7 and needs a check on the physical device.
-2. **Cheias cycling: capped, not unlimited.** The full-greedy 417
-   cycles/yr is not blessed as-is; the production optimiser will run
-   with a selectivity cap chosen from the gain-vs-cycles frontier
-   (see below in this section once measured). Implementation note:
-   the cap is expressed as a planning wear margin — the optimiser
-   plans with a wear cost above the true €0.020/kWh, which prunes the
-   least profitable cycles first; savings are always evaluated at the
-   true wear.
+2. **Cheias cycling: capped at plan_wear = 0.0467 (WEAR_COST_MAX).**
+   The cap is a planning wear margin: the optimiser plans with the
+   full replacement-cost wear bound already documented in CONTEXT.md,
+   pruning the least profitable cycles first; savings are always
+   booked at the true €0.020/kWh. Chosen point: **375 cycles/yr
+   (−10%), €323.64/yr — keeps 97.6% of the uncapped gain**, cycle
+   life ~16 years. The measured gain-vs-cycles frontier
+   (`backtest/run.py --plan-wear`, savings incl. VAT vs static
+   196.10):
+
+   | plan_wear | cycles/yr | saving €/yr | % of max gain |
+   |---|---|---|---|
+   | 0.020 (uncapped) | 417 | 326.73 | 100.0% |
+   | 0.040 | 386 | 325.08 | 98.7% |
+   | **0.0467 (chosen)** | **375** | **323.64** | **97.6%** |
+   | 0.060 | 363 | 321.22 | 95.8% |
+   | 0.080 | 343 | 315.28 | 91.2% |
+   | 0.100 | 314 | 303.18 | 82.0% |
+   | 0.130 | 240 | 262.33 | 50.7% |
+   | 0.160 | 174 | 214.23 | 13.9% |
+   | 0.200 | 101 | 146.46 | −38.0% (loses to static) |
+
+   The frontier is flat at the top — marginal cheias cycles earn
+   almost nothing individually — and falls off a cliff past ~0.10.
 3. **Reference figures: updated to measured.** CONTEXT.md
    §Reference figures and the docs/plan.md Task 5/6 lines now carry
    the backtested numbers (static €196.10, dynamic €326.73, second
@@ -137,6 +153,12 @@ exact reference matches above also confirm the column-order assumption
 4. **Second unit: not purchased.** Threshold met marginally
    (+€110.64/yr) but ~12.7-yr payback; recommendation accepted.
    Revisit only if the ERSE 2027 reform reshapes the economics.
+5. **Zero-export (open question #3): the device enforces it.** The
+   Marstek clamps discharge to consumption via its smart meter, so
+   C-1 in the plan is a defensive check, not the only line of
+   defence. Task 7 (driver) is unblocked; the executor still
+   validates every plan against C-1..C-7 before actuating (defence
+   in depth, spec §11).
 
 ---
 

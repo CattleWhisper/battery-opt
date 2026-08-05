@@ -205,8 +205,16 @@ def simulate(
     strategy: str,
     params: BatteryParams,
     price_model: PriceModel | None = None,
+    plan_wear: float | None = None,
 ) -> list[DayResult]:
-    """Replay a strategy over consecutive days, chaining the SoC."""
+    """
+    Replay a strategy over consecutive days, chaining the SoC.
+
+    `plan_wear` (the cheias-cycling cap from the Checkpoint B
+    decisions) makes the optimiser PLAN with an inflated wear cost —
+    pruning the least profitable cycles first — while savings are
+    always evaluated at the true `params.wear_cost_eur_kwh`.
+    """
     model = price_model or horaria_price_model()
     soc = params.start_soc_kwh
     results: list[DayResult] = []
@@ -217,7 +225,12 @@ def simulate(
         load_w = [BASE_LOAD_W] * n
         solar_w = [0.0] * n
         day_params = dataclasses.replace(params, soc_start_kwh=soc, interval_hours=dt)
-        plan = _plan_for(strategy, day, prices_kwh, load_w, solar_w, day_params)
+        solve_params = (
+            dataclasses.replace(day_params, wear_cost_eur_kwh=plan_wear)
+            if plan_wear is not None
+            else day_params
+        )
+        plan = _plan_for(strategy, day, prices_kwh, load_w, solar_w, solve_params)
         violations = validate_plan(plan, load_w, solar_w, day_params)
         if violations:
             msg = f"{strategy} plan invalid on {day}: {violations[:3]}"
@@ -294,6 +307,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=0,
         help="planning-day start hour (open question #4); greedy only",
     )
+    parser.add_argument(
+        "--plan-wear",
+        type=float,
+        default=None,
+        help="optimiser plans with this wear cost (cycle-cap lever); "
+        "savings always evaluated at --wear",
+    )
     return parser
 
 
@@ -326,7 +346,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         days = [(day, to_hourly(day_records)) for day, day_records in days]
     params = BatteryParams(cap_usable_kwh=args.cap, wear_cost_eur_kwh=args.wear)
     model = _price_model_from_args(args, records)
-    results = simulate(days, args.strategy, params, model)
+    results = simulate(days, args.strategy, params, model, plan_wear=args.plan_wear)
     # The static comparison only makes sense on calendar days: the
     # static schedule is day-indexed, so shifted planning windows
     # would feed it garbage.

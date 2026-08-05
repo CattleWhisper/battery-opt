@@ -228,7 +228,14 @@ Service calls against `marstek_venus_modbus` entities. **Never direct Modbus wri
    hourly-only. Remaining: confirm whether the `omie` HACS integration
    exposes quarter-hourly or only hourly (Phase 2).
 2. **Variable losses.** Where does E-Redes publish the quarter-hourly loss profiles?
-3. **Zero-export.** Is it enforced internally by the device, or must the plan limit power? This changes C-1 from an active constraint to a passive check.
-4. **End-of-day SoC target.** Fix at 27%, or plan 48 h and let the optimiser decide?
+3. ~~Zero-export~~ **RESOLVED** (owner, 2026-08-05): enforced internally by
+   the device via its smart meter. C-1 in the plan is a defensive check;
+   the executor still validates every plan before actuating (defence in
+   depth). See `docs/findings.md` §Checkpoint B decisions.
+4. ~~End-of-day SoC target~~ **RESOLVED** (Task 6): not material. A 13:00
+   planning boundary — the proxy for letting midday charge serve the next
+   morning — adds €4.95/yr (+1.5%) and cuts cycles 417→354. Midnight
+   planning with SoC chaining stands for v1; a 48 h horizon is an
+   efficiency refinement, not a different answer. See `docs/findings.md`.
 5. **2027 calendar.** The ERSE reform has no published dates or hours yet.
 6. **Solar interaction.** Validate the model (solar as load reduction) against real data after installation.

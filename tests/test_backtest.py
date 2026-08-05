@@ -197,6 +197,32 @@ def test_media_model_prices_at_window_period_average() -> None:
     assert vazio_a == pytest.approx(expected)
 
 
+def test_plan_wear_prunes_cycles_but_savings_use_true_wear() -> None:
+    """
+    A planning wear above the true wear trades saving for cycles.
+
+    The optimiser plans with the inflated wear (fewer, more selective
+    pairs); the evaluator always books the true 0.020. This is the
+    cheias-cycling cap mechanism from the Checkpoint B decisions.
+    """
+    day = date(2026, 1, 15)  # winter Thursday
+    # Alternating cheap/dear quarters give many marginal pairs.
+    midnight = datetime(day.year, day.month, day.day, tzinfo=TZ_LISBON)
+    records = [
+        PriceRecord(
+            start=midnight + timedelta(minutes=15 * i),
+            duration_hours=0.25,
+            price_eur_mwh=30.0 if i % 8 < 4 else 90.0,
+        )
+        for i in range(96)
+    ]
+    unlimited = simulate([(day, records)], "greedy", PARAMS)
+    pruned = simulate([(day, records)], "greedy", PARAMS, plan_wear=0.10)
+    assert pruned[0].discharge_kwh < unlimited[0].discharge_kwh
+    # Both evaluated at the true wear: the pruned run keeps most value.
+    assert 0 < pruned[0].saving_eur <= unlimited[0].saving_eur
+
+
 def test_greedy_chain_carries_no_stale_soc_between_runs() -> None:
     """Two simulate() calls are independent: no hidden state."""
     day = date(2026, 7, 15)
