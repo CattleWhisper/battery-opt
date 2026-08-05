@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Battery Opt",
-        "description": "Pick the marstek_modbus entities and the OMIE price entity, then set the battery parameters (defaults from CONTEXT.md). Note: force_mode, set_charge_power and set_discharge_power ship disabled by default in the Marstek integration - enable them first.",
+        "description": "Pick the OMIE price entity and the battery parameters (defaults from CONTEXT.md). The marstek_modbus entities are optional until the battery arrives: leave all four empty for planning-only mode (plans and savings are computed, nothing actuates). Note: force_mode, set_charge_power and set_discharge_power ship disabled by default in the Marstek integration - enable them first.",
         "data": {
           "mode_select": "Battery mode select entity (force_mode)",
           "charge_power_number": "Charge power entity (set_charge_power)",
@@ -16,6 +16,9 @@
           "plan_wear_eur_kwh": "Planning wear \u2014 cycle cap (EUR/kWh)"
         }
       }
+    },
+    "error": {
+      "battery_entities_all_or_none": "Provide all four battery entities, or none of them (planning-only mode until the battery arrives)."
     }
   },
   "options": {

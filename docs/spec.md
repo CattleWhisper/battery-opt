@@ -225,8 +225,10 @@ Service calls against `marstek_venus_modbus` entities. **Never direct Modbus wri
    (H1Q1 = 00:00–00:15 CET) since the SDAC 15-minute MTU go-live on
    2025-10-01. 96 periods/day, matching EDP's billing granularity. The
    backtest has true quarter-hourly data for 11 of 12 months; Sep-2025 is
-   hourly-only. Remaining: confirm whether the `omie` HACS integration
-   exposes quarter-hourly or only hourly (Phase 2).
+   hourly-only. Production half **RESOLVED** (2026-08-05): the `omie` HACS
+   integration (luuuis/hass_omie, verified from source) is quarter-hourly —
+   `today_hours`/`tomorrow_hours` attributes carry local quarter-hour-start
+   datetimes → €/MWh, with `*_provisional` flags.
 2. **Variable losses.** Where does E-Redes publish the quarter-hourly loss profiles?
 3. ~~Zero-export~~ **RESOLVED** (owner, 2026-08-05): enforced internally by
    the device via its smart meter. C-1 in the plan is a defensive check;

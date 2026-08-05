@@ -7,7 +7,7 @@ entry lifecycle — form, entry creation, coordinator first refresh
 against a fake SoC sensor state, and the options flow.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -115,6 +115,95 @@ async def test_options_flow_edits_parameters(hass: HomeAssistant) -> None:
     assert coordinator.plan_wear_eur_kwh == pytest.approx(0.06)
 
 
+def _omie_attributes(day_offset: int = 0) -> dict:
+    """Build a full hass_omie-shaped day of quarter-hourly data."""
+    from homeassistant.util import dt as dt_util  # noqa: PLC0415
+
+    day = dt_util.now().date() + timedelta(days=day_offset)
+    midnight = datetime(day.year, day.month, day.day, tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    return {
+        "today_hours": {midnight + timedelta(minutes=15 * i): 60.0 for i in range(96)},
+    }
+
+
+async def test_planning_only_without_battery_entities(hass: HomeAssistant) -> None:
+    """
+    No battery yet: the entry loads, plans and savings are computed.
+
+    The four marstek entities are simply absent; the coordinator reads
+    the OMIE sensor and publishes the capped-greedy advisory plan with
+    nothing to actuate.
+    """
+    hass.states.async_set(
+        "sensor.omie_spot_price_pt", "60.0", attributes=_omie_attributes()
+    )
+    data = {
+        key: value
+        for key, value in VALID_INPUT.items()
+        if key
+        not in (
+            CONF_MODE_SELECT,
+            CONF_CHARGE_POWER_NUMBER,
+            CONF_DISCHARGE_POWER_NUMBER,
+            CONF_SOC_SENSOR,
+        )
+    }
+    data[CONF_PRICE_SENSOR] = "sensor.omie_spot_price_pt"
+    entry = MockConfigEntry(domain=DOMAIN, data=data)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.executor is None
+
+    coordinator = entry.runtime_data.coordinator
+    assert coordinator.planning_only
+    assert coordinator.data["prices_ok"] is True
+    assert len(coordinator.data["plan_charge_w"]) == 96
+    assert coordinator.data["forecast_saving_eur"] is not None
+    assert coordinator.data["vs_static_eur"] is not None
+
+    plan_state = hass.states.get("sensor.battery_opt_plan")
+    assert plan_state.attributes["mode"] == "planning_only"
+    assert plan_state.state in ("charge", "discharge", "idle")
+    savings = hass.states.get("sensor.battery_opt_forecast_savings")
+    assert savings.state not in ("unknown", "unavailable")
+    assert hass.states.get("sensor.battery_opt_vs_static") is not None
+    healthy = hass.states.get("binary_sensor.battery_opt_healthy")
+    assert healthy.state == "on"
+    assert "planning only" in healthy.attributes["status"]
+
+
+async def test_planning_only_without_prices_is_unhealthy(
+    hass: HomeAssistant,
+) -> None:
+    """Planning-only with no OMIE data: loaded but unhealthy, no plan."""
+    data = {CONF_PRICE_SENSOR: "sensor.omie_spot_price_pt"}
+    entry = MockConfigEntry(domain=DOMAIN, data=data)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.coordinator.data["prices_ok"] is False
+    assert hass.states.get("binary_sensor.battery_opt_healthy").state == "off"
+    assert hass.states.get("sensor.battery_opt_forecast_savings").state == "unknown"
+
+
+async def test_flow_rejects_partial_battery_entities(hass: HomeAssistant) -> None:
+    """One battery entity without the others is a form error."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    partial = {
+        key: value
+        for key, value in VALID_INPUT.items()
+        if key not in (CONF_CHARGE_POWER_NUMBER, CONF_DISCHARGE_POWER_NUMBER)
+    }
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], partial)
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "battery_entities_all_or_none"}
+
+
 async def test_entities_exist_and_health_follows_the_executor(
     hass: HomeAssistant,
 ) -> None:
@@ -141,5 +230,8 @@ async def test_entities_exist_and_health_follows_the_executor(
     assert hass.states.get("binary_sensor.battery_opt_healthy").state == "on"
     plan_state = hass.states.get("sensor.battery_opt_plan")
     assert plan_state.state == "idle"
-    assert plan_state.attributes["plan_date"] == "2026-01-15"
-    assert len(plan_state.attributes["charge_w"]) == 96
+    assert plan_state.attributes["mode"] == "active"
+    assert plan_state.attributes["executor_plan_date"] == "2026-01-15"
+    # No OMIE data in this test: the advisory plan is empty, and that
+    # is orthogonal to the executor's static actuation.
+    assert plan_state.attributes["prices_ok"] is False

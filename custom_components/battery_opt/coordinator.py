@@ -1,14 +1,26 @@
 """
 Data update coordinator for battery_opt.
 
-Task 8 scope: poll the battery SoC through the driver and expose the
-effective BatteryParams built from the config entry. Planning, price
-ingestion and actuation arrive with Tasks 9-12; nothing here blocks
-the event loop — the driver reads entity states, no I/O of its own.
+Two modes, decided by whether the Marstek entities are configured:
+
+- planning-only (battery not yet installed): no driver — each refresh
+  reads the OMIE price sensor, computes the day's advisory plan with
+  the capped greedy (plans at the plan-wear from the Checkpoint B
+  decision, books savings at the true wear), and publishes plan +
+  forecast saving + the vs-static delta. Nothing actuates. The
+  virtual battery starts each day at the reserve floor.
+- full: additionally polls the SoC through the driver; the executor
+  (separate) actuates the static plan per Phase 1. The advisory plan
+  is still computed — it is the dry-run the spec's Task 12 wants
+  before dynamic actuation is ever enabled.
+
+The greedy over 96 intervals is milliseconds — safe inline on the
+event loop (ADR-0002); nothing here blocks.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -17,10 +29,13 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
+from homeassistant.util import dt as dt_util
 
 from .const import (
+    BASE_LOAD_W,
     CONF_CAPACITY_KWH,
     CONF_PLAN_WEAR,
+    CONF_PRICE_SENSOR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_WEAR_COST,
     DEFAULT_CAPACITY_KWH,
@@ -30,8 +45,11 @@ from .const import (
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
-from .core.plan import BatteryParams
+from .core.optimiser import solve
+from .core.plan import BatteryParams, saving_vs_no_cycling, validate_plan
+from .core.static_schedule import static_plan
 from .driver import DriverError
+from .prices_source import day_price_vector
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,15 +61,15 @@ if TYPE_CHECKING:
 
 
 class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Poll SoC and hold the effective parameters."""
+    """Poll SoC (when a battery exists) and compute the advisory plan."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        driver: BatteryDriver,
+        driver: BatteryDriver | None,
     ) -> None:
-        """Bind to the config entry and the battery driver."""
+        """Bind to the config entry; driver is None in planning-only."""
         super().__init__(
             hass,
             logger=_LOGGER,
@@ -60,6 +78,11 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.entry = entry
         self.driver = driver
+
+    @property
+    def planning_only(self) -> bool:
+        """True while no battery is configured."""
+        return self.driver is None
 
     @property
     def battery_params(self) -> BatteryParams:
@@ -80,14 +103,76 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return float(merged.get(CONF_PLAN_WEAR, DEFAULT_PLAN_WEAR))
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Read the SoC; a driver failure marks the coordinator failed."""
-        try:
-            soc_percent = await self.driver.read_soc()
-        except DriverError as err:
-            msg = f"battery SoC unavailable: {err}"
-            raise UpdateFailed(msg) from err
+        """Read the SoC (full mode) and compute the advisory plan."""
         params = self.battery_params
-        return {
-            "soc_percent": soc_percent,
-            "soc_kwh": soc_percent / 100.0 * params.cap_usable_kwh,
+        data: dict[str, Any] = {"soc_percent": None, "soc_kwh": None}
+        if self.driver is not None:
+            try:
+                soc_percent = await self.driver.read_soc()
+            except DriverError as err:
+                msg = f"battery SoC unavailable: {err}"
+                raise UpdateFailed(msg) from err
+            data["soc_percent"] = soc_percent
+            data["soc_kwh"] = soc_percent / 100.0 * params.cap_usable_kwh
+        data.update(self._advisory_plan(params, data["soc_kwh"]))
+        return data
+
+    def _advisory_plan(
+        self,
+        params: BatteryParams,
+        soc_kwh: float | None,
+    ) -> dict[str, Any]:
+        """Compute today's capped-greedy plan from the OMIE sensor."""
+        empty = {
+            "prices_ok": False,
+            "plan_date": None,
+            "plan_charge_w": None,
+            "plan_discharge_w": None,
+            "forecast_saving_eur": None,
+            "vs_static_eur": None,
         }
+        price_state = self.hass.states.get(self.entry.data[CONF_PRICE_SENSOR])
+        if price_state is None:
+            return empty
+        today = dt_util.now().date()
+        prices = day_price_vector(price_state.attributes, today)
+        if prices is None:
+            return empty
+        n = len(prices)
+        load = [BASE_LOAD_W] * n
+        solar = [0.0] * n
+        # Virtual battery starts at the floor until a real SoC exists.
+        start_soc = params.cap_min_kwh if soc_kwh is None else soc_kwh
+        plan_params = dataclasses.replace(params, soc_start_kwh=start_soc)
+        solve_params = dataclasses.replace(
+            plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
+        )
+        result = solve(prices, load, solar, solve_params)
+        if validate_plan(result.plan, load, solar, plan_params):
+            return empty  # cannot happen by construction; fail closed
+        static = static_plan(today, load, solar, plan_params)
+        greedy_saving = saving_vs_no_cycling(result.plan, prices, plan_params)
+        static_saving = saving_vs_no_cycling(static, prices, plan_params)
+        return {
+            "prices_ok": True,
+            "plan_date": today,
+            "plan_charge_w": list(result.plan.charge_w),
+            "plan_discharge_w": list(result.plan.discharge_w),
+            "forecast_saving_eur": round(greedy_saving, 4),
+            "vs_static_eur": round(greedy_saving - static_saving, 4),
+        }
+
+    def planned_action_now(self) -> str:
+        """Return the advisory plan action for the current quarter-hour."""
+        data = self.data or {}
+        charge = data.get("plan_charge_w")
+        discharge = data.get("plan_discharge_w")
+        if not charge or data.get("plan_date") != dt_util.now().date():
+            return "unknown"
+        now = dt_util.now()
+        index = min((now.hour * 60 + now.minute) // 15, len(charge) - 1)
+        if charge[index] > 0:
+            return "charge"
+        if discharge[index] > 0:
+            return "discharge"
+        return "idle"

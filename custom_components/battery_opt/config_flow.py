@@ -88,12 +88,21 @@ def _parameter_schema(defaults: dict[str, Any]) -> dict[vol.Marker, Any]:
     }
 
 
+# Battery entities are optional as a group: absent until the battery
+# arrives (planning-only mode), all three once it does.
+BATTERY_ENTITY_KEYS = (
+    CONF_MODE_SELECT,
+    CONF_CHARGE_POWER_NUMBER,
+    CONF_DISCHARGE_POWER_NUMBER,
+    CONF_SOC_SENSOR,
+)
+
 _USER_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_MODE_SELECT): _entity("select"),
-        vol.Required(CONF_CHARGE_POWER_NUMBER): _entity("number"),
-        vol.Required(CONF_DISCHARGE_POWER_NUMBER): _entity("number"),
-        vol.Required(CONF_SOC_SENSOR): _entity("sensor"),
+        vol.Optional(CONF_MODE_SELECT): _entity("select"),
+        vol.Optional(CONF_CHARGE_POWER_NUMBER): _entity("number"),
+        vol.Optional(CONF_DISCHARGE_POWER_NUMBER): _entity("number"),
+        vol.Optional(CONF_SOC_SENSOR): _entity("sensor"),
         vol.Required(CONF_PRICE_SENSOR): _entity("sensor"),
         **_parameter_schema({}),
     }
@@ -110,9 +119,15 @@ class BatteryOptConfigFlow(ConfigFlow, domain=DOMAIN):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Collect everything in a single form."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="Battery Opt", data=user_input)
-        return self.async_show_form(step_id="user", data_schema=_USER_SCHEMA)
+            provided = sum(1 for key in BATTERY_ENTITY_KEYS if key in user_input)
+            if provided in (0, len(BATTERY_ENTITY_KEYS)):
+                return self.async_create_entry(title="Battery Opt", data=user_input)
+            errors["base"] = "battery_entities_all_or_none"
+        return self.async_show_form(
+            step_id="user", data_schema=_USER_SCHEMA, errors=errors
+        )
 
     @staticmethod
     @callback

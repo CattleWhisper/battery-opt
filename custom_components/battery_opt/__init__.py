@@ -33,10 +33,15 @@ PLATFORMS: list[str] = ["binary_sensor", "sensor"]
 
 @dataclass
 class BatteryOptRuntime:
-    """Everything the platforms need from a loaded entry."""
+    """
+    Everything the platforms need from a loaded entry.
+
+    `executor` is None in planning-only mode (no battery configured):
+    plans are computed and published, nothing actuates.
+    """
 
     coordinator: BatteryOptCoordinator
-    executor: BatteryOptExecutor
+    executor: BatteryOptExecutor | None
 
 
 type BatteryOptConfigEntry = ConfigEntry[BatteryOptRuntime]
@@ -58,42 +63,57 @@ async def async_setup_entry(
     from .driver import MarstekDriver, MarstekEntities  # noqa: PLC0415
     from .executor import BatteryOptExecutor  # noqa: PLC0415
 
-    entities = MarstekEntities(
-        mode_select=entry.data[CONF_MODE_SELECT],
-        charge_power_number=entry.data[CONF_CHARGE_POWER_NUMBER],
-        discharge_power_number=entry.data[CONF_DISCHARGE_POWER_NUMBER],
-        soc_sensor=entry.data[CONF_SOC_SENSOR],
+    battery_keys = (
+        CONF_MODE_SELECT,
+        CONF_CHARGE_POWER_NUMBER,
+        CONF_DISCHARGE_POWER_NUMBER,
+        CONF_SOC_SENSOR,
     )
-    driver = MarstekDriver(hass, entities)
+    has_battery = all(key in entry.data for key in battery_keys)
+    driver = None
+    if has_battery:
+        entities = MarstekEntities(
+            mode_select=entry.data[CONF_MODE_SELECT],
+            charge_power_number=entry.data[CONF_CHARGE_POWER_NUMBER],
+            discharge_power_number=entry.data[CONF_DISCHARGE_POWER_NUMBER],
+            soc_sensor=entry.data[CONF_SOC_SENSOR],
+        )
+        driver = MarstekDriver(hass, entities)
     coordinator = BatteryOptCoordinator(hass, entry, driver)
     await coordinator.async_config_entry_first_refresh()
 
-    def _notify(message: str) -> None:
-        hass.async_create_task(
-            hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {"title": "Battery Opt", "message": message},
-            )
-        )
+    executor = None
+    if driver is not None:
 
-    executor = BatteryOptExecutor(
-        driver=driver,
-        get_params=lambda: coordinator.battery_params,
-        get_soc_kwh=lambda: (coordinator.data or {}).get("soc_kwh"),
-        notify=_notify,
-    )
+        def _notify(message: str) -> None:
+            hass.async_create_task(
+                hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {"title": "Battery Opt", "message": message},
+                )
+            )
+
+        executor = BatteryOptExecutor(
+            driver=driver,
+            get_params=lambda: coordinator.battery_params,
+            get_soc_kwh=lambda: (coordinator.data or {}).get("soc_kwh"),
+            notify=_notify,
+        )
     entry.runtime_data = BatteryOptRuntime(coordinator=coordinator, executor=executor)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    async def _on_quarter_hour(now: datetime) -> None:
-        await executor.tick(dt_util.as_local(now))
+    if executor is not None:
+        actuator = executor
 
-    entry.async_on_unload(
-        async_track_time_change(
-            hass, _on_quarter_hour, minute=[0, 15, 30, 45], second=0
+        async def _on_quarter_hour(now: datetime) -> None:
+            await actuator.tick(dt_util.as_local(now))
+
+        entry.async_on_unload(
+            async_track_time_change(
+                hass, _on_quarter_hour, minute=[0, 15, 30, 45], second=0
+            )
         )
-    )
     return True
 
 
