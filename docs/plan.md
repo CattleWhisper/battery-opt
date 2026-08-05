@@ -385,6 +385,18 @@ entity; the full day vector and TAR period ride in the attributes.
 | ERSE 2027 calendar | ERSE publishes the new hours |
 | Second unit | Checkpoint B shows gain ≥€100/year |
 | Publish `pt-erse-tariff` as a package | Third-party interest |
+| Actual-cost sensor from the meter | Owner picks the grid-import energy sensor |
+
+**Actual-cost sensor (requested 2026-08-05):** a `sensor.battery_opt_cost_today`
+(EUR, total_increasing, resetting daily) fed by the household meter's
+grid-import energy sensor: each quarter-hour's consumed kWh × the delivered
+price for that quarter, **plus the per-day fixed terms** (K3 €0.1171/day +
+TAR potência €0.2291/day) — which a €/kWh price sensor can never carry.
+`core.prices.total_daily_cost()` already implements the arithmetic. VAT is
+deliberately left out: the reduced rate on the first 200 kWh/30 days makes
+it a billing-window computation, not a per-quarter one — revisit alongside
+Task 13's invoice reconciliation, which needs that logic anyway. Config
+addition: an optional meter-entity selector in the options flow.
 
 ---
 
