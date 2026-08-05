@@ -151,6 +151,12 @@ Battery payback at €1,400: ~5.4 years. Cycle life: ~29 years (the 10-year warr
 The battery earns nothing until the tariff option changes. Phase 0 exists
 because of this, not in spite of it.
 
+**Decision at month 3:** staying on the 15% fixed tariff costs ~€1,437/yr;
+moving to Indexada Horária tri-horária with the battery costs ~€1,254/yr —
+a €183/yr advantage for switching. That margin absorbs a ~16 €/MWh rise in
+average OMIE before it becomes neutral. During the 35% promotion the fixed
+tariff wins by ~€118/yr, so do not switch early.
+
 ---
 
 ## Known traps

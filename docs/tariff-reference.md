@@ -133,12 +133,6 @@ The model predicts, for a flat load in summer weekly cycle: 15/168 = **8.93%** �
 > sitting below *both* models is a separate observation recorded in
 > `docs/findings.md`.
 
-The literal 30-day invoice window (starting Tue 2 Jun 2026) contains 22 ponta
-days, giving 9.17%. The 8.93% figure above is the structural whole-week value
-(15/168) and is what the test compares against. Measured 8.7% sits below both,
-suggesting a small mid-morning dip or a slight ponta-window offset — revisit
-with 15-minute load data in Phase 2.
-
 ---
 
 ## 5. OMIE reference series (MA30, €/MWh)
@@ -152,13 +146,6 @@ with 15-minute load data in Phase 2.
 > from raw OMIE data to ≤0.01%. A few cells were sampled on slightly
 > different dates (notably Oct-25 ponta; see `docs/findings.md`);
 > `tests/test_omie_validation.py` pins those individually.
-
-> **Window convention:** a row labelled month M covers [day 2 of M−1, day 2 of M),
-> matching the EDP billing cycle — not the calendar month. Dec-25, May-26 and
-> Jul-26 reproduce to ≤0.01% under this alignment. Five values deviate and are
-> pinned in `tests/test_omie_validation.py`; Oct-25 ponta (ref 24.09, computed
-> 18.46) is unexplained and the reference is suspect — the window straddles the
-> 26 Oct season switch.
 
 | Month | Vazio | Cheias | Ponta |
 |---|---|---|---|

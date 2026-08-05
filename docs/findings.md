@@ -112,3 +112,33 @@ exact reference matches above also confirm the column-order assumption
 - `tests/fixtures/omie/` (committed): four real files — hourly
   (2025-09-15), quarter-hourly (2026-04-15), autumn DST (2025-10-26,
   100 periods), spring DST (2026-03-29, 92 periods).
+
+---
+
+## Negative OMIE prices
+
+Delivered price = OMIE/1000 × 1.164 × 1.08 + 0.0185 + TAR. K2 and TAR are added
+regardless of sign, so a negative OMIE does not produce a negative bill:
+
+| Period | Delivered price at OMIE = −20 €/MWh |
+|---|---|
+| Vazio | +€0.0092/kWh |
+| Cheias | +€0.0347/kWh |
+| Ponta | +€0.2386/kWh |
+
+Break-even OMIE for a zero delivered price: ~−27 €/MWh (vazio), −48 (cheias),
+−209 (ponta). The first two are reachable on extreme days; the third is not.
+
+Strategy is unaffected. The pairing condition `price[d] > price[c]/η + WEAR_COST`
+handles negative prices correctly without a special case: a negative `price[c]`
+divided by 0.90 becomes more negative, which is right — if you are paid to
+consume, conversion losses become revenue rather than cost.
+
+A negative price can never invert the ponta/vazio ranking; that would require
+`OMIE_ponta − OMIE_vazio < −182 €/MWh`, which does not occur.
+
+**Implications for Task 4:** nothing may assume prices are positive — no `abs()`,
+no `max(0, price)`. The property-test generator must draw from roughly −50 to
++300 €/MWh, not 0 to 300. The parser should reject values outside the SDAC
+harmonised clearing limits (~−500 to +4000 €/MWh) as parse errors rather than
+trusting them.

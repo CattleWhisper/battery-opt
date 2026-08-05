@@ -85,6 +85,31 @@ def test_timestamps_are_strictly_increasing_in_real_time() -> None:
         assert deltas == {900.0}  # every interval exactly 15 real minutes
 
 
+def test_parser_rejects_prices_outside_sdac_clearing_limits(
+    tmp_path: Path,
+) -> None:
+    """
+    Values beyond ~-500..+4000 EUR/MWh are parse errors, not data.
+
+    Per docs/findings.md "Negative OMIE prices": negative prices are
+    legitimate and must flow through, but values outside the SDAC
+    harmonised clearing limits can only be corruption.
+    """
+    for bad in ("-600", "4500"):
+        target = tmp_path / "marginalpdbc_20260101.1"
+        target.write_text(f"MARGINALPDBC;\n2026;01;01;1;{bad};{bad};\n*\n")
+        with pytest.raises(ValueError, match="clearing limits"):
+            parse_file(target)
+
+
+def test_parser_accepts_negative_prices_within_limits(tmp_path: Path) -> None:
+    """A legitimately negative price parses and keeps its sign."""
+    target = tmp_path / "marginalpdbc_20260101.1"
+    target.write_text("MARGINALPDBC;\n2026;01;01;1;-27.5;-27.5;\n*\n")
+    records = parse_file(target)
+    assert records[0].price_eur_mwh == -27.5
+
+
 def test_load_series_reads_a_date_range() -> None:
     """load_series globs per-day files (any version suffix) in order."""
     records = load_series(FIXTURES, date(2025, 9, 15), date(2025, 9, 15))

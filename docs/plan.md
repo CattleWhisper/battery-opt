@@ -43,7 +43,7 @@ Build bottom-up. `calendar.py` first, always — it is the most likely source of
 
 **Goal:** produce real numbers for the three open decisions.
 **Deadline:** end of the 35% promotional period (~3 months).
-**Note:** th    e battery cannot earn anything on the current simples tariff.
+**Note:** the battery cannot earn anything on the current simples tariff.
 This window is for validating automations and producing Checkpoint B numbers,
 not for capturing savings.
 
@@ -180,6 +180,11 @@ Run the backtest in the following configurations and record results in `docs/fin
 | Is a second unit worth it? | `--cap 5` vs `--cap 10` | Gain ≥ €100/year → reconsider the purchase |
 | Horária or Média? | `--k1 1.08 --hourly` vs `--k1 1.10 --monthly` | Confirms the tariff choice |
 | Switch tariff now? | `--tariff horaria-tri` vs `--tariff simples-15` | Gain ≥ €100/yr → switch when the 35% expires |
+
+**Scope Checkpoint B to the 11 quarter-hourly months (Oct 2025 onward).**
+Sep-2025 is hourly-only, and intra-period selection is precisely what the
+dynamic optimiser is being measured on — including it dilutes the result.
+Report Sep-2025 separately as a data point on what resolution is worth.
 
 **If dynamic yields <€30/year: stop here.** Run the static schedule manually or with a trivial YAML automation. Phase 1 onward stops being justified.
 

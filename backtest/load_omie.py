@@ -38,6 +38,13 @@ DATA_DIR = Path(__file__).parent / "data" / "omie"
 
 _HOURLY_MAX_PERIODS = 25  # 23/24/25 periods -> hourly; 92/96/100 -> quarter-hourly
 
+# SDAC harmonised day-ahead clearing limits (EUR/MWh). Negative prices
+# are legitimate market outcomes and must flow through untouched, but
+# values beyond these bounds can only be corrupt data (findings.md,
+# "Negative OMIE prices").
+_PRICE_MIN_EUR_MWH = -500.0
+_PRICE_MAX_EUR_MWH = 4000.0
+
 
 @dataclass(frozen=True)
 class PriceRecord:
@@ -56,7 +63,15 @@ def parse_file(path: Path) -> list[PriceRecord]:
         if len(fields) < 6 or not fields[0].isdigit():
             continue  # header, sentinel or blank
         delivery = date(int(fields[0]), int(fields[1]), int(fields[2]))
-        rows.append((delivery, int(fields[3]), float(fields[4])))
+        price = float(fields[4])
+        if not _PRICE_MIN_EUR_MWH <= price <= _PRICE_MAX_EUR_MWH:
+            msg = (
+                f"{path.name}: price {price} EUR/MWh on {delivery} is outside "
+                f"the SDAC clearing limits [{_PRICE_MIN_EUR_MWH}, "
+                f"{_PRICE_MAX_EUR_MWH}] - corrupt data"
+            )
+            raise ValueError(msg)
+        rows.append((delivery, int(fields[3]), price))
 
     duration = 1.0 if len(rows) <= _HOURLY_MAX_PERIODS else 0.25
     records = []
