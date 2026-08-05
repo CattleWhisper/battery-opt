@@ -39,10 +39,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           category: integration
-          # brands: remove when brand images are added
-          #   https://developers.home-assistant.io/docs/creating_integration_file_structure#local-brand-images-for-custom-integrations
-          # hacsjson + integration_manifest: HACS fetches raw file contents
-          #   without auth, which fails on a PRIVATE repository (verified in
-          #   hacs/integration validate sources) — hassfest covers the
-          #   manifest meanwhile. Remove both when the repo goes public.
-          ignore: brands hacsjson integration_manifest
+          # Remove this 'ignore' key when you have added brand images for your integration
+          # https://developers.home-assistant.io/docs/creating_integration_file_structure#local-brand-images-for-custom-integrations
+          ignore: brands
