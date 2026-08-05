@@ -25,3 +25,5 @@ DEFAULT_WEAR_COST = 0.020
 DEFAULT_PLAN_WEAR = 0.0467  # WEAR_COST_MAX; Checkpoint B cycle cap
 
 UPDATE_INTERVAL_MINUTES = 15
+
+BASE_LOAD_W = 1040.0  # CONTEXT.md: flat 24/7 load; Task 11 adds forecasting

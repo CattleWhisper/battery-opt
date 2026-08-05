@@ -2,13 +2,14 @@
 Battery Opt — TAR arbitrage planner for the Marstek Venus E 3.0.
 
 Phase 1 shell: config entry setup wires the driver (ADR-0004: service
-calls only, never Modbus) and the coordinator. Platforms (sensors,
-binary sensor, executor) arrive with Task 9. `core/` stays free of
-homeassistant imports (ADR-0001).
+calls only, never Modbus), the coordinator, and the 15-minute
+executor running the static plan. `core/` stays free of homeassistant
+imports (ADR-0001).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .const import (
@@ -19,28 +20,43 @@ from .const import (
 )
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
     from .coordinator import BatteryOptCoordinator
+    from .executor import BatteryOptExecutor
 
-# Task 9 adds ["sensor", "binary_sensor"].
-PLATFORMS: list[str] = []
+PLATFORMS: list[str] = ["binary_sensor", "sensor"]
 
-type BatteryOptConfigEntry = ConfigEntry[BatteryOptCoordinator]
+
+@dataclass
+class BatteryOptRuntime:
+    """Everything the platforms need from a loaded entry."""
+
+    coordinator: BatteryOptCoordinator
+    executor: BatteryOptExecutor
+
+
+type BatteryOptConfigEntry = ConfigEntry[BatteryOptRuntime]
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: BatteryOptConfigEntry,
 ) -> bool:
-    """Wire driver and coordinator for a config entry."""
+    """Wire driver, coordinator and executor for a config entry."""
     # Imported here, not at module top: this package also hosts the
     # HA-free `core/` (ADR-0001), and a submodule import triggers this
     # __init__ — the backtest and core tests must not drag in
     # homeassistant. Guarded by tests/test_ha_free_core.py.
+    from homeassistant.helpers.event import async_track_time_change  # noqa: PLC0415
+    from homeassistant.util import dt as dt_util  # noqa: PLC0415
+
     from .coordinator import BatteryOptCoordinator  # noqa: PLC0415
     from .driver import MarstekDriver, MarstekEntities  # noqa: PLC0415
+    from .executor import BatteryOptExecutor  # noqa: PLC0415
 
     entities = MarstekEntities(
         mode_select=entry.data[CONF_MODE_SELECT],
@@ -51,8 +67,33 @@ async def async_setup_entry(
     driver = MarstekDriver(hass, entities)
     coordinator = BatteryOptCoordinator(hass, entry, driver)
     await coordinator.async_config_entry_first_refresh()
-    entry.runtime_data = coordinator
+
+    def _notify(message: str) -> None:
+        hass.async_create_task(
+            hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {"title": "Battery Opt", "message": message},
+            )
+        )
+
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: coordinator.battery_params,
+        get_soc_kwh=lambda: (coordinator.data or {}).get("soc_kwh"),
+        notify=_notify,
+    )
+    entry.runtime_data = BatteryOptRuntime(coordinator=coordinator, executor=executor)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    async def _on_quarter_hour(now: datetime) -> None:
+        await executor.tick(dt_util.as_local(now))
+
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, _on_quarter_hour, minute=[0, 15, 30, 45], second=0
+        )
+    )
     return True
 
 
@@ -60,5 +101,5 @@ async def async_unload_entry(
     hass: HomeAssistant,
     entry: BatteryOptConfigEntry,
 ) -> bool:
-    """Unload the entry's platforms."""
+    """Unload the entry's platforms; the timer dies with the entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
