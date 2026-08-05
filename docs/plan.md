@@ -42,7 +42,10 @@ Build bottom-up. `calendar.py` first, always — it is the most likely source of
 ## PHASE 0 — Observation (no Home Assistant)
 
 **Goal:** produce real numbers for the three open decisions.
-**Deadline:** March 2027 (tariff switch date).
+**Deadline:** end of the 35% promotional period (~3 months).
+**Note:** th    e battery cannot earn anything on the current simples tariff.
+This window is for validating automations and producing Checkpoint B numbers,
+not for capturing savings.
 
 ### Task 1: Tariff calendar
 
@@ -176,6 +179,7 @@ Run the backtest in the following configurations and record results in `docs/fin
 | Is dynamic worth it? | `--strategy greedy` vs `--strategy static` | Gain ≥ €30/year → proceed to Phase 1 |
 | Is a second unit worth it? | `--cap 5` vs `--cap 10` | Gain ≥ €100/year → reconsider the purchase |
 | Horária or Média? | `--k1 1.08 --hourly` vs `--k1 1.10 --monthly` | Confirms the tariff choice |
+| Switch tariff now? | `--tariff horaria-tri` vs `--tariff simples-15` | Gain ≥ €100/yr → switch when the 35% expires |
 
 **If dynamic yields <€30/year: stop here.** Run the static schedule manually or with a trivial YAML automation. Phase 1 onward stops being justified.
 

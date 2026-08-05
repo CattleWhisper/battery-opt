@@ -140,6 +140,19 @@ Battery payback at €1,400: ~5.4 years. Cycle life: ~29 years (the 10-year warr
 
 ---
 
+### Current tariff state
+
+| Period | Tariff | Energy €/kWh | Battery arbitrage |
+|---|---|---|---|
+| Now → month 3 | Simples, 35% discount | 0.1086 | **None** — simples has no period differentiation |
+| Month 3 → Mar 2027 | Simples, 15% discount | 0.1420 | None |
+| Target | Indexada Horária, tri-horária, weekly | variable | ~€267/yr static, €300–345 dynamic |
+
+The battery earns nothing until the tariff option changes. Phase 0 exists
+because of this, not in spite of it.
+
+---
+
 ## Known traps
 
 - **The calendar is the most likely source of error in the entire system.** Weekends, daylight-saving changes, and the 09:15 / 12:15 / 18:30 boundaries. A mistake here discharges into cheias for six months without raising any signal.

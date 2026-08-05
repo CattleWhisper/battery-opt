@@ -44,7 +44,11 @@ A Home Assistant integration that, each day after OMIE publishes day-ahead price
 2. Marstek smart meter installed; **zero-export active**.
 3. Contracted power **4.6 kVA**, no intention to increase.
 4. Household load **flat at ~1.04 kW**, dominated by AC and homelab running 24/7.
-5. Target tariff: **EDP Indexada Horária DD+FE, tri-horária, weekly cycle**, from **March 2027** (the current fixed tariff's 15% discount remains competitive until then).
+5. Target tariff: **EDP Indexada Horária DD+FE, tri-horária, weekly cycle**.
+   A 35% energy discount runs on the current simples tariff for the next
+   3 months, during which the fixed tariff beats indexed-plus-battery by
+   ~€118/year. The switch decision is taken when that promotion expires;
+   at the 15% discount level, switching is worth ~€183/year.
 6. Control via **local Modbus TCP**, through the `marstek_venus_modbus` integration.
 7. A 460 W balcony solar panel may or may not be installed. The system works either way.
 
