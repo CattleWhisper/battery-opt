@@ -26,6 +26,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 if TYPE_CHECKING:
+    from freezegun.api import FrozenDateTimeFactory
     from homeassistant.core import HomeAssistant
 
 from custom_components.battery_opt.const import (
@@ -279,6 +280,7 @@ async def test_planning_only_computes_plan_from_core_omie(
 
 async def test_current_price_sensor_tracks_the_edp_formula(
     hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """
     The price sensor carries the delivered price for right now.
@@ -287,7 +289,14 @@ async def test_current_price_sensor_tracks_the_edp_formula(
     state_class measurement) so the Energy dashboard accepts it.
     The stub serves a flat 0.06 EUR/kWh spot = 60 EUR/MWh, so the
     expected state is the EDP formula applied to 60 at this instant.
+
+    Time is frozen well inside a single tariff period in both the
+    default test hass timezone (US/Pacific) and Europe/Lisbon: without
+    this, the assertion is a real wall-clock race between the price
+    the sensor snapshots at setup and the fresh price() call below,
+    and flakes for real near a period boundary in either timezone.
     """
+    freezer.move_to("2026-07-15T20:00:00+00:00")  # Wed 13:00 Pacific / 21:00 Lisbon
     _register_core_omie_service(hass)
     entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
     entry.add_to_hass(hass)
@@ -376,8 +385,8 @@ async def test_all_entities_group_under_one_service_device(
 
     entity_registry = er.async_get(hass)
     grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
-    # plan, forecast savings, vs static, price, load MAE, healthy
-    assert len(grouped) == 6
+    # plan, forecast savings, vs static, price, load MAE, cost today, healthy
+    assert len(grouped) == 7
 
 
 async def test_entities_exist_and_health_follows_the_executor(

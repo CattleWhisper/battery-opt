@@ -430,18 +430,27 @@ meter exists and one day has closed), persisted across restarts via
 | ERSE 2027 calendar | ERSE publishes the new hours |
 | Second unit | Checkpoint B shows gain ≥€100/year |
 | Publish `pt-erse-tariff` as a package | Third-party interest |
-| Actual-cost sensor from the meter | Owner picks the grid-import energy sensor |
+| ~~Actual-cost sensor from the meter~~ | **Delivered 2026-08-06** (owner picked the grid-import energy sensor via decision 1's config addition) |
 
-**Actual-cost sensor (requested 2026-08-05):** a `sensor.battery_opt_cost_today`
-(EUR, total_increasing, resetting daily) fed by the household meter's
-grid-import energy sensor: each quarter-hour's consumed kWh × the delivered
-price for that quarter, **plus the per-day fixed terms** (K3 €0.1171/day +
-TAR potência €0.2291/day) — which a €/kWh price sensor can never carry.
-`core.prices.total_daily_cost()` already implements the arithmetic. VAT is
-deliberately left out: the reduced rate on the first 200 kWh/30 days makes
-it a billing-window computation, not a per-quarter one — revisit alongside
-Task 13's invoice reconciliation, which needs that logic anyway. Config
-addition: an optional meter-entity selector in the options flow.
+**Actual-cost sensor (requested 2026-08-05, delivered 2026-08-06,
+overnight session Task C):** `sensor.battery_opt_cost_today` (EUR,
+`state_class` TOTAL, `last_reset` = local midnight — not
+`total_increasing`, since a meter reset can otherwise appear to
+decrease the value that state class promises never decreases) fed by
+the household meter's grid-import energy sensor
+(`CONF_GRID_ENERGY_SENSOR`, added to the config/options flow alongside
+`CONF_LOAD_SENSOR` in Task B): each state-change delta × the delivered
+price at that instant (a negative delta from a meter reset counts as
+0), **plus the per-day fixed terms** (K3 €0.1171/day + TAR potência
+€0.2291/day) — which a €/kWh price sensor can never carry — added once
+per day. Implementation: `cost.py` (`CostToday` pure accumulator,
+`CostTracker` HA-side state-change wiring with its own
+`homeassistant.helpers.storage.Store` so the day's accumulation
+survives restarts) plus `CostTodaySensor` in `sensor.py`. VAT is
+deliberately left out: the reduced rate on the first 200 kWh/30 days
+makes it a billing-window computation, not a per-quarter one — still
+parked for Task 13's invoice reconciliation, which needs that logic
+anyway. Unavailable without a configured meter.
 
 ---
 

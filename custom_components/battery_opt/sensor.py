@@ -18,6 +18,10 @@ Sensors for battery_opt (spec §8).
   load forecast vs the observed load, computed at day close (plan
   Task 11, decision 7). Unknown until a load meter is configured and
   one full day has closed.
+- sensor.battery_opt_cost_today: grid-import cost today (EUR, excl.
+  VAT), variable (meter deltas x delivered price) plus the daily
+  fixed terms (plan Task 13 pulled forward, decision 8). Unavailable
+  without CONF_GRID_ENERGY_SENSOR configured.
 """
 
 from __future__ import annotations
@@ -31,7 +35,9 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
+from .const import CONF_GRID_ENERGY_SENSOR
 from .core.calendar import period
+from .cost import CostTracker
 from .entity import device_info_for
 
 if TYPE_CHECKING:
@@ -50,7 +56,7 @@ async def async_setup_entry(
     entry: BatteryOptConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create the plan, savings, price and load-MAE sensors."""
+    """Create the plan, savings, price, load-MAE and cost sensors."""
     runtime = entry.runtime_data
     async_add_entities(
         [
@@ -59,6 +65,7 @@ async def async_setup_entry(
             VsStaticSensor(runtime.coordinator, entry.entry_id),
             CurrentPriceSensor(runtime.coordinator, entry.entry_id),
             LoadMaeSensor(runtime.coordinator, entry.entry_id),
+            CostTodaySensor(runtime.coordinator, entry.entry_id),
         ]
     )
 
@@ -257,3 +264,81 @@ class LoadMaeSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
         """
         value = (self.coordinator.data or {}).get("load_mae_w")
         return round(value, 1) if value is not None else None
+
+
+class CostTodaySensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
+    """
+    Grid-import cost today (plan Task 13 pulled forward, decision 8).
+
+    `state_class` TOTAL with `last_reset` at local midnight: variable
+    = Sigma(grid-import energy delta x delivered price at that
+    instant, tracked from CONF_GRID_ENERGY_SENSOR state changes; a
+    negative delta from a meter reset counts as 0), plus the fixed
+    K3 + TAR_POTENCIA_2026 EUR/day term. VAT is excluded — the reduced
+    rate on the first 200 kWh/30 days makes it a billing-window
+    computation, not a per-quarter one; revisit alongside Task 13's
+    invoice reconciliation. Unavailable without a configured meter.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Cost today"
+    _attr_suggested_object_id = "battery_opt_cost_today"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = CURRENCY_EURO
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:cash"
+
+    def __init__(self, coordinator: BatteryOptCoordinator, entry_id: str) -> None:
+        """Build the tracker (if a meter is configured) and bind entity identity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_cost_today"
+        self._attr_device_info = device_info_for(entry_id)
+        merged = {**coordinator.entry.data, **coordinator.entry.options}
+        entity_id = merged.get(CONF_GRID_ENERGY_SENSOR)
+        self._tracker: CostTracker | None = (
+            CostTracker(
+                coordinator.hass,
+                entry_id,
+                entity_id,
+                coordinator.current_price_eur_kwh,
+                on_change=self.async_write_ha_state,
+            )
+            if entity_id
+            else None
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Start the tracker, if a meter is configured."""
+        await super().async_added_to_hass()
+        if self._tracker is not None:
+            await self._tracker.async_start()
+            self.async_on_remove(self._tracker.async_stop)
+
+    @property
+    def available(self) -> bool:
+        """False without CONF_GRID_ENERGY_SENSOR configured (decision 1)."""
+        return self._tracker is not None
+
+    @property
+    def native_value(self) -> float | None:
+        """Variable + fixed, EUR, excl. VAT."""
+        if self._tracker is None:
+            return None
+        return round(self._tracker.state.total_eur, 4)
+
+    @property
+    def last_reset(self) -> datetime:
+        """Local midnight — the accumulation window start (decision 8)."""
+        return dt_util.start_of_local_day(dt_util.now())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """variable_eur, fixed_eur, energy_today_kwh (decision 8)."""
+        if self._tracker is None:
+            return {}
+        state = self._tracker.state
+        return {
+            "variable_eur": round(state.variable_eur, 4),
+            "fixed_eur": round(state.fixed_eur, 4),
+            "energy_today_kwh": round(state.energy_today_kwh, 4),
+        }
