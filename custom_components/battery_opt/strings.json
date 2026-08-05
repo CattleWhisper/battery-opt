@@ -18,7 +18,8 @@
       }
     },
     "error": {
-      "battery_entities_all_or_none": "Provide all four battery entities, or none of them (planning-only mode until the battery arrives)."
+      "battery_entities_all_or_none": "Provide all four battery entities, or none of them (planning-only mode until the battery arrives).",
+      "price_sensor_not_omie": "This sensor does not look like an OMIE spot-price sensor (missing today_hours/tomorrow_hours attributes). Pick the hass_omie spot sensor - or, if OMIE just started, wait a minute for its data and retry."
     }
   },
   "options": {
@@ -26,12 +27,22 @@
       "init": {
         "title": "Battery Opt parameters",
         "data": {
+          "mode_select": "Battery mode select entity (force_mode)",
+          "charge_power_number": "Charge power entity (set_charge_power)",
+          "discharge_power_number": "Discharge power entity (set_discharge_power)",
+          "soc_sensor": "Battery state-of-charge sensor",
+          "price_sensor": "OMIE price sensor",
           "capacity_kwh": "Usable capacity (kWh)",
           "reserve_floor_pct": "Reserve floor (%)",
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
           "plan_wear_eur_kwh": "Planning wear \u2014 cycle cap (EUR/kWh)"
-        }
+        },
+        "description": "Entities and parameters can be changed here at any time; the integration reloads on save. Add the four Marstek entities when the battery arrives."
       }
+    },
+    "error": {
+      "battery_entities_all_or_none": "Provide all four battery entities, or none of them (planning-only mode until the battery arrives).",
+      "price_sensor_not_omie": "This sensor does not look like an OMIE spot-price sensor (missing today_hours/tomorrow_hours attributes). Pick the hass_omie spot sensor - or, if OMIE just started, wait a minute for its data and retry."
     }
   }
 }

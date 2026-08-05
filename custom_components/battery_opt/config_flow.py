@@ -1,11 +1,12 @@
 """
 Config flow for battery_opt.
 
-Collects the marstek_venus_modbus entity ids (ADR-0004: entity ids are
+Collects the marstek_modbus entity ids (ADR-0004: entity ids are
 chosen by the user, never hardcoded), the OMIE price entity, and the
-battery parameters. The numeric parameters are editable afterwards
-through the options flow; changing entities means re-adding the
-integration.
+battery parameters. Everything is editable afterwards through the
+options flow — including re-pointing the price sensor and adding the
+battery entities when the battery arrives; the entry reloads on save.
+The price sensor is validated against the hass_omie attribute shape.
 
 Note on the reserve floor: 27% is the documented default and spec §11
 lists lowering it as an ask-first action — the form allows it because
@@ -97,16 +98,51 @@ BATTERY_ENTITY_KEYS = (
     CONF_SOC_SENSOR,
 )
 
-_USER_SCHEMA = vol.Schema(
-    {
-        vol.Optional(CONF_MODE_SELECT): _entity("select"),
-        vol.Optional(CONF_CHARGE_POWER_NUMBER): _entity("number"),
-        vol.Optional(CONF_DISCHARGE_POWER_NUMBER): _entity("number"),
-        vol.Optional(CONF_SOC_SENSOR): _entity("sensor"),
-        vol.Required(CONF_PRICE_SENSOR): _entity("sensor"),
-        **_parameter_schema({}),
+
+def _entity_schema(current: dict[str, Any]) -> dict[vol.Marker, Any]:
+    """Entity pickers, pre-filled with current values when editing."""
+
+    def suggested(key: str) -> dict[str, Any]:
+        value = current.get(key)
+        return {"suggested_value": value} if value else {}
+
+    return {
+        vol.Optional(CONF_MODE_SELECT, description=suggested(CONF_MODE_SELECT)): (
+            _entity("select")
+        ),
+        vol.Optional(
+            CONF_CHARGE_POWER_NUMBER,
+            description=suggested(CONF_CHARGE_POWER_NUMBER),
+        ): _entity("number"),
+        vol.Optional(
+            CONF_DISCHARGE_POWER_NUMBER,
+            description=suggested(CONF_DISCHARGE_POWER_NUMBER),
+        ): _entity("number"),
+        vol.Optional(CONF_SOC_SENSOR, description=suggested(CONF_SOC_SENSOR)): (
+            _entity("sensor")
+        ),
+        vol.Required(
+            CONF_PRICE_SENSOR, description=suggested(CONF_PRICE_SENSOR)
+        ): _entity("sensor"),
     }
-)
+
+
+def _validate(hass: Any, merged: dict[str, Any]) -> dict[str, str]:
+    """Shared validation: battery all-or-none, price sensor shape."""
+    errors: dict[str, str] = {}
+    provided = sum(1 for key in BATTERY_ENTITY_KEYS if merged.get(key))
+    if provided not in (0, len(BATTERY_ENTITY_KEYS)):
+        errors["base"] = "battery_entities_all_or_none"
+        return errors
+    state = hass.states.get(merged[CONF_PRICE_SENSOR])
+    if state is not None and not any(
+        key in state.attributes for key in ("today_hours", "tomorrow_hours")
+    ):
+        # An OMIE (hass_omie) spot sensor carries these attributes once
+        # it has data. A freshly-started OMIE sensor briefly lacks them
+        # too — retry in a minute in that case.
+        errors[CONF_PRICE_SENSOR] = "price_sensor_not_omie"
+    return errors
 
 
 class BatteryOptConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -121,12 +157,13 @@ class BatteryOptConfigFlow(ConfigFlow, domain=DOMAIN):
         """Collect everything in a single form."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            provided = sum(1 for key in BATTERY_ENTITY_KEYS if key in user_input)
-            if provided in (0, len(BATTERY_ENTITY_KEYS)):
+            errors = _validate(self.hass, user_input)
+            if not errors:
                 return self.async_create_entry(title="Battery Opt", data=user_input)
-            errors["base"] = "battery_entities_all_or_none"
         return self.async_show_form(
-            step_id="user", data_schema=_USER_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=vol.Schema({**_entity_schema({}), **_parameter_schema({})}),
+            errors=errors,
         )
 
     @staticmethod
@@ -134,22 +171,36 @@ class BatteryOptConfigFlow(ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: ConfigEntry,  # noqa: ARG004 - HA-required signature
     ) -> BatteryOptOptionsFlow:
-        """Expose the numeric parameters for later editing."""
+        """Expose entities and parameters for later editing."""
         return BatteryOptOptionsFlow()
 
 
 class BatteryOptOptionsFlow(OptionsFlow):
-    """Edit the numeric parameters after setup."""
+    """
+    Edit entities and numeric parameters after setup.
+
+    The effective configuration is entry.data overlaid with these
+    options; __init__ reloads the entry on change, so switching the
+    price sensor or adding the battery entities when the battery
+    arrives requires no remove-and-re-add.
+    """
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Show the parameter form pre-filled with current values."""
-        if user_input is not None:
-            return self.async_create_entry(data=user_input)
+        """Show the form pre-filled with current values."""
         current = {**self.config_entry.data, **self.config_entry.options}
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            merged = {**current, **user_input}
+            errors = _validate(self.hass, merged)
+            if not errors:
+                return self.async_create_entry(data=user_input)
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(_parameter_schema(current)),
+            data_schema=vol.Schema(
+                {**_entity_schema(current), **_parameter_schema(current)}
+            ),
+            errors=errors,
         )

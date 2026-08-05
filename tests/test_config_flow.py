@@ -101,6 +101,7 @@ async def test_options_flow_edits_parameters(hass: HomeAssistant) -> None:
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
+            CONF_PRICE_SENSOR: VALID_INPUT[CONF_PRICE_SENSOR],
             CONF_CAPACITY_KWH: 5.0,
             CONF_RESERVE_FLOOR_PCT: 30.0,
             CONF_WEAR_COST: 0.025,
@@ -187,6 +188,53 @@ async def test_planning_only_without_prices_is_unhealthy(
     assert entry.runtime_data.coordinator.data["prices_ok"] is False
     assert hass.states.get("binary_sensor.battery_opt_healthy").state == "off"
     assert hass.states.get("sensor.battery_opt_forecast_savings").state == "unknown"
+
+
+async def test_flow_rejects_a_non_omie_price_sensor(hass: HomeAssistant) -> None:
+    """A price sensor without OMIE attributes is caught at setup."""
+    hass.states.async_set("sensor.omie_spot_price_pt", "0.15")  # wrong shape
+    data = {CONF_PRICE_SENSOR: "sensor.omie_spot_price_pt"}
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            **data,
+            **{
+                k: VALID_INPUT[k]
+                for k in (
+                    CONF_CAPACITY_KWH,
+                    CONF_RESERVE_FLOOR_PCT,
+                    CONF_WEAR_COST,
+                    CONF_PLAN_WEAR,
+                )
+            },
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_PRICE_SENSOR: "price_sensor_not_omie"}
+
+
+async def test_options_flow_can_fix_the_price_sensor(hass: HomeAssistant) -> None:
+    """Re-pointing the price entity via options reloads and takes effect."""
+    hass.states.async_set("sensor.omie_correct", "60.0", attributes=_omie_attributes())
+    data = {CONF_PRICE_SENSOR: "sensor.omie_wrong_but_absent"}
+    entry = MockConfigEntry(domain=DOMAIN, data=data)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.coordinator.data["prices_ok"] is False
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_PRICE_SENSOR: "sensor.omie_correct"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    # The entry reloaded with the new sensor: plan computed.
+    assert entry.runtime_data.coordinator.data["prices_ok"] is True
+    assert hass.states.get("binary_sensor.battery_opt_healthy").state == "on"
 
 
 async def test_flow_rejects_partial_battery_entities(hass: HomeAssistant) -> None:

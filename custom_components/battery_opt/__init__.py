@@ -63,24 +63,28 @@ async def async_setup_entry(
     from .driver import MarstekDriver, MarstekEntities  # noqa: PLC0415
     from .executor import BatteryOptExecutor  # noqa: PLC0415
 
+    # Options overlay data: the options flow can re-point entities
+    # (e.g. fix the price sensor, add the battery when it arrives).
+    merged = {**entry.data, **entry.options}
     battery_keys = (
         CONF_MODE_SELECT,
         CONF_CHARGE_POWER_NUMBER,
         CONF_DISCHARGE_POWER_NUMBER,
         CONF_SOC_SENSOR,
     )
-    has_battery = all(key in entry.data for key in battery_keys)
+    has_battery = all(merged.get(key) for key in battery_keys)
     driver = None
     if has_battery:
         entities = MarstekEntities(
-            mode_select=entry.data[CONF_MODE_SELECT],
-            charge_power_number=entry.data[CONF_CHARGE_POWER_NUMBER],
-            discharge_power_number=entry.data[CONF_DISCHARGE_POWER_NUMBER],
-            soc_sensor=entry.data[CONF_SOC_SENSOR],
+            mode_select=merged[CONF_MODE_SELECT],
+            charge_power_number=merged[CONF_CHARGE_POWER_NUMBER],
+            discharge_power_number=merged[CONF_DISCHARGE_POWER_NUMBER],
+            soc_sensor=merged[CONF_SOC_SENSOR],
         )
         driver = MarstekDriver(hass, entities)
     coordinator = BatteryOptCoordinator(hass, entry, driver)
     await coordinator.async_config_entry_first_refresh()
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     executor = None
     if driver is not None:
@@ -115,6 +119,14 @@ async def async_setup_entry(
             )
         )
     return True
+
+
+async def _async_options_updated(
+    hass: HomeAssistant,
+    entry: BatteryOptConfigEntry,
+) -> None:
+    """Reload on options change so entity re-selection takes effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(

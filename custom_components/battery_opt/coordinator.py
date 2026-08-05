@@ -131,7 +131,8 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "forecast_saving_eur": None,
             "vs_static_eur": None,
         }
-        price_state = self.hass.states.get(self.entry.data[CONF_PRICE_SENSOR])
+        merged = {**self.entry.data, **self.entry.options}
+        price_state = self.hass.states.get(merged[CONF_PRICE_SENSOR])
         if price_state is None:
             return empty
         today = dt_util.now().date()
