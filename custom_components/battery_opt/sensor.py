@@ -130,6 +130,11 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
             "discharge_w": data.get("plan_discharge_w"),
             "prices_ok": data.get("prices_ok"),
             "prices_padded": data.get("prices_padded"),
+            # Decision 6: set to "static" whenever no trustworthy
+            # dynamic plan exists (missing prices, or defensively an
+            # invalid solve) and the fixed seasonal schedule is
+            # published instead; None otherwise.
+            "fallback": data.get("fallback"),
         }
         if self._executor is not None:
             attributes["executor_status"] = self._executor.status

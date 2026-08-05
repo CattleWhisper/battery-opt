@@ -30,6 +30,18 @@ if TYPE_CHECKING:
 
 PLATFORMS: list[str] = ["binary_sensor", "sensor"]
 
+# Plan Task 10 / spec §9: aligned fetch at 13:45 Lisbon local (OMIE D+1
+# publishes ~13:30), retried at 14:15, 15:00 and 16:00 in case it was
+# not yet published. Each entry just forces a coordinator refresh —
+# the 15-minute steady-state poll already covers everything else, so
+# a fetch that already succeeded is a harmless extra refresh.
+_PRICE_FETCH_TIMES: tuple[tuple[int, int], ...] = (
+    (13, 45),
+    (14, 15),
+    (15, 0),
+    (16, 0),
+)
+
 
 @dataclass
 class BatteryOptRuntime:
@@ -106,6 +118,16 @@ async def async_setup_entry(
         )
     entry.runtime_data = BatteryOptRuntime(coordinator=coordinator, executor=executor)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    async def _on_price_fetch_time(_now: datetime) -> None:
+        await coordinator.async_request_refresh()
+
+    for hour, minute in _PRICE_FETCH_TIMES:
+        entry.async_on_unload(
+            async_track_time_change(
+                hass, _on_price_fetch_time, hour=hour, minute=minute, second=0
+            )
+        )
 
     if executor is not None:
         actuator = executor

@@ -33,6 +33,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 from homeassistant.util import dt as dt_util
 
+from .archive import async_archive_day
 from .const import (
     BASE_LOAD_W,
     CONF_CAPACITY_KWH,
@@ -50,7 +51,11 @@ from .core.optimiser import solve
 from .core.plan import BatteryParams, saving_vs_no_cycling, validate_plan
 from .core.static_schedule import static_plan
 from .driver import DriverError
-from .prices_source import day_price_vector_from_service
+from .prices_source import day_series_from_service
+
+# A normal day; DST-short/long days (92/100) are a fallback-only edge
+# case (no real prices to size the vector from) and are not material.
+_INTERVALS_PER_DAY = 96
 
 # HA core's OMIE integration exposes the day-ahead series through this
 # service (sensors carry only the current price).
@@ -60,12 +65,13 @@ OMIE_SERVICE_GET_PRICES = "get_prices_for_date"
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    from datetime import date, datetime
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
     from .driver import BatteryDriver
+    from .prices_source import DaySeries
 
 
 class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -111,7 +117,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return float(merged.get(CONF_PLAN_WEAR, DEFAULT_PLAN_WEAR))
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Read the SoC (full mode) and compute the advisory plan."""
+        """Read the SoC (full mode), compute the advisory plan, archive."""
         params = self.battery_params
         data: dict[str, Any] = {"soc_percent": None, "soc_kwh": None}
         if self.driver is not None:
@@ -122,25 +128,31 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise UpdateFailed(msg) from err
             data["soc_percent"] = soc_percent
             data["soc_kwh"] = soc_percent / 100.0 * params.cap_usable_kwh
-        prices, padded = await self._today_prices()
+        today = dt_util.now().date()
+        series = await self._today_prices()
+        prices = list(series.delivered_eur_kwh) if series is not None else None
         data.update(self._advisory_plan(params, data["soc_kwh"], prices))
         data["prices_eur_kwh"] = prices if data["prices_ok"] else None
-        data["prices_padded"] = padded
+        data["prices_padded"] = series.padded if series is not None else False
+        if series is not None:
+            # Decision 4: archive every successful full-day build; the
+            # same path is overwritten once a padded tail resolves.
+            await async_archive_day(self.hass, today, series)
         return data
 
-    async def _today_prices(self) -> tuple[list[float] | None, bool]:
+    async def _today_prices(self) -> DaySeries | None:
         """
-        Today's delivered price vector from core OMIE.
+        Today's price series from core OMIE.
 
         `omie.get_prices_for_date` needs market dates D and D+1 to
         cover a Lisbon day; a missing D+1 pads the final hour,
-        flagged in the return.
+        flagged on the returned series.
         """
         today = dt_util.now().date()
         if not self.hass.services.has_service(
             OMIE_SERVICE_DOMAIN, OMIE_SERVICE_GET_PRICES
         ):
-            return None, False
+            return None
         entries: list[dict[str, Any]] = []
         for offset in (0, 1):
             market_date = today + timedelta(days=offset)
@@ -161,8 +173,8 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # future upstream switch back to uppercase codes.
             entries.extend(payload.get("pt") or payload.get("PT") or [])
         if not entries:
-            return None, False
-        return day_price_vector_from_service(today, entries)
+            return None
+        return day_series_from_service(today, entries)
 
     def _advisory_plan(
         self,
@@ -170,30 +182,24 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc_kwh: float | None,
         prices: list[float] | None,
     ) -> dict[str, Any]:
-        """Compute today's capped-greedy plan from the price vector."""
-        empty = {
-            "prices_ok": False,
-            "plan_date": None,
-            "plan_charge_w": None,
-            "plan_discharge_w": None,
-            "forecast_saving_eur": None,
-            "vs_static_eur": None,
-        }
+        """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
-        if prices is None:
-            return empty
-        n = len(prices)
+        n = len(prices) if prices is not None else _INTERVALS_PER_DAY
         load = [BASE_LOAD_W] * n
         solar = [0.0] * n
         # Virtual battery starts at the floor until a real SoC exists.
         start_soc = params.cap_min_kwh if soc_kwh is None else soc_kwh
         plan_params = dataclasses.replace(params, soc_start_kwh=start_soc)
+        if prices is None:
+            return self._static_fallback(today, load, solar, plan_params)
         solve_params = dataclasses.replace(
             plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
         )
         result = solve(prices, load, solar, solve_params)
         if validate_plan(result.plan, load, solar, plan_params):
-            return empty  # cannot happen by construction; fail closed
+            # Cannot happen by construction; fail closed (decision 6:
+            # any untrustworthy dynamic plan falls back to static).
+            return self._static_fallback(today, load, solar, plan_params)
         static = static_plan(today, load, solar, plan_params)
         greedy_saving = saving_vs_no_cycling(result.plan, prices, plan_params)
         static_saving = saving_vs_no_cycling(static, prices, plan_params)
@@ -204,6 +210,33 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plan_discharge_w": list(result.plan.discharge_w),
             "forecast_saving_eur": round(greedy_saving, 4),
             "vs_static_eur": round(greedy_saving - static_saving, 4),
+            "fallback": None,
+        }
+
+    @staticmethod
+    def _static_fallback(
+        today: date,
+        load: list[float],
+        solar: list[float],
+        plan_params: BatteryParams,
+    ) -> dict[str, Any]:
+        """
+        No trustworthy dynamic plan: publish the static schedule instead.
+
+        Decision 6: missing/failed prices (or, defensively, an invalid
+        dynamic plan) still yield a valid, actuatable plan — the plan
+        sensor's `fallback` attribute marks it. There is no price
+        vector to cost it against, so the saving fields stay None.
+        """
+        fallback_plan = static_plan(today, load, solar, plan_params)
+        return {
+            "prices_ok": False,
+            "plan_date": today,
+            "plan_charge_w": list(fallback_plan.charge_w),
+            "plan_discharge_w": list(fallback_plan.discharge_w),
+            "forecast_saving_eur": None,
+            "vs_static_eur": None,
+            "fallback": "static",
         }
 
     def planned_action_now(self) -> str:

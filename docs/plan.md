@@ -297,16 +297,35 @@ entity; the full day vector and TAR period ride in the attributes.
 
 *Partially delivered early (planning-only mode, 2026-08-05): `prices_source.py` reads the entity and builds the delivered-price vector, verified against the `hass_omie` attribute shape. The 13:45 trigger/retry schedule, the `healthy=off`+static fallback and price archiving remain.*
 
+**Delivered 2026-08-06, planning-only** (overnight session, Task A): the
+remaining three criteria landed together. `__init__.py` registers four
+`async_track_time_change` triggers (13:45, 14:15, 15:00, 16:00 Lisbon
+local) that each force `coordinator.async_request_refresh()` — simpler
+than conditional retry-only-on-failure logic, and harmless when a
+fetch already succeeded (`test_coordinator.py`). When no trustworthy
+price vector exists (missing OMIE, or defensively an invalid dynamic
+plan), the coordinator now publishes the static seasonal schedule
+instead and marks it via a `fallback: "static"` attribute on
+`sensor.battery_opt_plan` (`coordinator.py::_static_fallback`,
+`sensor.py`). Prices archive to
+`hass.config.path("battery_opt/prices")/YYYY-MM-DD.json` on every
+successful full-day build via the new `archive.py`, keyed so a later
+un-padded write naturally overwrites a padded one at the same path.
+`prices_source.py` gained `DaySeries`/`day_series_from_service` to
+carry the raw OMIE EUR/MWh points the archive needs, alongside the
+delivered vector; `day_price_vector_from_service` is now a thin
+wrapper over it and is unchanged for existing callers.
+
 **Acceptance criteria:**
-- [ ] Trigger at 13:45; retry at 14:15, 15:00, 16:00
-- [ ] No prices after the final retry → `healthy=off` + static plan
-- [ ] Prices archived to `/config/battery_opt/prices/`
+- [x] Trigger at 13:45; retry at 14:15, 15:00, 16:00
+- [x] No prices after the final retry → `healthy=off` + static plan
+- [x] Prices archived to `/config/battery_opt/prices/`
 
 **Verification:**
-- [ ] Simulate source failure and confirm the fallback
+- [x] Simulate source failure and confirm the fallback
 
 **Dependencies:** Tasks 2, 9
-**Files:** `coordinator.py`, `core/prices.py`
+**Files:** `coordinator.py`, `core/prices.py`, `archive.py` (new), `prices_source.py`, `__init__.py`, `sensor.py`
 **Scope:** S
 
 ---
