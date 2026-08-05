@@ -12,10 +12,14 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
+from custom_components.battery_opt.core.calendar import CALENDARS, period
 from custom_components.battery_opt.core.prices import (
     K1_MEDIA,
     TAR_ENERGIA_2026,
+    TAR_POLICY,
+    TAR_TABLES,
     price,
+    tar_energia_for,
     total_daily_cost,
 )
 
@@ -100,6 +104,64 @@ def test_monthly_arbitrage_table(
     )
     net = p_ponta - p_vazio / ETA_RT
     assert net == pytest.approx(expected_net, abs=2.5e-3)
+
+
+def test_tar_policy_is_forward() -> None:
+    """
+    TAR_POLICY is "forward": the latest table applies to every date.
+
+    Deliberate (Checkpoint A review): the backtest estimates FORWARD
+    economics under the tariff being moved to (Indexada Horária with
+    current ERSE TAR), not a reconstruction of historical bills. ERSE
+    reported a +3.5% BTN TAR variation 2025->2026, so applying the 2026
+    table to Sep-Dec 2025 data is a real modelling choice, not a
+    rounding detail. A "historical" per-date policy exists for future
+    reconciliation work.
+    """
+    assert TAR_POLICY == "forward"
+
+
+def test_forward_policy_applies_current_table_to_past_dates() -> None:
+    """Sep 2025 data is priced with the 2026 TAR under "forward"."""
+    assert tar_energia_for(date(2025, 9, 1)) == TAR_ENERGIA_2026
+
+
+def test_tar_tables_version_independently_of_calendar() -> None:
+    """
+    A 2027 TAR row is a data addition touching no calendar code.
+
+    TAR values and hour spans move on independent effective-date axes:
+    extending TAR_TABLES changes no calendar lookup, and the calendar
+    keeps exactly one span table while TAR grows.
+    """
+    tar_2027 = {"ponta": 0.2500, "cheias": 0.0420, "vazio": 0.0160}
+    tables = (*TAR_TABLES, (date(2027, 1, 1), tar_2027))
+    # Historical policy picks per effective date...
+    assert (
+        tar_energia_for(date(2027, 2, 1), tables=tables, policy="historical")
+        == tar_2027
+    )
+    assert (
+        tar_energia_for(date(2026, 6, 1), tables=tables, policy="historical")
+        == TAR_ENERGIA_2026
+    )
+    # ...forward policy picks the newest for any date...
+    assert tar_energia_for(date(2025, 9, 1), tables=tables) == tar_2027
+    # ...and the calendar axis is untouched by the wider TAR tables.
+    assert len(CALENDARS) == 1
+    assert period(datetime(2026, 7, 15, 10, 0)) == "ponta"
+
+
+def test_historical_policy_raises_before_first_table() -> None:
+    """No silent TAR extrapolation into the past under "historical"."""
+    with pytest.raises(ValueError, match="No TAR table in force"):
+        tar_energia_for(date(2025, 1, 1), policy="historical")
+
+
+def test_unknown_tar_policy_raises() -> None:
+    """Typos in the policy name fail loudly."""
+    with pytest.raises(ValueError, match="Unknown TAR policy"):
+        tar_energia_for(date(2026, 1, 1), policy="fwd")
 
 
 def test_total_daily_cost_adds_fixed_terms_and_vat() -> None:
