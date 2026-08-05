@@ -48,10 +48,12 @@ VALIDATED_MONTHS = sorted(key for key in WEEKLY_MA30 if key != (2025, 9))
 # uniform billing-window convention. Each is pinned to the computed
 # value so any pipeline regression still fails loudly.
 #   (2025, 10) ponta: ref 24.09 vs computed 18.46 over Sep 2 - Oct 1.
-#     The row's vazio matches exactly, so the data is identical and
-#     only the reference's ponta hour-set or window differed. Ponta
-#     hours in this window are few (15 h/week, summer) and cheap;
-#     the TAR dominates the arbitrage either way.
+#     DIAGNOSED (backtest/diagnose_oct25_ponta.py, findings.md): no
+#     season treatment over either candidate window reproduces 24.09;
+#     it matches a trailing 30-day window ending ~6-7 Oct while the
+#     row's vazio matches [Sep 2, Oct 2) exactly. The reference row
+#     mixes sampling dates; the reference cell is the artifact and
+#     the calendar is correct. Do not change the calendar.
 #   (2026, 3) vazio: ref 6.37 matches [Feb 2, Mar 1) - the reference
 #     window excluded Mar 1 (computed there: 6.43, -0.9%). Absolute
 #     gap under the uniform window is 0.69 EUR/MWh.

@@ -125,6 +125,14 @@ The model predicts, for a flat load in summer weekly cycle: 15/168 = **8.93%** �
 
 2.6% deviation. If a change to the calendar moves this number, the change is wrong.
 
+> **Note (Checkpoint A):** 8.93% is the whole-week figure. Iterating
+> the literal 30-day invoice window (Tue 2 Jun – Wed 1 Jul = 4 whole
+> weeks plus a Tuesday and a Wednesday, both ponta-bearing days)
+> gives 66/720 h = **9.17%**. The documented validation compares the
+> whole-week model against the measured 8.7%; the measured value
+> sitting below *both* models is a separate observation recorded in
+> `docs/findings.md`.
+
 The literal 30-day invoice window (starting Tue 2 Jun 2026) contains 22 ponta
 days, giving 9.17%. The 8.93% figure above is the structural whole-week value
 (15/168) and is what the test compares against. Measured 8.7% sits below both,
@@ -136,6 +144,14 @@ with 15-minute load data in Phase 2.
 ## 5. OMIE reference series (MA30, €/MWh)
 
 30-day moving averages by period, weekly cycle. Used in the savings estimates.
+
+> **Window convention (Checkpoint A finding):** a row labeled month M
+> covers the EDP **billing window [day 2 of M−1, day 2 of M)** — the
+> invoice convention (e.g. 2 Jun – 1 Jul), not the calendar month.
+> Under this alignment the Dec-25, May-26 and Jul-26 rows reproduce
+> from raw OMIE data to ≤0.01%. A few cells were sampled on slightly
+> different dates (notably Oct-25 ponta; see `docs/findings.md`);
+> `tests/test_omie_validation.py` pins those individually.
 
 > **Window convention:** a row labelled month M covers [day 2 of M−1, day 2 of M),
 > matching the EDP billing cycle — not the calendar month. Dec-25, May-26 and

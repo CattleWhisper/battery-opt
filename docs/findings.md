@@ -46,10 +46,9 @@ not calendar months. Discovered empirically; under it:
 - 28 of 33 weekly-table values fall within the 2% tolerance.
 - Five values deviate and are pinned in `tests/test_omie_validation.py`
   as known deviations rather than hidden by a looser tolerance:
-  - **(2025-10) ponta**: ref 24.09 vs computed 18.46 (−23%). Same
-    window's vazio matches exactly, so the data is identical — the
-    reference used a different ponta hour-set or window for that row.
-    Unresolved; low stakes (few, cheap ponta hours; the TAR dominates).
+  - **(2025-10) ponta**: ref 24.09 vs computed 18.46 (−23%). Diagnosed
+    — see "Oct-2025 ponta diagnostic" below. The reference cell is the
+    artifact; the implementation is correct.
   - **(2026-03) vazio and simples**: the reference's March window
     excluded Mar 1 (vazio 6.43 vs ref 6.37 without it). February is
     the year's cheapest month, so one March day moves the mean 5–10%.
@@ -59,6 +58,44 @@ not calendar months. Discovered empirically; under it:
   equals (10·V + 10·C + 4·P)/24 to 0.1% in all 12 months, and our
   all-hours means match that identity within 2% (March pinned as
   above).
+
+### Oct-2025 ponta diagnostic (Fix 2, Checkpoint A review)
+
+`backtest/diagnose_oct25_ponta.py` computed the row's ponta under
+three season treatments over both candidate windows:
+
+| Window | summer | winter | calendar (switch 26 Oct) |
+|---|---|---|---|
+| [Sep 2, Oct 2) — anchored by the exact vazio match | **18.46** | 76.63 | 18.46 |
+| [Oct 2, Nov 2) — straddles the season switch | 51.80 | 91.65 | 64.81 |
+
+**No treatment over either window reproduces 24.09.** The review's
+season-straddle hypothesis is refuted in direction: winter hours add
+the 18:30–21:00 evening peak, which is *expensive* on OMIE, pushing
+the average up to 76–92, not down to 24.
+
+What does fit, verified by sliding the window: under correct summer
+hours a trailing 30-day ponta average crosses 24.09 between end-dates
+of 6 Oct (23.70) and 7 Oct (24.98) — early-October midday prices had
+jumped (44.29 over 2–6 Oct vs 18.46 in September). So the row's ponta
+cell was sampled ~5 days later than its vazio cell (which matches
+[Sep 2, Oct 2) to 0.00%): the reference row mixes sampling dates.
+
+Conclusion: **the reference cell is the artifact, the implementation
+is correct**; the calendar is unchanged and the pinned value stays.
+Side effect: §6's Oct-25 arbitrage (0.161 €/kWh) is slightly
+understated — with the consistent-window ponta (18.46) it is ~0.155;
+the TAR dominates either way.
+
+### Measured ponta share sits below both models
+
+The invoice measured 8.7% of consumption in ponta; the whole-week
+flat-load model gives 8.93% and the literal invoice window (4 whole
+weeks + Tue + Wed) gives 9.17%. The measurement sitting **below both**
+suggests a small mid-morning consumption dip or a slight offset of the
+real ponta window — either way, slightly less ponta volume than the
+flat model assumes, making savings estimates **mildly optimistic**.
+Revisit in Phase 2 with 15-minute load data from the meter.
 
 ### PT/ES market splitting
 
