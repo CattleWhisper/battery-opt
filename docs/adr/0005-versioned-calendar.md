@@ -36,3 +36,8 @@ def period(dt: datetime) -> Period:
 - Requires a test table pinning weekly totals per effective version (15 h ponta in summer, 25 h in winter, for 2026). See `docs/tariff-reference.md`.
 - When the 2027 table is published, expected totals must be recomputed and the test deliberately updated — which is the intended safeguard.
 - Economics should **improve** with the reform: ponta comes to coincide with the OMIE peak, so the energy component stops working against the TAR.
+- Hour spans and TAR values are versioned on **separate axes**. Spans are
+  effective 2025-01-01; TAR values use the 2026 table for all dates, applied
+  deliberately because the backtest estimates forward economics rather than
+  reconstructing historical bills. ERSE reported +3.5% BTN TAR variation from
+  2025 to 2026, so this is a real choice, not an approximation.

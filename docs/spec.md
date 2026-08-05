@@ -219,7 +219,12 @@ Service calls against `marstek_venus_modbus` entities. **Never direct Modbus wri
 
 ## 12. Open Questions
 
-1. **OMIE granularity.** Does the `omie` integration expose hourly or quarter-hourly prices? EDP bills quarter-hourly. If only hourly is available, quantify the loss of resolution.
+1. ~~OMIE granularity~~ **RESOLVED**: OMIE publishes quarter-hourly prices
+   (H1Q1 = 00:00–00:15 CET) since the SDAC 15-minute MTU go-live on
+   2025-10-01. 96 periods/day, matching EDP's billing granularity.
+   Remaining: confirm whether the `marginalpdbc` files carry 96 rows or
+   whether quarter-hourly data sits in a separate directory, and whether
+   the `omie` HACS integration exposes quarter-hourly or only hourly.
 2. **Variable losses.** Where does E-Redes publish the quarter-hourly loss profiles?
 3. **Zero-export.** Is it enforced internally by the device, or must the plan limit power? This changes C-1 from an active constraint to a passive check.
 4. **End-of-day SoC target.** Fix at 27%, or plan 48 h and let the optimiser decide?
