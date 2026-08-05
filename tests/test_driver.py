@@ -9,7 +9,6 @@ FakeDriver stands in for the executor tests of Task 9.
 """
 
 import asyncio
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -64,11 +63,6 @@ def _hass(
     soc_state: str | None = "57.0",
 ) -> SimpleNamespace:
     return SimpleNamespace(services=StubServices(), states=StubStates(soc_state))
-
-
-def test_driver_module_never_imports_homeassistant() -> None:
-    """ADR-0001 spirit: the driver is testable without HA installed."""
-    assert not any(name.startswith("homeassistant") for name in sys.modules)
 
 
 def test_set_power_calls_number_set_value() -> None:

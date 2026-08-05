@@ -1,0 +1,12 @@
+{
+  "domain": "battery_opt",
+  "name": "Battery Opt",
+  "codeowners": ["@CattleWhisper"],
+  "config_flow": true,
+  "documentation": "https://github.com/CattleWhisper/battery-opt",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/CattleWhisper/battery-opt/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

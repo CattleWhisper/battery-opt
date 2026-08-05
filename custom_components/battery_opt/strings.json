@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Battery Opt",
+        "description": "Pick the marstek_venus_modbus entities and the OMIE price entity, then set the battery parameters. Constants and defaults are documented in CONTEXT.md.",
+        "data": {
+          "mode_select": "Battery mode select entity",
+          "power_number": "Battery power setpoint entity",
+          "soc_sensor": "Battery state-of-charge sensor",
+          "price_sensor": "OMIE price sensor",
+          "capacity_kwh": "Usable capacity (kWh)",
+          "reserve_floor_pct": "Reserve floor (%)",
+          "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
+          "plan_wear_eur_kwh": "Planning wear — cycle cap (EUR/kWh)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Battery Opt parameters",
+        "data": {
+          "capacity_kwh": "Usable capacity (kWh)",
+          "reserve_floor_pct": "Reserve floor (%)",
+          "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
+          "plan_wear_eur_kwh": "Planning wear — cycle cap (EUR/kWh)"
+        }
+      }
+    }
+  }
+}
