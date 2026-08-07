@@ -463,6 +463,50 @@ new entities are selected in Options. The plan/healthy sensors say
 
 ---
 
+### Task 15: Charge-power control loop (ADR-0007)
+
+**Description:** The plan carries states only (charge/hold/discharge —
+no power). Charging becomes "as much as possible": a control loop
+faster than the 15-minute executor continuously sets `set_charge_power`
+to the highest value that keeps measured total grid import under the
+contracted ceiling — `clamp(P_USABLE − (import − battery_power), 0,
+2500)`, floored to 50 W. Discharge already works this way (firmware
+anti-feed, ADR-0006); this makes charging symmetric and supersedes the
+static 2000 W ceiling (spec §11's ask-first item, asked and decided by
+the owner 2026-08-07).
+
+**Acceptance criteria:**
+- [ ] Executor's CHARGE entry passes no plan-derived power; the loop
+      owns the setpoint from state entry to exit, and stops writing
+      the moment the state leaves CHARGE
+- [ ] Control law per spec §8: 200 W margin preserved (P_USABLE 4400),
+      clamp to the device's 2500 W, floor to 50 W steps
+- [ ] Rate-limited (≥ ~5 s between writes) with a ~100 W deadband —
+      no register chatter on meter noise
+- [ ] Two new optional config entities: grid-import power sensor (W)
+      and battery power sensor; loop inactive until both are set
+- [ ] Fail safe: sensor unavailable mid-CHARGE → conservative static
+      2000 W fallback, flagged in attributes; recovers automatically
+- [ ] Planner C-3 capacity becomes `min(2500, P_USABLE −
+      forecast_load)`; CONTEXT.md P_CHG_MAX annotation updated
+- [ ] HA-free loop logic (core-style pure function for the control
+      law), unit-tested: clamps, deadband, rate limit, fallback,
+      import spikes mid-window
+
+**Verification:**
+- [ ] Bench: charge window with a deliberately induced load spike
+      (kettle/AC) — total import never exceeds 4400 W on the meter,
+      setpoint recovers after the spike
+- [ ] Bench: sensor made unavailable mid-charge → 2000 W fallback
+      observed, no unhealthy flap
+
+**Dependencies:** Task 14 (state machine), ADR-0007
+**Files:** `executor.py`, `driver.py`, new `charge_loop.py`,
+`config_flow.py`, `coordinator.py`
+**Scope:** M
+
+---
+
 ### Checkpoint D
 
 - [ ] 3 months in production

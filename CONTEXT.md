@@ -38,6 +38,7 @@ Practical consequence: **any strategy that ignores the TAR and follows OMIE pric
 | **Anti-feed** | The firmware's automatic zero-export mode: the battery tracks the paired meter and discharges to match house load, never exporting. The only mechanism with native zero-export tracking; used for DISCHARGE |
 | **Watchdog** | Firmware timer that drops external control shortly (~15 s reported) after Modbus traffic stops. Any traffic — reads included — resets it |
 | **Keepalive** | Whatever prevents the watchdog from firing. Normal sensor polling suffices; no dedicated writes needed |
+| **Charge-power loop** | Fast control loop (ADR-0007) that, while in CHARGE, continuously sets the charge setpoint to the highest value keeping measured total grid import under the contracted ceiling. The plan carries states only; both run-time magnitudes are closed loops — discharge via anti-feed, charge via this |
 
 Portuguese period names (`ponta`, `cheias`, `vazio`) are kept untranslated throughout the code. They are regulatory terms with no clean English equivalent, and translating them invites confusion when cross-checking against ERSE or EDP documents.
 
@@ -64,7 +65,11 @@ VAT = 1.23  # uniform multiplier; reporting only
 CAP_NOMINAL = 5.12  # kWh
 CAP_USABLE = 5.00  # kWh
 CAP_MIN = 1.35  # kWh (27% - reserve floor, zero arbitrage cost)
-P_CHG_MAX = 2000  # W (limited by margin against contracted power)
+P_CHG_MAX = 2000  # W - static planning ceiling; SUPERSEDED at run time
+#   by ADR-0007 (owner, 2026-08-07): the charge-power loop drives the
+#   setpoint up to the device's 2500 W against the MEASURED import,
+#   keeping the 200 W margin. Planning C-3 uses
+#   min(2500, P_USABLE - forecast_load) once Task 15 lands.
 P_DIS_MAX = 2500  # W
 ETA_RT = 0.90  # round-trip efficiency
 RATED_CYCLES = 6000

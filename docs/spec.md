@@ -176,9 +176,16 @@ mapped from the plan each interval:
 
 | State | Mechanism | Plan mapping |
 |---|---|---|
-| **CHARGE** | External control: force-charge + quarter-hourly power setpoint | `charge_w[i] > 0` |
+| **CHARGE** | External control: force-charge; power owned by the charge-power loop (ADR-0007, Task 15) | `charge_w[i] > 0` |
 | **HOLD** | External control: force-mode standby | `charge_w[i] = discharge_w[i] = 0` |
 | **DISCHARGE** | Firmware **anti-feed** (auto zero-export via the paired meter) | `discharge_w[i] > 0` — the value selects the quarter; magnitude is the firmware's |
+
+**The plan carries states only (ADR-0007, owner 2026-08-07).** The
+optimiser's power vectors remain its internal energy accounting
+(C-3..C-6 need a power model), but actuation reads them solely as
+state selectors: `> 0` or not. Both run-time magnitudes are closed
+loops — discharge against the meter (firmware anti-feed), charge
+against the contracted-power ceiling (the loop below).
 
 **Transitions** (entity operations; underlying registers noted for
 cross-checking against community sources):
@@ -195,13 +202,43 @@ cross-checking against community sources):
 - **DISCHARGE → HOLD:** `rs485_control_mode` on (42000) → `force_mode` =
   stop (42010=0).
 
-**Charge stop policy (decided 2026-08-07):** time-boxed quarter-hourly
-setpoints are the primary mechanism — the plan says when to stop, SoC
-readback each tick confirms. Additionally write `charge_to_soc` (42011) =
-the window's planned end SoC (small margin, capped at 100) as a firmware
-backstop against the integration dying mid-window. The backstop activates
-only after verify-on-device item 3 confirms 42011 coexists with
-force-charge on this firmware.
+**Charge stop policy (decided 2026-08-07):** time-boxed — the plan says
+which quarters are CHARGE and the executor exits the state on schedule,
+SoC readback each tick confirming. Additionally write `charge_to_soc`
+(42011) = the window's planned end SoC (small margin, capped at 100) as
+a firmware backstop against the integration dying mid-window. The
+backstop activates only after verify-on-device item 3 confirms 42011
+coexists with force-charge on this firmware.
+
+**Charge-power control loop (ADR-0007, Task 15 — decided 2026-08-07,
+not yet implemented):** while the state machine is in CHARGE, a loop
+faster than the 15-minute executor owns the `set_charge_power`
+setpoint:
+
+```
+other_load = measured_grid_import_w - battery_charge_w
+setpoint   = clamp(P_USABLE_W - other_load, 0, 2500)   # floor to 50 W
+```
+
+- Triggered by grid-import power sensor updates; rate-limited (min
+  ~5 s between writes) with a ~100 W deadband so meter noise does not
+  chatter the register (42020 is volatile — no EEPROM concern, only
+  churn).
+- `P_USABLE_W = 4400` keeps the standing 200 W margin against the
+  4.6 kVA contract (invariant #2, now enforced against MEASUREMENT).
+- Inputs: a grid-import power sensor (W) and the battery's own power
+  sensor (to subtract its draw from the import reading) — both new
+  optional config entities; the loop only runs when both are set.
+- Fail safe: either sensor unavailable → fall back to a conservative
+  static 2000 W (the previously proven value), flagged in the plan
+  sensor's attributes; sensor recovers → loop resumes.
+- Entry setpoint on → CHARGE: the loop's current computed value when
+  available, else the 2000 W fallback.
+- Planning-side C-3 uses `min(2500, P_USABLE - forecast_load)` as the
+  per-quarter charge capacity — an energy-model estimate; the loop is
+  the enforcement. The old static 2000 W ceiling is superseded (the
+  §11 "ask first: charging above 2000 W" — this decision is the owner
+  asking).
 
 **Firmware SOC cutoffs (decided 2026-08-07):** `charging_cutoff_capacity`
 (44000) = 100 % and `discharging_cutoff_capacity` (44001) = 27 % are
@@ -293,7 +330,9 @@ are undocumented firmware behaviour):
 **Ask first**
 - Increasing contracted power
 - Lowering the reserve floor below 27%
-- Charging above 2000 W
+- ~~Charging above 2000 W~~ — asked and decided (owner, 2026-08-07,
+  ADR-0007): the run-time limit is the charge-power loop against the
+  measured import, up to the device's 2500 W
 - Enabling additional cycles into cheias
 
 **Never**
