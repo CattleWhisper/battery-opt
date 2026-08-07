@@ -1,6 +1,7 @@
 {
   "domain": "battery_opt",
   "name": "Battery Opt",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@CattleWhisper"],
   "config_flow": true,
   "documentation": "https://github.com/CattleWhisper/battery-opt",
