@@ -117,8 +117,11 @@ async def test_advisory_plan_input_reflects_the_forecast(hass: HomeAssistant) ->
     coordinator = entry.runtime_data.coordinator
     # No OMIE service registered -> static fallback plan, built from
     # this same forecast vector (coordinator.py's shared `load`).
+    # Inclusive bound: with day-chaining the summer fallback carries
+    # charge into ponta and discharges at exactly the 1 W net load
+    # (zero-export) — still the forecast's cap, never BASE_LOAD_W's.
     assert coordinator.data["fallback"] == "static"
-    assert max(coordinator.data["plan_discharge_w"]) < 1.0
+    assert max(coordinator.data["plan_discharge_w"]) <= 1.0
 
 
 async def test_day_close_without_meter_is_a_no_op(hass: HomeAssistant) -> None:

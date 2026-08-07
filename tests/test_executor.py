@@ -289,3 +289,30 @@ def test_current_action_reflects_the_active_interval() -> None:
     asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 0)))
     assert executor.current_action(datetime(2026, 1, 15, 0, 0)) == "charge"
     assert executor.current_action(datetime(2026, 1, 15, 13, 0)) == "hold"
+
+
+def test_summer_ponta_discharges_via_day_chaining() -> None:
+    """
+    Summer Monday 10:00 ponta commands DISCHARGE.
+
+    The floor-seeded single-day plan used to sit in HOLD through every
+    summer ponta (charge window after it, nothing above the floor to
+    serve it) — with virtual day-chaining, Friday's midday charge
+    carries over the weekend and the morning ponta actually runs.
+    """
+    driver = FakeDriver()
+    executor = _executor(driver)
+    asyncio.run(executor.tick(datetime(2026, 8, 10, 10, 0)))
+    assert driver.calls == [("set_state", ("discharge", None, None))]
+    assert executor.healthy is True
+    assert executor.last_action == "discharge"
+
+
+def test_day_chaining_soc_trajectory_starts_at_the_chained_seed() -> None:
+    """The published trajectory uses the same seeded start as the plan."""
+    driver = FakeDriver()
+    executor = _executor(driver)
+    asyncio.run(executor.tick(datetime(2026, 8, 10, 10, 0)))
+    trajectory = executor.planned_soc_trajectory()
+    assert trajectory is not None
+    assert trajectory[0] == pytest.approx(PARAMS.cap_usable_kwh)  # full

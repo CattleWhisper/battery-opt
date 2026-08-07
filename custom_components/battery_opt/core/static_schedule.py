@@ -15,7 +15,8 @@ Consults no prices. The rules, from docs/plan.md Task 5:
 Single-day semantics: the plan starts at params.start_soc_kwh. The
 summer schedule charges at midday AFTER the morning ponta, so its
 steady state relies on multi-day chaining (end SoC feeding the next
-day's start) — that is Task 6's job; here a summer day starting at the
+day's start): the backtest chains in Task 6's harness, and production
+chains through `chained_start_soc` below — a summer day seeded at the
 floor simply cannot serve its morning ponta. Intervals are indexed
 from local midnight at params.interval_hours; DST switch days are
 Sundays (no-op days), so the 92/100-interval irregularity never
@@ -24,11 +25,12 @@ intersects a charging or discharging window.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from .calendar import CALENDARS, Calendars, period
-from .plan import BatteryParams, Plan
+from .plan import BatteryParams, Plan, soc_trajectory
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -94,3 +96,37 @@ def static_plan(
             soc += charge[i] * dt / 1000 * eta
 
     return Plan(charge_w=tuple(charge), discharge_w=tuple(discharge))
+
+
+def chained_start_soc(
+    day: date,
+    load_w: Sequence[float],
+    solar_w: Sequence[float],
+    params: BatteryParams,
+    calendars: Calendars = CALENDARS,
+) -> float:
+    """
+    Start SoC (kWh) for `day` under virtual day-chaining.
+
+    The single-day summer plan cannot serve its morning ponta (the
+    charge window is midday, after it), so production seeds each day
+    from the PREVIOUS WEEKDAY'S planned end SoC — the plan's own model
+    rolled forward, never a SoC readback (ADR-0008). Weekends are
+    no-op days that pass SoC through, so the most recent weekday's end
+    IS the day's start.
+
+    One floor-seeded simulation of that weekday is exact, not an
+    approximation: a weekday's end SoC is start-independent, because
+    its charge window fills to usable capacity from any start (winter
+    charges first, making the rest of the day deterministic; summer
+    charges last, ending full either way). Uses `day`'s own load
+    vector for the simulation — with the flat production load this is
+    exact; with a per-day forecast it is the model's best stand-in
+    for a day already past.
+    """
+    previous = day - timedelta(days=1)
+    while previous.weekday() >= _SATURDAY:
+        previous -= timedelta(days=1)
+    floor_seeded = dataclasses.replace(params, soc_start_kwh=None)
+    plan = static_plan(previous, load_w, solar_w, floor_seeded, calendars)
+    return soc_trajectory(plan, floor_seeded)[-1]

@@ -8,17 +8,22 @@ annual-saving check itself belongs to the backtest (Task 6); here we
 verify structure and constraint compliance.
 """
 
+import dataclasses
 import random
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pytest
 
+from custom_components.battery_opt.core.calendar import period
 from custom_components.battery_opt.core.plan import (
     BatteryParams,
     soc_trajectory,
     validate_plan,
 )
-from custom_components.battery_opt.core.static_schedule import static_plan
+from custom_components.battery_opt.core.static_schedule import (
+    chained_start_soc,
+    static_plan,
+)
 
 PARAMS = BatteryParams()
 N = 96
@@ -121,3 +126,51 @@ def test_winter_discharge_stops_at_reserve_floor() -> None:
     discharged_kwh = sum(plan.discharge_w) * 0.25 / 1000
     stored_kwh = (PARAMS.cap_usable_kwh - PARAMS.cap_min_kwh) * PARAMS.eta_one_way
     assert discharged_kwh == pytest.approx(stored_kwh, rel=1e-6)
+
+
+def test_chained_start_soc_summer_carries_charge_over_the_weekend() -> None:
+    """Fri charges to full, Sat/Sun are no-ops -> Monday starts full."""
+    start = chained_start_soc(date(2026, 8, 10), FLAT_LOAD, NO_SOLAR, PARAMS)
+    assert start == pytest.approx(PARAMS.cap_usable_kwh)
+
+
+def test_chained_start_soc_winter_is_the_reserve_floor() -> None:
+    """
+    Winter weekdays end drained, so chaining changes nothing there.
+
+    Ponta demand exceeds the one-unit deliverable (5.2 vs 3.46 kWh —
+    the Checkpoint B finding): every winter weekday ends at the floor,
+    making the chained seed exactly the old floor seed.
+    """
+    start = chained_start_soc(date(2026, 1, 15), FLAT_LOAD, NO_SOLAR, PARAMS)
+    assert start == pytest.approx(PARAMS.cap_min_kwh)
+
+
+def test_chained_summer_day_discharges_its_morning_ponta() -> None:
+    """
+    Seeded from the previous weekday's end, morning ponta discharges.
+
+    The production gap this fixes: a floor-seeded summer day cannot
+    discharge (ponta 09:15-12:15 precedes the 13:00-17:00 charge), so
+    without chaining the battery would sit full all summer — and only
+    ponta may discharge under the chained seed.
+    """
+    day = date(2026, 8, 10)  # Monday
+    floor_seeded = static_plan(day, FLAT_LOAD, NO_SOLAR, PARAMS)
+    assert sum(floor_seeded.discharge_w) == 0  # the bug, demonstrated
+
+    start = chained_start_soc(day, FLAT_LOAD, NO_SOLAR, PARAMS)
+    chained = static_plan(
+        day,
+        FLAT_LOAD,
+        NO_SOLAR,
+        dataclasses.replace(PARAMS, soc_start_kwh=start),
+    )
+    assert sum(chained.discharge_w) > 0
+    for i, discharge in enumerate(chained.discharge_w):
+        if discharge > 0:
+            when = datetime(2026, 8, 10) + timedelta(minutes=15 * i)
+            assert period(when) == "ponta"
+    # Still a valid plan under the seeded start.
+    seeded = dataclasses.replace(PARAMS, soc_start_kwh=start)
+    assert validate_plan(chained, FLAT_LOAD, NO_SOLAR, seeded) == []

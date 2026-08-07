@@ -28,9 +28,12 @@ Health policy (spec §9): the driver's third consecutive failure
 later fully-successful tick restores it. Transient failures below the
 limit keep `healthy` on — the next tick retries, and the commanded
 state is forgotten so the full transition replays. The plan rebuilds
-at date change, seeded at the reserve floor (the plan is a schedule;
-both run-time magnitudes are closed loops, so the model's SoC needs
-no live seed).
+at date change, seeded at the previous weekday's PLANNED end SoC
+(virtual day-chaining, `core.static_schedule.chained_start_soc`) —
+without it the summer schedule could never discharge, since its
+charge window sits after the morning ponta. The plan stays a
+schedule, not a tracker: the seed is the model rolled forward, and
+no SoC is ever read.
 
 This module is HA-free like the driver: the quarter-hour timer and
 the notification service live in the integration __init__; tests
@@ -39,13 +42,14 @@ drive tick() directly.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import TYPE_CHECKING, Literal
 
 from .charge_loop import CHARGE_FALLBACK_W
 from .const import BASE_LOAD_W
 from .core.plan import BatteryParams, Plan, soc_trajectory, validate_plan
-from .core.static_schedule import static_plan
+from .core.static_schedule import chained_start_soc, static_plan
 from .driver import DriverError, DriverUnavailableError
 
 if TYPE_CHECKING:
@@ -142,9 +146,21 @@ class BatteryOptExecutor:
             and self.plan_day == now.date()
         ):
             return self.plan, self._plan_params
-        # soc_start_kwh=None → the reserve floor (BatteryParams default):
-        # the plan is a schedule, not a tracker — no live SoC seed.
-        params = self._get_params()
+        # Virtual day-chaining: seed today from the previous weekday's
+        # PLANNED end SoC — the summer schedule can only discharge in
+        # its morning ponta if yesterday's midday charge carries over
+        # (in winter the previous day ends drained, so the seed IS the
+        # floor). Still a schedule, not a tracker: this rolls the
+        # plan's own model forward, no SoC readback (ADR-0008). The
+        # seeded params are kept so validation and the published SoC
+        # trajectory use the same start the plan was built with.
+        base = self._get_params()
+        params = dataclasses.replace(
+            base,
+            soc_start_kwh=chained_start_soc(
+                now.date(), self._load_w, self._solar_w, base
+            ),
+        )
         self.plan = self._plan_factory(now.date(), self._load_w, self._solar_w, params)
         self.plan_day = now.date()
         self._plan_params = params

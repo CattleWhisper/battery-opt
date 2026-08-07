@@ -291,6 +291,18 @@ be reworked to the three-state machine in spec §8 **before** the 2-week
 static soak starts; soaking the old force-discharge path would validate
 behaviour we already know is wrong.
 
+**Pre-soak fix (2026-08-07): virtual day-chaining.** Found while
+investigating a plan-sensor question: a floor-seeded summer static day
+can never discharge (ponta 09:15–12:15 precedes the 13:00–17:00 charge
+window), so the executor would have delivered 0% summer ponta coverage
+— failing this checkpoint's own criterion — while the backtest, which
+chains SoC across days, showed the schedule working. The executor and
+the static fallback now seed each day from the previous weekday's
+PLANNED end SoC (`core.static_schedule.chained_start_soc`; spec §8,
+CONTEXT.md trap). No SoC readback — ADR-0008 stands; winter behaviour
+is unchanged (winter weekdays end drained, so the chained seed is the
+floor there).
+
 - [ ] 2 weeks in production on the static plan
 - [ ] Zero export recorded
 - [ ] SoC never below 27% (observed on the Marstek's own SoC sensor — ADR-0008)

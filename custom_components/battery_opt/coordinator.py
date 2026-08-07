@@ -5,9 +5,12 @@ Each refresh pulls the day series from core OMIE's
 get_prices_for_date service, computes the advisory plan with the
 capped greedy (plans at the plan-wear from the Checkpoint B decision,
 books savings at the true wear), and publishes plan + forecast saving
-+ the vs-static delta. The virtual battery starts each day at the
-reserve floor; no SoC is read anywhere (owner decision 2026-08-07 —
-the floor is the battery's to manage). With the Marstek entities
++ the vs-static delta. The advisory greedy's virtual battery starts
+each day at the reserve floor (it cycles within the day by design);
+the static fallback day-chains like the executor, since the summer
+static schedule can only discharge on carried-over charge. No SoC is
+read anywhere (owner decision 2026-08-07 — the floor is the battery's
+to manage). With the Marstek entities
 configured, the executor (separate) additionally actuates the static
 plan per Phase 1; the advisory plan is still computed — it is the
 dry-run the spec's Task 12 wants before dynamic actuation is ever
@@ -54,7 +57,7 @@ from .core.plan import (
     soc_trajectory,
     validate_plan,
 )
-from .core.static_schedule import static_plan
+from .core.static_schedule import chained_start_soc, static_plan
 from .load_history import LOOKBACK_DAYS, async_load_samples
 from .prices_source import day_series_from_service
 
@@ -312,6 +315,13 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sensor's `fallback` attribute marks it. There is no price
         vector to cost it against, so the saving fields stay None.
         """
+        # Virtual day-chaining, matching the executor: the summer
+        # static plan only discharges if the previous weekday's midday
+        # charge carries over (see chained_start_soc).
+        plan_params = dataclasses.replace(
+            plan_params,
+            soc_start_kwh=chained_start_soc(today, load, solar, plan_params),
+        )
         fallback_plan = static_plan(today, load, solar, plan_params)
         return {
             "prices_ok": False,

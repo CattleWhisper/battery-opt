@@ -157,7 +157,19 @@ Summer = last Sunday of March → last Sunday of October.
 | Solar forecast | `forecast_solar` | 0 |
 
 The SoC is deliberately NOT an input (ADR-0008, owner 2026-08-07):
-plans are seeded at the reserve floor and no SoC is read anywhere.
+no SoC is read anywhere. The advisory greedy seeds each day at the
+reserve floor (it cycles within the day by design). The STATIC plan —
+what the executor actuates in Phase 1, and the fallback everywhere —
+seeds each day at the previous weekday's PLANNED end SoC instead
+(virtual day-chaining, `core.static_schedule.chained_start_soc`,
+2026-08-07): the summer schedule charges at midday AFTER the morning
+ponta, so a floor-seeded summer day can never discharge — the battery
+would sit full all summer and Checkpoint C's ponta-coverage criterion
+could not be met. The seed is the plan's own model rolled forward
+(exact: every weekday's charge window fills to capacity from any
+start, so its end is start-independent; weekends are no-ops that pass
+SoC through), never a readback — ADR-0008 stands. In winter the
+previous weekday ends drained, so the chained seed IS the floor.
 
 ### Outputs (entities)
 
