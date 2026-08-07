@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
     from . import BatteryOptConfigEntry
+    from .charge_loop import ChargePowerLoop
     from .coordinator import BatteryOptCoordinator
     from .executor import BatteryOptExecutor
 
@@ -60,7 +61,12 @@ async def async_setup_entry(
     runtime = entry.runtime_data
     async_add_entities(
         [
-            PlanSensor(runtime.coordinator, runtime.executor, entry.entry_id),
+            PlanSensor(
+                runtime.coordinator,
+                runtime.executor,
+                entry.entry_id,
+                charge_loop=runtime.charge_loop,
+            ),
             ForecastSavingsSensor(runtime.coordinator, entry.entry_id),
             VsStaticSensor(runtime.coordinator, entry.entry_id),
             CurrentPriceSensor(runtime.coordinator, entry.entry_id),
@@ -107,10 +113,12 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
         coordinator: BatteryOptCoordinator,
         executor: BatteryOptExecutor | None,
         entry_id: str,
+        charge_loop: ChargePowerLoop | None = None,
     ) -> None:
         """Bind to the coordinator and, when present, the executor."""
         super().__init__(coordinator)
         self._executor = executor
+        self._charge_loop = charge_loop
         self._attr_unique_id = f"{entry_id}_plan"
         self._attr_device_info = device_info_for(entry_id)
 
@@ -156,6 +164,10 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
         if self._executor is not None:
             attributes["executor_status"] = self._executor.status
             attributes["executor_plan_date"] = str(self._executor.plan_day or "")
+        if self._charge_loop is not None:
+            # ADR-0007 / Task 15 criterion 5: fallback is flagged here.
+            attributes["charge_loop_setpoint_w"] = self._charge_loop.last_setpoint_w
+            attributes["charge_loop_fallback"] = self._charge_loop.fallback
         return attributes
 
 

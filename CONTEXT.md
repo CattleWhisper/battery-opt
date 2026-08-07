@@ -65,11 +65,13 @@ VAT = 1.23  # uniform multiplier; reporting only
 CAP_NOMINAL = 5.12  # kWh
 CAP_USABLE = 5.00  # kWh
 CAP_MIN = 1.35  # kWh (27% - reserve floor, zero arbitrage cost)
-P_CHG_MAX = 2000  # W - static planning ceiling; SUPERSEDED at run time
-#   by ADR-0007 (owner, 2026-08-07): the charge-power loop drives the
-#   setpoint up to the device's 2500 W against the MEASURED import,
-#   keeping the 200 W margin. Planning C-3 uses
-#   min(2500, P_USABLE - forecast_load) once Task 15 lands.
+P_CHG_MAX = 2000  # W - historical static ceiling; SUPERSEDED (Task 15,
+#   2026-08-07, ADR-0007): the charge-power loop drives the setpoint up
+#   to the device's 2500 W against the MEASURED import, keeping the
+#   200 W margin. Production planning C-3 passes the 2500 W device
+#   limit; the backtest keeps 2000 (the configuration the Checkpoint B
+#   reference figures were measured under). 2000 remains the loop's
+#   fail-safe fallback when its sensors are unavailable.
 P_DIS_MAX = 2500  # W
 ETA_RT = 0.90  # round-trip efficiency
 RATED_CYCLES = 6000

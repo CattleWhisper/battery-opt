@@ -6,12 +6,15 @@ with static as fallback. Every tick re-validates the whole plan
 against C-1..C-7 before touching the battery (spec §11) — an invalid
 plan or a missing SoC reading means no actuation at all.
 
-ADR-0006 state machine: each interval maps to CHARGE (force-charge +
-setpoint), HOLD (standby) or DISCHARGE (firmware anti-feed; the
-plan's discharge_w only selects the quarter — magnitude is the
-firmware's). Transition sequences live in the driver; the executor
-issues `set_state` only on decision changes (spec §8: write once,
-rewrite on change) and plain setpoint updates within CHARGE.
+ADR-0006 state machine, ADR-0007 states-only plan: each interval maps
+to CHARGE, HOLD or DISCHARGE — the plan's power vectors are pure
+state selectors. Both run-time magnitudes are closed loops: discharge
+is the firmware's anti-feed, charge power is owned by the
+charge-power loop (charge_loop.py) from CHARGE entry to exit; the
+executor only supplies the entry setpoint the loop hands it.
+Transition sequences live in the driver; the executor issues
+`set_state` only on decision changes (spec §8: write once, rewrite on
+change).
 
 The reserve floor is never delegated (spec §8): during DISCHARGE,
 SoC at or below the floor forces HOLD, and DISCHARGE is only allowed
@@ -27,9 +30,6 @@ state is forgotten so the full transition replays. The plan rebuilds
 at date change, seeded with the measured SoC so days chain like the
 backtest.
 
-Charge setpoints floor to the device's 50 W register step — never
-round up: up on charge could breach the contracted-power margin (C-3).
-
 This module is HA-free like the driver: the quarter-hour timer and
 the notification service live in the integration __init__; tests
 drive tick() directly.
@@ -41,6 +41,7 @@ import dataclasses
 import math
 from typing import TYPE_CHECKING, Literal
 
+from .charge_loop import CHARGE_FALLBACK_W
 from .const import BASE_LOAD_W
 from .core.plan import BatteryParams, Plan, soc_trajectory, validate_plan
 from .core.static_schedule import static_plan
@@ -58,7 +59,6 @@ if TYPE_CHECKING:
 
 INTERVALS_PER_DAY = 96
 INTERVAL_MINUTES = 15
-POWER_STEP_W = 50.0  # marstek_modbus number entities step in 50 W
 
 # Floor-guard hysteresis (spec §8): once the guard forces HOLD,
 # DISCHARGE needs SoC ≥ floor + this margin — no flapping at the edge.
@@ -71,28 +71,37 @@ BACKSTOP_MARGIN_PCT = 2.0
 Action = Literal["charge", "discharge", "hold", "unknown"]
 
 
-def _floor_to_step(watts: float) -> float:
-    """Round DOWN to the device step (contracted-power safety, C-3)."""
-    return int(watts // POWER_STEP_W) * POWER_STEP_W
-
-
 class BatteryOptExecutor:
     """Applies the day's plan interval by interval through the driver."""
 
-    def __init__(
+    # The two ADR-0007 hooks push the count past the limit; grouping
+    # them into a config object would obscure a simple wiring surface.
+    def __init__(  # noqa: PLR0913
         self,
         driver: BatteryDriver,
         get_params: Callable[[], BatteryParams],
         get_soc_kwh: Callable[[], float | None],
         plan_factory: PlanFactory | None = None,
         notify: Callable[[str], None] | None = None,
+        get_charge_entry_w: Callable[[], float] | None = None,
+        on_charge_entry: Callable[[float], None] | None = None,
     ) -> None:
-        """Wire the driver and the coordinator-backed data sources."""
+        """
+        Wire the driver and the coordinator-backed data sources.
+
+        ADR-0007: the plan carries states only. `get_charge_entry_w`
+        supplies the setpoint written on CHARGE entry — the charge-power
+        loop's current value when the loop is wired, the conservative
+        static fallback otherwise; `on_charge_entry` tells the loop what
+        was written so its deadband baseline matches reality.
+        """
         self._driver = driver
         self._get_params = get_params
         self._get_soc_kwh = get_soc_kwh
         self._plan_factory: PlanFactory = plan_factory or static_plan
         self._notify = notify or (lambda _message: None)
+        self._get_charge_entry_w = get_charge_entry_w or (lambda: CHARGE_FALLBACK_W)
+        self._on_charge_entry = on_charge_entry or (lambda _watts: None)
         self._listeners: list[Callable[[], None]] = []
         self.healthy = False
         self.status = "no tick yet"
@@ -104,7 +113,6 @@ class BatteryOptExecutor:
         self._solar_w = [0.0] * INTERVALS_PER_DAY
         # Last state the driver confirmed; None forces a full apply.
         self._commanded_state: BatteryState | None = None
-        self._commanded_charge_w: float | None = None
         self._floor_guard_active = False
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -156,7 +164,8 @@ class BatteryOptExecutor:
         index = self._interval_index(now)
         if index >= len(self.plan):
             return "unknown"
-        if _floor_to_step(self.plan.charge_w[index]) > 0:
+        # ADR-0007: the plan's power vectors are pure state selectors.
+        if self.plan.charge_w[index] > 0:
             return "charge"
         if self.plan.discharge_w[index] > 0:
             return "discharge"
@@ -205,10 +214,9 @@ class BatteryOptExecutor:
             self._set_health(healthy=False, status=f"invalid plan: {violations[0]}")
             return
         index = self._interval_index(now)
-        charge = _floor_to_step(plan.charge_w[index])
         desired: Action = (
             "charge"
-            if charge > 0
+            if plan.charge_w[index] > 0
             else "discharge"
             if plan.discharge_w[index] > 0
             else "hold"
@@ -216,6 +224,10 @@ class BatteryOptExecutor:
         guarded = self._apply_floor_guard(desired, soc_kwh, plan_params)
         try:
             if guarded != self._commanded_state:
+                # ADR-0007: entry power comes from the charge-power
+                # loop (or its fallback), never from the plan; within
+                # CHARGE the loop owns every subsequent setpoint.
+                entry_w = self._get_charge_entry_w() if guarded == "charge" else None
                 target = (
                     self._charge_window_target_pct(plan, plan_params, index)
                     if guarded == "charge"
@@ -223,14 +235,12 @@ class BatteryOptExecutor:
                 )
                 await self._driver.set_state(
                     guarded,
-                    charge_power_w=charge if guarded == "charge" else None,
+                    charge_power_w=entry_w,
                     target_soc_pct=target,
                 )
                 self._commanded_state = guarded
-                self._commanded_charge_w = charge if guarded == "charge" else None
-            elif guarded == "charge" and charge != self._commanded_charge_w:
-                await self._driver.set_charge_power(charge)
-                self._commanded_charge_w = charge
+                if entry_w is not None:
+                    self._on_charge_entry(entry_w)
         except DriverUnavailableError as err:
             self._commanded_state = None  # unknown: replay next tick
             self._set_health(healthy=False, status=f"driver unavailable: {err}")

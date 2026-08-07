@@ -68,10 +68,11 @@ def _executor(
 
 def test_charge_interval_transitions_with_power_and_backstop() -> None:
     """
-    Winter weekday 00:00: the vazio charge window starts at 2000 W.
+    Winter weekday 00:00: the vazio charge window opens.
 
-    One set_state carries the setpoint and the charge-to-SoC backstop
-    target — the static plan fills to 100 %, so the target is 100.
+    One set_state carries the ENTRY setpoint (ADR-0007: from the
+    charge-power loop's fallback here — never from the plan) and the
+    charge-to-SoC backstop — the static plan fills to 100 %.
     """
     driver = FakeDriver()
     executor = _executor(driver)
@@ -79,6 +80,22 @@ def test_charge_interval_transitions_with_power_and_backstop() -> None:
     assert driver.calls == [("set_state", ("charge", 2000.0, 100.0))]
     assert executor.healthy is True
     assert executor.last_action == "charge"
+
+
+def test_charge_entry_uses_the_loop_setpoint_and_reports_it() -> None:
+    """ADR-0007: entry power comes from the loop; the loop is told."""
+    written: list[float] = []
+    driver = FakeDriver()
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        get_soc_kwh=lambda: 1.35,
+        get_charge_entry_w=lambda: 2500.0,
+        on_charge_entry=written.append,
+    )
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 0)))
+    assert driver.calls == [("set_state", ("charge", 2500.0, 100.0))]
+    assert written == [2500.0]
 
 
 def test_discharge_interval_is_a_mode_switch_never_a_setpoint() -> None:
@@ -113,22 +130,27 @@ def test_unchanged_state_issues_no_calls() -> None:
     assert len(driver.calls) == 1
 
 
-def test_setpoint_change_within_charge_is_a_power_update_only() -> None:
-    """Staying in CHARGE with a new power → set_charge_power alone."""
+def test_executor_never_touches_power_within_charge() -> None:
+    """
+    ADR-0007: the charge-power loop owns the setpoint inside CHARGE.
+
+    Even when the plan's internal power values differ per quarter,
+    consecutive CHARGE ticks issue no driver calls at all.
+    """
 
     def factory(_day: object, load: list, _solar: list, _params: object) -> Plan:
         n = len(load)
         charge = [0.0] * n
         charge[0] = 2000.0
-        charge[1] = 1500.0
+        charge[1] = 1500.0  # a state selector only, never a setpoint
         return Plan(charge_w=tuple(charge), discharge_w=(0.0,) * n)
 
     driver = FakeDriver()
     executor = _executor(driver, plan_factory=factory)
     asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 0)))
     asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 15)))
+    assert len(driver.calls) == 1
     assert driver.calls[0][0] == "set_state"
-    assert driver.calls[1] == ("set_charge_power", 1500.0)
 
 
 def test_floor_guard_forces_hold_with_hysteresis() -> None:

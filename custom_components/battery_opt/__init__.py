@@ -9,14 +9,17 @@ imports (ADR-0001).
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .const import (
+    CONF_BATTERY_POWER_SENSOR,
     CONF_CHARGE_CUTOFF_NUMBER,
     CONF_CHARGE_POWER_NUMBER,
     CONF_CHARGE_TO_SOC_NUMBER,
     CONF_DISCHARGE_CUTOFF_NUMBER,
+    CONF_GRID_POWER_SENSOR,
     CONF_MODE_SELECT,
     CONF_RESERVE_FLOOR_PCT,
     CONF_RS485_SWITCH,
@@ -27,10 +30,12 @@ from .const import (
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from typing import Any
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
+    from .charge_loop import ChargePowerLoop
     from .coordinator import BatteryOptCoordinator
     from .executor import BatteryOptExecutor
 
@@ -55,14 +60,101 @@ class BatteryOptRuntime:
     Everything the platforms need from a loaded entry.
 
     `executor` is None in planning-only mode (no battery configured):
-    plans are computed and published, nothing actuates.
+    plans are computed and published, nothing actuates. `charge_loop`
+    is None until both ADR-0007 power sensors are configured.
     """
 
     coordinator: BatteryOptCoordinator
     executor: BatteryOptExecutor | None
+    charge_loop: ChargePowerLoop | None = None
+
+
+def _read_power_w(hass: HomeAssistant, entity_id: str) -> float | None:
+    """Parse a power sensor state; None when unavailable/non-numeric."""
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    try:
+        return float(state.state)
+    except ValueError:
+        return None
 
 
 type BatteryOptConfigEntry = ConfigEntry[BatteryOptRuntime]
+
+
+def _wire_actuation(
+    hass: HomeAssistant,
+    entry: BatteryOptConfigEntry,
+    merged: dict[str, Any],
+    driver: Any,
+    coordinator: BatteryOptCoordinator,
+) -> tuple[BatteryOptExecutor, ChargePowerLoop | None]:
+    """Build the executor and, when its sensors exist, the charge loop."""
+    from homeassistant.helpers.event import (  # noqa: PLC0415
+        async_track_state_change_event,
+    )
+
+    from .charge_loop import CHARGE_FALLBACK_W, ChargePowerLoop  # noqa: PLC0415
+    from .executor import BatteryOptExecutor  # noqa: PLC0415
+
+    def _notify(message: str) -> None:
+        hass.async_create_task(
+            hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {"title": "Battery Opt", "message": message},
+            )
+        )
+
+    # ADR-0007: executor and loop reference each other (entry setpoint
+    # one way, is-charging the other) — late-bind the loop through a
+    # holder so both can be constructed.
+    loop_holder: dict[str, ChargePowerLoop | None] = {"loop": None}
+
+    def _charge_entry_w() -> float:
+        loop = loop_holder["loop"]
+        return CHARGE_FALLBACK_W if loop is None else loop.entry_setpoint_w()
+
+    def _charge_entry_written(watts: float) -> None:
+        loop = loop_holder["loop"]
+        if loop is not None:
+            loop.mark_written(watts, time.monotonic())
+
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: coordinator.battery_params,
+        get_soc_kwh=lambda: (coordinator.data or {}).get("soc_kwh"),
+        notify=_notify,
+        get_charge_entry_w=_charge_entry_w,
+        on_charge_entry=_charge_entry_written,
+    )
+
+    grid_power_id = merged.get(CONF_GRID_POWER_SENSOR)
+    battery_power_id = merged.get(CONF_BATTERY_POWER_SENSOR)
+    if not (grid_power_id and battery_power_id):
+        return executor, None
+
+    def _power_inputs() -> tuple[float | None, float | None]:
+        return (
+            _read_power_w(hass, grid_power_id),
+            _read_power_w(hass, battery_power_id),
+        )
+
+    charge_loop = ChargePowerLoop(
+        driver,
+        get_inputs=_power_inputs,
+        is_charging=lambda: executor.last_action == "charge",
+    )
+    loop_holder["loop"] = charge_loop
+
+    async def _on_power_update(_event: Any) -> None:
+        await charge_loop.on_update(time.monotonic())
+
+    entry.async_on_unload(
+        async_track_state_change_event(hass, [grid_power_id], _on_power_update)
+    )
+    return executor, charge_loop
 
 
 async def async_setup_entry(
@@ -79,7 +171,6 @@ async def async_setup_entry(
 
     from .coordinator import BatteryOptCoordinator  # noqa: PLC0415
     from .driver import MarstekDriver, MarstekEntities  # noqa: PLC0415
-    from .executor import BatteryOptExecutor  # noqa: PLC0415
 
     # Options overlay data: the options flow can re-point entities
     # (e.g. fix the price sensor, add the battery when it arrives).
@@ -116,24 +207,14 @@ async def async_setup_entry(
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     executor = None
+    charge_loop = None
     if driver is not None:
-
-        def _notify(message: str) -> None:
-            hass.async_create_task(
-                hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {"title": "Battery Opt", "message": message},
-                )
-            )
-
-        executor = BatteryOptExecutor(
-            driver=driver,
-            get_params=lambda: coordinator.battery_params,
-            get_soc_kwh=lambda: (coordinator.data or {}).get("soc_kwh"),
-            notify=_notify,
+        executor, charge_loop = _wire_actuation(
+            hass, entry, merged, driver, coordinator
         )
-    entry.runtime_data = BatteryOptRuntime(coordinator=coordinator, executor=executor)
+    entry.runtime_data = BatteryOptRuntime(
+        coordinator=coordinator, executor=executor, charge_loop=charge_loop
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def _on_price_fetch_time(_now: datetime) -> None:

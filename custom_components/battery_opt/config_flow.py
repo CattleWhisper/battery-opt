@@ -28,12 +28,14 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BATTERY_POWER_SENSOR,
     CONF_CAPACITY_KWH,
     CONF_CHARGE_CUTOFF_NUMBER,
     CONF_CHARGE_POWER_NUMBER,
     CONF_CHARGE_TO_SOC_NUMBER,
     CONF_DISCHARGE_CUTOFF_NUMBER,
     CONF_GRID_ENERGY_SENSOR,
+    CONF_GRID_POWER_SENSOR,
     CONF_LOAD_SENSOR,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
@@ -158,6 +160,17 @@ def _entity_schema(current: dict[str, Any]) -> dict[vol.Marker, Any]:
         ),
         vol.Optional(
             CONF_GRID_ENERGY_SENSOR, description=suggested(CONF_GRID_ENERGY_SENSOR)
+        ): _entity("sensor"),
+        # Charge-power loop inputs (ADR-0007, Task 15): grid-import
+        # power (W) and the battery's own power (W). Both needed for
+        # the loop; until both are set, CHARGE uses the conservative
+        # static fallback setpoint.
+        vol.Optional(
+            CONF_GRID_POWER_SENSOR, description=suggested(CONF_GRID_POWER_SENSOR)
+        ): _entity("sensor"),
+        vol.Optional(
+            CONF_BATTERY_POWER_SENSOR,
+            description=suggested(CONF_BATTERY_POWER_SENSOR),
         ): _entity("sensor"),
     }
 

@@ -210,10 +210,10 @@ a firmware backstop against the integration dying mid-window. The
 backstop activates only after verify-on-device item 3 confirms 42011
 coexists with force-charge on this firmware.
 
-**Charge-power control loop (ADR-0007, Task 15 — decided 2026-08-07,
-not yet implemented):** while the state machine is in CHARGE, a loop
-faster than the 15-minute executor owns the `set_charge_power`
-setpoint:
+**Charge-power control loop (ADR-0007, Task 15 — decided and
+implemented 2026-08-07; bench verification pending):** while the state
+machine is in CHARGE, a loop faster than the 15-minute executor owns
+the `set_charge_power` setpoint:
 
 ```
 other_load = measured_grid_import_w - battery_charge_w

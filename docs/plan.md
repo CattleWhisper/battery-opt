@@ -476,22 +476,28 @@ static 2000 W ceiling (spec §11's ask-first item, asked and decided by
 the owner 2026-08-07).
 
 **Acceptance criteria:**
-- [ ] Executor's CHARGE entry passes no plan-derived power; the loop
+- [x] Executor's CHARGE entry passes no plan-derived power; the loop
       owns the setpoint from state entry to exit, and stops writing
       the moment the state leaves CHARGE
-- [ ] Control law per spec §8: 200 W margin preserved (P_USABLE 4400),
+- [x] Control law per spec §8: 200 W margin preserved (P_USABLE 4400),
       clamp to the device's 2500 W, floor to 50 W steps
-- [ ] Rate-limited (≥ ~5 s between writes) with a ~100 W deadband —
+- [x] Rate-limited (≥ ~5 s between writes) with a ~100 W deadband —
       no register chatter on meter noise
-- [ ] Two new optional config entities: grid-import power sensor (W)
+- [x] Two new optional config entities: grid-import power sensor (W)
       and battery power sensor; loop inactive until both are set
-- [ ] Fail safe: sensor unavailable mid-CHARGE → conservative static
-      2000 W fallback, flagged in attributes; recovers automatically
-- [ ] Planner C-3 capacity becomes `min(2500, P_USABLE −
-      forecast_load)`; CONTEXT.md P_CHG_MAX annotation updated
-- [ ] HA-free loop logic (core-style pure function for the control
-      law), unit-tested: clamps, deadband, rate limit, fallback,
-      import spikes mid-window
+- [x] Fail safe: sensor unavailable mid-CHARGE → conservative static
+      2000 W fallback, flagged in the plan sensor's attributes
+      (`charge_loop_fallback`); recovers automatically
+- [x] Planner C-3 capacity becomes `min(2500, P_USABLE −
+      forecast_load)` — production `battery_params` passes the device
+      limit; the backtest keeps the measured 2000 W configuration so
+      the Checkpoint B reference figures stay reproducible
+- [x] HA-free loop logic (`charge_loop.py`), unit-tested: clamps,
+      deadband, rate limit, fallback, import spikes mid-window
+
+*Code delivered 2026-08-07: `charge_loop.py` + wiring, 225 tests. The
+loop write path shares the driver's three-strike counter but swallows
+its own exceptions — the executor tick owns the health latch.*
 
 **Verification:**
 - [ ] Bench: charge window with a deliberately induced load spike

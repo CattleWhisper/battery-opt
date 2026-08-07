@@ -46,6 +46,7 @@ from .const import (
     DEFAULT_PLAN_WEAR,
     DEFAULT_RESERVE_FLOOR_PCT,
     DEFAULT_WEAR_COST,
+    DEVICE_MAX_CHARGE_W,
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
@@ -132,6 +133,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             cap_usable_kwh=capacity,
             cap_min_kwh=capacity * floor_pct / 100.0,
             wear_cost_eur_kwh=float(merged.get(CONF_WEAR_COST, DEFAULT_WEAR_COST)),
+            # ADR-0007: planning C-3 capacity is the device limit; the
+            # run-time contracted-power margin is the charge loop's.
+            p_charge_max_w=DEVICE_MAX_CHARGE_W,
         )
 
     @property

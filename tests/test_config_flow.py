@@ -8,6 +8,7 @@ service with a response in the shape verified from
 home-assistant/core sources.
 """
 
+import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -452,6 +453,56 @@ async def test_all_entities_group_under_one_service_device(
     # plan, forecast savings, vs static, price, SoC forecast, load MAE,
     # cost today, healthy
     assert len(grouped) == 8
+
+
+async def test_charge_loop_wires_and_clamps_against_measured_import(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Task 15: the loop wires, feeds the CHARGE entry, clamps on spikes.
+
+    2026-01-15 00:00 is the winter vazio charge window; flat house
+    load leaves room for the full 2500 W. An AC spike (house jumps to
+    2600 W) must throttle the setpoint so import stays under 4400 W.
+    """
+    freezer.move_to("2026-01-15T08:00:00+00:00")  # 00:00 Pacific (hass tz)
+    hass.states.async_set("sensor.marstek_soc", "27.0")
+    hass.states.async_set("sensor.grid_power", "1040")
+    hass.states.async_set("sensor.marstek_battery_power", "0")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **VALID_INPUT,
+            "grid_power_sensor": "sensor.grid_power",
+            "battery_power_sensor": "sensor.marstek_battery_power",
+        },
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    loop = entry.runtime_data.charge_loop
+    assert loop is not None
+
+    async_mock_service(hass, "select", "select_option")
+    async_mock_service(hass, "switch", "turn_on")
+    number_calls = async_mock_service(hass, "number", "set_value")
+    # Executor tick at local 00:00 (Pacific): the charge window.
+    await entry.runtime_data.executor.tick(datetime(2026, 1, 15, 0, 0))
+    await hass.async_block_till_done()
+    entry_writes = [c.data for c in number_calls if "power" in c.data["entity_id"]]
+    assert entry_writes[-1]["value"] == 2500.0  # loop-fed entry, not 2000
+
+    # AC compressor: house load 1040 -> 2600, import spikes to 5100.
+    hass.states.async_set("sensor.grid_power", "5100")
+    hass.states.async_set("sensor.marstek_battery_power", "2500")
+    # The CHARGE entry stamped the loop with real time.monotonic();
+    # step the injected clock past the rate-limit window from there.
+    await loop.on_update(now=time.monotonic() + 10.0)
+    await hass.async_block_till_done()
+    spike_write = number_calls[-1].data
+    assert spike_write["value"] == 1800.0  # 4400 - 2600, import capped
+    assert loop.fallback is False
 
 
 async def test_entities_exist_and_health_follows_the_executor(

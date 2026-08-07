@@ -35,6 +35,16 @@ CONF_PLAN_WEAR = "plan_wear_eur_kwh"
 # likely point at the same entity.
 CONF_LOAD_SENSOR = "load_sensor"  # house consumption: power W or energy kWh
 CONF_GRID_ENERGY_SENSOR = "grid_energy_sensor"  # grid-import energy kWh
+# ADR-0007 charge-power loop inputs — both optional; the loop stays
+# inactive (conservative static fallback) until both are set.
+CONF_GRID_POWER_SENSOR = "grid_power_sensor"  # total grid import, W
+CONF_BATTERY_POWER_SENSOR = "battery_power_sensor"  # battery power, W
+
+# Venus E 3.0 device charge limit (owner, 2026-08-07, ADR-0007):
+# production planning C-3 uses this; the run-time margin against the
+# contracted ceiling is the charge-power loop's job. The backtest
+# keeps the measured 2000 W configuration (core BatteryParams default).
+DEVICE_MAX_CHARGE_W = 2500.0
 
 DEFAULT_CAPACITY_KWH = 5.0
 DEFAULT_RESERVE_FLOOR_PCT = 27.0
