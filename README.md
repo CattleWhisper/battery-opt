@@ -6,13 +6,18 @@ regulated network tariff (TAR) between `ponta` / `cheias` / `vazio`
 periods — the TAR, not the OMIE market price, is what pays
 (see `CONTEXT.md`).
 
-**Status: Phase 1 (HA shell) in progress.** The domain core —
-tri-horária weekly calendar, EDP Indexada price model, greedy
-optimiser, static baseline — is complete, backtested over 11 months
-of real quarter-hourly OMIE data, and runs entirely outside Home
+**Status: control code complete, bench verification pending.** The
+domain core — tri-horária weekly calendar, EDP Indexada price model,
+greedy optimiser, static baseline — is backtested over 11 months of
+real quarter-hourly OMIE data and runs entirely outside Home
 Assistant. Measured on real data: **€196/yr saving** for the static
 seasonal schedule, **€324/yr** for the capped dynamic optimiser
-(incl. VAT, net of wear). Full numbers in `docs/findings.md`.
+(incl. VAT, net of wear); full numbers in `docs/findings.md`. The
+battery control state machine (ADR-0006: CHARGE / HOLD / DISCHARGE,
+discharge via the firmware's zero-export anti-feed mode) and the
+charge-power closed loop (ADR-0007: charge at the highest power that
+keeps grid import under the contracted limit) are implemented; the
+on-device checklist in `docs/spec.md` §8 gates production actuation.
 
 ## Architecture in one paragraph
 
@@ -28,10 +33,49 @@ is versioned by effective date (ADR-0005) because ERSE revises it.
 ## Install (HACS)
 
 Add this repository as a custom repository in HACS, install
-"Battery Opt", restart, then add the integration. The config flow
-asks for the `marstek_venus_modbus` entities (mode select, power
-number, SoC sensor), an OMIE price sensor, and the battery
-parameters (defaults from `CONTEXT.md`).
+"Battery Opt", restart, then add the integration.
+
+**Prerequisites:** Home Assistant's own **OMIE** integration
+(Settings → Devices & services → Add → OMIE) — prices come
+exclusively from its `omie.get_prices_for_date` service. For
+actuation, the **marstek_venus_modbus** integration must own the
+battery's Modbus connection, with its disabled-by-default entities
+enabled (`force_mode`, `rs485_control_mode`, `set_charge_power`, and
+`charge_to_soc` if you want the firmware backstop).
+
+**Two modes.** Leave the battery entities empty for
+**planning-only** mode: plans, prices and savings are computed and
+published, nothing actuates. Add all five battery entities (force
+mode select, charge power number, SoC sensor, rs485 control switch,
+work mode select) via Configure to go **active**. Everything is
+editable later through the options flow; the entry reloads on save.
+
+**Optional entities**, each degrading gracefully when unset:
+
+| Config field | Enables |
+|---|---|
+| House load sensor (W or kWh) | Real load forecast instead of the flat 1.04 kW |
+| Grid import energy sensor (kWh) | `sensor.battery_opt_cost_today` |
+| Grid import power sensor (W) + battery power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W) |
+| Charge-to-SoC number | Firmware charge backstop (gate on the spec §8 checklist) |
+| SOC cutoff numbers | Setup-time firmware cutoffs — do not exist on the Venus E V3; leave empty there |
+
+## Entities
+
+All grouped under one **Battery Opt** service device.
+
+| Entity | What it shows |
+|---|---|
+| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry the full day vectors, tomorrow's preview, the static-fallback flag and the charge-loop setpoint/fallback |
+| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); day vector + TAR period in attributes; Energy-dashboard-ready |
+| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the battery's own SoC sensor); full day trajectory in attributes |
+| `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
+| `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
+| `sensor.battery_opt_cost_today` | Grid-import cost today incl. the daily fixed terms, excl. VAT (needs the grid energy sensor) |
+| `sensor.battery_opt_load_mae` | Load-forecast error (W), computed at each day close (needs the load sensor) |
+| `binary_sensor.battery_opt_healthy` | Off on missing prices, driver failure, or an invalid plan — the executor never actuates while off |
+| `switch.battery_opt_executor_actuation` | **Manual override** (active mode): off = the executor keeps planning and guarding but skips every battery write, so you can drive the battery yourself; re-enabling replays the full transition sequence. Default on, restored across restarts |
+| `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = it keeps computing but writes no setpoints (shown only when the loop's sensors are configured) |
 
 ## Dashboards
 
