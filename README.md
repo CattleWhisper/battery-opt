@@ -114,6 +114,9 @@ series:
     name: Price (EUR/kWh)
     type: line
     yaxis_id: price
+    # Without this the card's default (extend_to: end) drags the last
+    # value flat to the edge of graph_span once the data runs out.
+    extend_to: false
     data_generator: |
       const pts = [];
       (entity.attributes.prices || []).forEach(s => {
@@ -126,6 +129,7 @@ series:
     name: Charge (W)
     type: column
     yaxis_id: power
+    extend_to: false
     data_generator: |
       const pts = [];
       (entity.attributes.schedule || [])
@@ -140,6 +144,7 @@ series:
     name: Discharge (W)
     type: column
     yaxis_id: power
+    extend_to: false
     data_generator: |
       const pts = [];
       (entity.attributes.schedule || [])
@@ -191,6 +196,7 @@ series:
   - entity: sensor.battery_opt_soc_forecast
     name: Forecast (%)
     type: line
+    extend_to: false
     data_generator: |
       const t = entity.attributes.trajectory_pct || [];
       const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
@@ -198,6 +204,7 @@ series:
   - entity: sensor.marstek_battery_state_of_charge
     name: Real (%)
     type: line
+    extend_to: now
 ```
 
 (Point the second series at your Marstek SoC entity id.)
