@@ -312,6 +312,56 @@ async def test_current_price_sensor_tracks_the_edp_formula(
     assert len(state.attributes["prices_eur_kwh"]) == 96
 
 
+async def test_current_price_and_plan_index_by_lisbon_not_ha_local_time(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Price/plan sensors must index by Europe/Lisbon, not hass's own timezone.
+
+    Regression test for a real bug: `_quarter_index()` in
+    coordinator.py used to read `now.hour`/`now.minute` straight off
+    whatever tzinfo `dt_util.now()` carried — that is
+    `hass.config.time_zone`, not necessarily Europe/Lisbon — while the
+    price/plan vectors are always built on the Lisbon-local calendar
+    day (`prices_source._lisbon_date`). Frozen instant is ponta
+    (09:15-12:15) in Lisbon but vazio (00:00-07:00) in US/Pacific,
+    8h behind in July: with the bug, `sensor.battery_opt_current_price`
+    would report the flat-OMIE vazio price (interval 8) instead of the
+    correct ponta price (interval 40) — a difference driven entirely
+    by the TAR term, since the stub's OMIE spot is flat.
+    """
+    await hass.config.async_set_time_zone("US/Pacific")
+    freezer.move_to("2026-07-15T09:00:00+00:00")  # 10:00 Lisbon / 02:00 Pacific
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    lisbon_quarter = 40  # 10:00 Lisbon == interval 40 of 96
+    lisbon_now = datetime(2026, 7, 15, 10, 0, tzinfo=ZoneInfo("Europe/Lisbon"))
+    price_state = hass.states.get("sensor.battery_opt_current_price")
+    assert float(price_state.state) == pytest.approx(price(60.0, lisbon_now))
+    # The attribute vector is rounded to 5 dp for display; abs tolerance
+    # absorbs that, this is still the same slot, not a fresh assertion.
+    assert price_state.attributes["prices_eur_kwh"][lisbon_quarter] == pytest.approx(
+        float(price_state.state), abs=1e-4
+    )
+
+    plan_state = hass.states.get("sensor.battery_opt_plan")
+    charge = plan_state.attributes["charge_w"]
+    discharge = plan_state.attributes["discharge_w"]
+    expected_action = (
+        "charge"
+        if charge[lisbon_quarter] > 0
+        else "discharge"
+        if discharge[lisbon_quarter] > 0
+        else "idle"
+    )
+    assert plan_state.state == expected_action
+
+
 async def test_core_omie_pads_before_tomorrow_publishes(hass: HomeAssistant) -> None:
     """Only market date D available: the final hour pads, flagged."""
     _register_core_omie_service(hass, days_available=1)

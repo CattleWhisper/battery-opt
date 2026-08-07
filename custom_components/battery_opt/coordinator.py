@@ -49,6 +49,7 @@ from .const import (
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
+from .core.calendar import TZ_PORTUGAL
 from .core.forecast import forecast_load
 from .core.optimiser import solve
 from .core.plan import BatteryParams, saving_vs_no_cycling, validate_plan
@@ -397,9 +398,16 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
 def _quarter_index(now: datetime, length: int) -> int:
     """
-    Wall-clock quarter-hour index into a day vector.
+    Lisbon-local quarter-hour index into a day vector.
 
-    Deliberately naive on the two DST days (92/100 quarters): off by
-    at most one hour there, exact on every other day.
+    The vectors are built on the Lisbon-local calendar day
+    (prices_source._lisbon_date), so `now` must be converted to
+    Europe/Lisbon before reading hour/minute — reading it in whatever
+    zone `hass.config.time_zone` happens to be (dt_util.now()'s zone)
+    silently picks a different day's or a shifted quarter-hour's slot
+    whenever that isn't already Europe/Lisbon. Deliberately naive on
+    the two DST days (92/100 quarters): off by at most one hour there,
+    exact on every other day.
     """
-    return min((now.hour * 60 + now.minute) // 15, length - 1)
+    lisbon_now = now.astimezone(TZ_PORTUGAL)
+    return min((lisbon_now.hour * 60 + lisbon_now.minute) // 15, length - 1)
