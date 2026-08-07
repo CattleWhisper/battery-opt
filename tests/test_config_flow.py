@@ -272,14 +272,19 @@ async def test_meter_sensors_are_optional_and_editable_later(
 
 async def test_planning_only_computes_plan_from_core_omie(
     hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """
     No battery: the entry loads and the advisory plan is computed.
 
     The battery entities are simply absent; the coordinator pulls the
     day series from the OMIE service and publishes the capped-greedy
-    plan with nothing to actuate.
+    plan with nothing to actuate. Frozen to a winter weekday so the
+    day-chained seed provably equals the reserve floor (the previous
+    winter weekday ends drained) — a summer date would seed full and
+    a weekend date would vary by which weekday it chains from.
     """
+    freezer.move_to("2026-01-15T12:00:00+00:00")  # Thursday, winter
     _register_core_omie_service(hass)
     entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
     entry.add_to_hass(hass)
@@ -306,17 +311,57 @@ async def test_planning_only_computes_plan_from_core_omie(
     assert healthy.state == "on"
     assert "planning only" in healthy.attributes["status"]
 
-    # SoC forecast: advisory trajectory, floor-seeded virtual battery.
+    # SoC forecast: advisory trajectory, day-chained virtual battery —
+    # in winter the chained seed IS the reserve floor.
     soc_forecast = hass.states.get("sensor.battery_opt_soc_forecast")
     assert soc_forecast is not None
     assert soc_forecast.attributes["source"] == "advisory"
     trajectory = soc_forecast.attributes["trajectory_kwh"]
     assert len(trajectory) == 97  # 96 quarters + the midnight boundary
-    assert trajectory[0] == pytest.approx(1.35)  # starts at the floor
+    assert trajectory[0] == pytest.approx(1.35)  # winter chains to the floor
     assert min(trajectory) >= 1.35 - 1e-9  # C-4: never below the floor
     assert max(trajectory) <= 5.0 + 1e-9  # C-5: never above the ceiling
     assert soc_forecast.attributes["trajectory_pct"][0] == pytest.approx(27.0)
     assert 27.0 <= float(soc_forecast.state) <= 100.0
+
+
+async def test_advisory_trajectory_is_day_chained_in_summer(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Summer advisory SoC starts FULL, not at the floor.
+
+    The previous weekday's static plan ends full in summer (midday
+    charge after the morning ponta), so the chained advisory
+    trajectory begins at 100% — matching the real battery under
+    static actuation, which is the whole point of the SoC forecast
+    sensor's forecast-vs-real overlay. The seeded greedy can then
+    plan a morning-ponta discharge the floor seed made impossible.
+    """
+    freezer.move_to("2026-07-15T08:00:00+00:00")  # Wednesday, summer
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    soc_forecast = hass.states.get("sensor.battery_opt_soc_forecast")
+    trajectory = soc_forecast.attributes["trajectory_kwh"]
+    assert trajectory[0] == pytest.approx(5.0)  # Tuesday's charge carried
+    assert soc_forecast.attributes["trajectory_pct"][0] == pytest.approx(100.0)
+    assert max(trajectory) <= 5.0 + 1e-9  # C-5 holds under the full seed
+    # The seeded greedy discharges the morning ponta (09:15-12:15) —
+    # flat stub OMIE means the TAR alone makes it profitable.
+    plan_state = hass.states.get("sensor.battery_opt_plan")
+    morning_discharge = [
+        s
+        for s in plan_state.attributes["schedule"]
+        if s["direction"] == "discharge"
+        and s["start"].startswith("2026-07-15")
+        and datetime.fromisoformat(s["start"]).hour < 13
+    ]
+    assert morning_discharge
 
 
 async def test_current_price_sensor_tracks_the_edp_formula(

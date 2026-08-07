@@ -5,12 +5,13 @@ Each refresh pulls the day series from core OMIE's
 get_prices_for_date service, computes the advisory plan with the
 capped greedy (plans at the plan-wear from the Checkpoint B decision,
 books savings at the true wear), and publishes plan + forecast saving
-+ the vs-static delta. The advisory greedy's virtual battery starts
-each day at the reserve floor (it cycles within the day by design);
-the static fallback day-chains like the executor, since the summer
-static schedule can only discharge on carried-over charge. No SoC is
-read anywhere (owner decision 2026-08-07 — the floor is the battery's
-to manage). With the Marstek entities
++ the vs-static delta. The virtual battery day-chains like the
+executor (spec §8): each day — advisory greedy, static fallback and
+tomorrow's preview alike — seeds at the previous weekday's planned
+static end, so the published SoC trajectory matches the battery's
+real morning state under Phase 1 actuation. No SoC is read anywhere
+(owner decision 2026-08-07 — the floor is the battery's to manage).
+With the Marstek entities
 configured, the executor (separate) additionally actuates the static
 plan per Phase 1; the advisory plan is still computed — it is the
 dry-run the spec's Task 12 wants before dynamic actuation is ever
@@ -190,7 +191,13 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         prices = list(series.delivered_eur_kwh)
         load = await self._forecast_load_vector(tomorrow, len(prices))
         solar = [0.0] * len(load)
-        plan_params = dataclasses.replace(params, soc_start_kwh=params.cap_min_kwh)
+        # Day-chained like today's plan (still not chained from today's
+        # LIVE execution — the seed is the static model's deterministic
+        # previous-weekday end, so the preview stays speculative but
+        # the 48 h schedule reads coherently across midnight).
+        plan_params = dataclasses.replace(
+            params, soc_start_kwh=chained_start_soc(tomorrow, load, solar, params)
+        )
         solve_params = dataclasses.replace(
             plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
         )
@@ -272,8 +279,17 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
         solar = [0.0] * len(load)
-        # Virtual battery: the day always starts at the reserve floor.
-        plan_params = dataclasses.replace(params, soc_start_kwh=params.cap_min_kwh)
+        # Virtual battery, day-chained (spec §8): the day starts at the
+        # previous weekday's planned static end — under Phase 1 static
+        # actuation that IS the expected real morning SoC, so the
+        # advisory trajectory (and the SoC forecast sensor) lines up
+        # with the battery instead of resetting to the floor. Daily
+        # savings keep the backtest's chaining convention: charge cost
+        # books on the day it is bought, discharge revenue on the day
+        # it is sold.
+        plan_params = dataclasses.replace(
+            params, soc_start_kwh=chained_start_soc(today, load, solar, params)
+        )
         if prices is None:
             return self._static_fallback(today, load, solar, plan_params)
         solve_params = dataclasses.replace(
@@ -315,13 +331,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sensor's `fallback` attribute marks it. There is no price
         vector to cost it against, so the saving fields stay None.
         """
-        # Virtual day-chaining, matching the executor: the summer
-        # static plan only discharges if the previous weekday's midday
-        # charge carries over (see chained_start_soc).
-        plan_params = dataclasses.replace(
-            plan_params,
-            soc_start_kwh=chained_start_soc(today, load, solar, plan_params),
-        )
+        # plan_params arrive day-chained from _advisory_plan, matching
+        # the executor: the summer static plan only discharges if the
+        # previous weekday's midday charge carries over.
         fallback_plan = static_plan(today, load, solar, plan_params)
         return {
             "prices_ok": False,
