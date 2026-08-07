@@ -429,16 +429,27 @@ Replaces the original force-discharge actuation, which exports whenever
 house load drops below the setpoint.
 
 **Acceptance criteria:**
-- [ ] Driver exposes states (CHARGE/HOLD/DISCHARGE), not raw force modes;
+- [x] Driver exposes states (CHARGE/HOLD/DISCHARGE), not raw force modes;
       discharge is a mode switch, never a power setpoint
-- [ ] Transition sequences exactly as spec §8, including re-asserting
+- [x] Transition sequences exactly as spec §8, including re-asserting
       anti-feed on every entry into DISCHARGE
-- [ ] `charge_to_soc` backstop written per charge window (gated on
-      checklist item 3)
-- [ ] Firmware SOC cutoffs (44000=100 %, 44001=27 %) written once at
-      setup; a rejected 44001 write is logged, never fatal
-- [ ] SoC floor guard during DISCHARGE (floor → HOLD, with hysteresis)
-- [ ] Every transition and guard unit-tested against the fake driver
+- [x] `charge_to_soc` backstop written per charge window (gated on
+      checklist item 3 — the gate is the optional config field: leave
+      it empty until the on-device test passes)
+- [x] Firmware SOC cutoffs (44000=100 %, 44001=27 %) written once at
+      setup with compare-before-write; skipped with a log line when the
+      entities are unset — which is the expected state on the V3, where
+      the upstream register map lists both numbers as MISSING
+- [x] SoC floor guard during DISCHARGE (floor → HOLD, hysteresis
+      +0.15 kWh) — the PRIMARY floor protection on the V3, see above
+- [x] Every transition and guard unit-tested against the fake driver
+
+*Code delivered 2026-08-07: driver/executor/config-flow rework, 210
+tests. The battery entity group is now FIVE entities (force_mode,
+set_charge_power, SoC, rs485_control_mode switch, user_work_mode
+select) — existing entries fall back to planning-only until the two
+new entities are selected in Options. The plan/healthy sensors say
+"hold" where they used to say "idle".*
 
 **Verification:**
 - [ ] Full on-device checklist from spec §8 executed and results recorded

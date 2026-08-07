@@ -13,10 +13,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .const import (
+    CONF_CHARGE_CUTOFF_NUMBER,
     CONF_CHARGE_POWER_NUMBER,
-    CONF_DISCHARGE_POWER_NUMBER,
+    CONF_CHARGE_TO_SOC_NUMBER,
+    CONF_DISCHARGE_CUTOFF_NUMBER,
     CONF_MODE_SELECT,
+    CONF_RESERVE_FLOOR_PCT,
+    CONF_RS485_SWITCH,
     CONF_SOC_SENSOR,
+    CONF_WORK_MODE_SELECT,
+    DEFAULT_RESERVE_FLOOR_PCT,
 )
 
 if TYPE_CHECKING:
@@ -81,8 +87,9 @@ async def async_setup_entry(
     battery_keys = (
         CONF_MODE_SELECT,
         CONF_CHARGE_POWER_NUMBER,
-        CONF_DISCHARGE_POWER_NUMBER,
         CONF_SOC_SENSOR,
+        CONF_RS485_SWITCH,
+        CONF_WORK_MODE_SELECT,
     )
     has_battery = all(merged.get(key) for key in battery_keys)
     driver = None
@@ -90,10 +97,19 @@ async def async_setup_entry(
         entities = MarstekEntities(
             mode_select=merged[CONF_MODE_SELECT],
             charge_power_number=merged[CONF_CHARGE_POWER_NUMBER],
-            discharge_power_number=merged[CONF_DISCHARGE_POWER_NUMBER],
             soc_sensor=merged[CONF_SOC_SENSOR],
+            rs485_switch=merged[CONF_RS485_SWITCH],
+            work_mode_select=merged[CONF_WORK_MODE_SELECT],
+            charge_to_soc_number=merged.get(CONF_CHARGE_TO_SOC_NUMBER),
+            charge_cutoff_number=merged.get(CONF_CHARGE_CUTOFF_NUMBER),
+            discharge_cutoff_number=merged.get(CONF_DISCHARGE_CUTOFF_NUMBER),
         )
         driver = MarstekDriver(hass, entities)
+        # Spec §8: firmware SOC cutoffs mirror the invariants, written
+        # once at setup (EEPROM-backed; compare-before-write inside).
+        # Never fatal — the numbers are MISSING on the Venus E V3.
+        floor_pct = float(merged.get(CONF_RESERVE_FLOOR_PCT, DEFAULT_RESERVE_FLOOR_PCT))
+        await driver.write_soc_cutoffs(floor_pct, 100.0)
     coordinator = BatteryOptCoordinator(hass, entry, driver)
     await coordinator.async_restore_load_mae()
     await coordinator.async_config_entry_first_refresh()

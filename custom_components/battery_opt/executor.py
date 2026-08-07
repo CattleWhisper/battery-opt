@@ -1,21 +1,34 @@
 """
-15-minute executor: applies the current interval's setpoint (Task 9).
+15-minute executor: applies the current interval's battery state.
 
 Phase 1 runs the static seasonal plan; Task 12 swaps in the greedy
 with static as fallback. Every tick re-validates the whole plan
 against C-1..C-7 before touching the battery (spec §11) — an invalid
 plan or a missing SoC reading means no actuation at all.
 
+ADR-0006 state machine: each interval maps to CHARGE (force-charge +
+setpoint), HOLD (standby) or DISCHARGE (firmware anti-feed; the
+plan's discharge_w only selects the quarter — magnitude is the
+firmware's). Transition sequences live in the driver; the executor
+issues `set_state` only on decision changes (spec §8: write once,
+rewrite on change) and plain setpoint updates within CHARGE.
+
+The reserve floor is never delegated (spec §8): during DISCHARGE,
+SoC at or below the floor forces HOLD, and DISCHARGE is only allowed
+again once SoC recovers above floor + hysteresis — the firmware
+cutoff registers are MISSING on the Venus E V3, so this guard is the
+primary floor protection, not belt-and-braces.
+
 Health policy (spec §9): the driver's third consecutive failure
 (DriverUnavailableError) flips `healthy` off and notifies once; a
 later fully-successful tick restores it. Transient failures below the
-limit keep `healthy` on — the next tick retries and the driver does
-the counting. The plan rebuilds at date change, seeded with the
-measured SoC so days chain like the backtest.
+limit keep `healthy` on — the next tick retries, and the commanded
+state is forgotten so the full transition replays. The plan rebuilds
+at date change, seeded with the measured SoC so days chain like the
+backtest.
 
-Setpoints floor to the device's 50 W register step — never round up:
-up on discharge would export (C-1), up on charge could breach the
-contracted-power margin (C-3).
+Charge setpoints floor to the device's 50 W register step — never
+round up: up on charge could breach the contracted-power margin (C-3).
 
 This module is HA-free like the driver: the quarter-hour timer and
 the notification service live in the integration __init__; tests
@@ -25,10 +38,11 @@ drive tick() directly.
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import TYPE_CHECKING, Literal
 
 from .const import BASE_LOAD_W
-from .core.plan import BatteryParams, Plan, validate_plan
+from .core.plan import BatteryParams, Plan, soc_trajectory, validate_plan
 from .core.static_schedule import static_plan
 from .driver import DriverError, DriverUnavailableError
 
@@ -36,7 +50,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from datetime import date, datetime
 
-    from .driver import BatteryDriver
+    from .driver import BatteryDriver, BatteryState
 
     PlanFactory = Callable[
         [date, Sequence[float], Sequence[float], BatteryParams], Plan
@@ -46,11 +60,19 @@ INTERVALS_PER_DAY = 96
 INTERVAL_MINUTES = 15
 POWER_STEP_W = 50.0  # marstek_modbus number entities step in 50 W
 
-Action = Literal["charge", "discharge", "idle", "unknown"]
+# Floor-guard hysteresis (spec §8): once the guard forces HOLD,
+# DISCHARGE needs SoC ≥ floor + this margin — no flapping at the edge.
+FLOOR_GUARD_HYSTERESIS_KWH = 0.15
+
+# charge_to_soc backstop margin: slightly above the planned end-of-
+# window SoC so the firmware stop never truncates the plan itself.
+BACKSTOP_MARGIN_PCT = 2.0
+
+Action = Literal["charge", "discharge", "hold", "unknown"]
 
 
 def _floor_to_step(watts: float) -> float:
-    """Round DOWN to the device step (zero-export / margin safety)."""
+    """Round DOWN to the device step (contracted-power safety, C-3)."""
     return int(watts // POWER_STEP_W) * POWER_STEP_W
 
 
@@ -80,6 +102,10 @@ class BatteryOptExecutor:
         self._plan_params: BatteryParams | None = None
         self._load_w = [BASE_LOAD_W] * INTERVALS_PER_DAY
         self._solar_w = [0.0] * INTERVALS_PER_DAY
+        # Last state the driver confirmed; None forces a full apply.
+        self._commanded_state: BatteryState | None = None
+        self._commanded_charge_w: float | None = None
+        self._floor_guard_active = False
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register a state-change callback; returns the remover."""
@@ -126,16 +152,43 @@ class BatteryOptExecutor:
             return "unknown"
         if _floor_to_step(self.plan.charge_w[index]) > 0:
             return "charge"
-        if _floor_to_step(self.plan.discharge_w[index]) > 0:
+        if self.plan.discharge_w[index] > 0:
             return "discharge"
-        return "idle"
+        return "hold"
 
     @staticmethod
     def _interval_index(now: datetime) -> int:
         return (now.hour * 60 + now.minute) // INTERVAL_MINUTES
 
+    def _apply_floor_guard(
+        self, desired: Action, soc_kwh: float, params: BatteryParams
+    ) -> Action:
+        """Never delegate the reserve floor (spec §8), with hysteresis."""
+        if desired != "discharge":
+            return desired
+        if self._floor_guard_active:
+            if soc_kwh >= params.cap_min_kwh + FLOOR_GUARD_HYSTERESIS_KWH:
+                self._floor_guard_active = False
+                return "discharge"
+            return "hold"
+        if soc_kwh <= params.cap_min_kwh:
+            self._floor_guard_active = True
+            return "hold"
+        return "discharge"
+
+    def _charge_window_target_pct(
+        self, plan: Plan, params: BatteryParams, index: int
+    ) -> float:
+        """Planned end-of-window SoC as a firmware backstop target."""
+        end = index
+        while end < len(plan) and plan.charge_w[end] > 0:
+            end += 1
+        soc_end_kwh = soc_trajectory(plan, params)[end]
+        pct = math.ceil(soc_end_kwh / params.cap_usable_kwh * 100.0)
+        return min(100.0, pct + BACKSTOP_MARGIN_PCT)
+
     async def tick(self, now: datetime) -> None:
-        """Validate, then apply the current interval's setpoint."""
+        """Validate, then apply the current interval's battery state."""
         soc_kwh = self._get_soc_kwh()
         if soc_kwh is None:
             self._set_health(healthy=False, status="battery SoC unavailable")
@@ -147,24 +200,40 @@ class BatteryOptExecutor:
             return
         index = self._interval_index(now)
         charge = _floor_to_step(plan.charge_w[index])
-        discharge = _floor_to_step(plan.discharge_w[index])
+        desired: Action = (
+            "charge"
+            if charge > 0
+            else "discharge"
+            if plan.discharge_w[index] > 0
+            else "hold"
+        )
+        guarded = self._apply_floor_guard(desired, soc_kwh, plan_params)
         try:
-            if charge > 0:
+            if guarded != self._commanded_state:
+                target = (
+                    self._charge_window_target_pct(plan, plan_params, index)
+                    if guarded == "charge"
+                    else None
+                )
+                await self._driver.set_state(
+                    guarded,
+                    charge_power_w=charge if guarded == "charge" else None,
+                    target_soc_pct=target,
+                )
+                self._commanded_state = guarded
+                self._commanded_charge_w = charge if guarded == "charge" else None
+            elif guarded == "charge" and charge != self._commanded_charge_w:
                 await self._driver.set_charge_power(charge)
-                await self._driver.set_mode("charge")
-            elif discharge > 0:
-                await self._driver.set_discharge_power(discharge)
-                await self._driver.set_mode("discharge")
-            else:
-                await self._driver.set_mode("idle")
+                self._commanded_charge_w = charge
         except DriverUnavailableError as err:
+            self._commanded_state = None  # unknown: replay next tick
             self._set_health(healthy=False, status=f"driver unavailable: {err}")
             return
         except DriverError as err:
             # Below the three-strike limit: retry next tick, stay as-is.
+            self._commanded_state = None
             self.status = f"transient driver error: {err}"
             return
-        self.last_action = (
-            "charge" if charge > 0 else "discharge" if discharge > 0 else "idle"
-        )
-        self._set_health(healthy=True, status="ok")
+        self.last_action = guarded
+        status = "ok" if guarded == desired else "ok (floor guard: holding)"
+        self._set_health(healthy=True, status=status)

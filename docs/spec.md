@@ -205,9 +205,13 @@ force-charge on this firmware.
 **Firmware SOC cutoffs (decided 2026-08-07):** `charging_cutoff_capacity`
 (44000) = 100 % and `discharging_cutoff_capacity` (44001) = 27 % are
 written **once at integration setup** — never per transition; the 44xxx
-block is EEPROM-backed. They mirror invariants the integration already
-enforces (belt-and-braces). If 44001 rejects the write (community-reported
-on V3), log it and rely on the integration-level floor guard.
+block is EEPROM-backed, and equal values are never rewritten
+(compare-before-write). They mirror invariants the integration already
+enforces. **Implementation finding (2026-08-07):** the upstream register
+map lists both cutoff numbers as MISSING on the Venus E V3 — the entities
+do not exist there at all, so on V3 the cutoff config fields stay empty,
+the setup write is skipped with a log line, and the executor's SoC floor
+guard is the PRIMARY floor protection, not belt-and-braces.
 
 **Guards during DISCHARGE (decided 2026-08-07):** zero-export is delegated
 to the firmware, the reserve floor never is. Coordinator SoC polling

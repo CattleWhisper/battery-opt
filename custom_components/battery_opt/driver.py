@@ -1,47 +1,64 @@
 """
-Battery driver: a thin layer over `marstek_venus_modbus` (ADR-0004).
+Battery driver: the ADR-0006 state machine over `marstek_modbus` (ADR-0004).
 
 This integration is a planner, not a driver. It NEVER opens a Modbus
-connection — the Venus E accepts exactly one and `marstek_venus_modbus`
+connection — the Venus E accepts exactly one and `marstek_modbus`
 owns it. Every write goes through `hass.services.async_call` against
 that integration's entities; the entity ids are chosen by the user in
-the config flow (Task 8), never hardcoded.
+the config flow, never hardcoded.
 
-Zero-export is enforced internally by the device via its smart meter
-(open question #3, resolved 2026-08-05); the executor still validates
-every plan against C-1..C-7 before actuating — defence in depth.
+Three battery states (ADR-0006, spec §8), each a different mechanism:
+
+- CHARGE — external control: force-charge plus a power setpoint.
+- HOLD — external control: force-mode standby. Persists because normal
+  polling is the watchdog keepalive (bench finding, 2026-08).
+- DISCHARGE — the firmware's anti-feed mode: external control is
+  released and the work mode asserted, every time — entering force
+  mode is reported to flip the work mode back to manual.
+
+Discharge is NEVER a power setpoint: force-discharge exports whenever
+house load drops below the setpoint. The firmware's anti-feed tracking
+is the only mechanism with native zero-export.
 
 The module imports nothing from `homeassistant` at runtime: `hass` is
 duck-typed (`services.async_call`, `states.get`), which keeps the
 driver and its tests runnable without an HA install. Failure policy
 per Task 7: each failed call raises `DriverError`; the third
 consecutive failure raises `DriverUnavailableError`, which the
-executor (Task 9) maps to `healthy=off`. A successful call resets the
-counter.
+executor maps to `healthy=off`. A successful call resets the counter.
+A failure mid-transition leaves the driver state unknown, so the next
+`set_state` replays the full sequence instead of the short path.
 """
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Mode = Literal["charge", "discharge", "idle"]
+BatteryState = Literal["charge", "hold", "discharge"]
 
 MAX_CONSECUTIVE_FAILURES = 3
 
-# Option labels of the `force_mode` select (register 42010), verified
-# against ViperRNMC/marstek_venus_modbus registers/e_v3.yaml — the
-# select entity exposes the YAML keys verbatim. Note: force_mode and
-# the set_(dis)charge_power numbers ship disabled by default in that
-# integration; the user must enable them in HA before setup.
-DEFAULT_MODE_OPTIONS: dict[Mode, str] = {
-    "charge": "charge",
-    "discharge": "discharge",
-    "idle": "standby",
-}
+# Option labels verified against ViperRNMC/marstek_venus_modbus
+# registers/e_v3.yaml — the select entities expose the YAML keys
+# verbatim. force_mode (42010): standby/charge/discharge;
+# user_work_mode (43000): manual/anti_feed/trade_mode. Note:
+# force_mode, rs485_control_mode, set_charge_power and charge_to_soc
+# ship disabled by default in that integration; the user must enable
+# them in HA before setup. user_work_mode is enabled by default.
+FORCE_STANDBY = "standby"
+FORCE_CHARGE = "charge"
+WORK_MODE_ANTI_FEED = "anti_feed"
+
+# charge_to_soc (42011) is a 10-100 % number in the upstream entity.
+_CHARGE_TO_SOC_MIN = 10.0
+_CHARGE_TO_SOC_MAX = 100.0
 
 _BAD_STATES = frozenset({"unavailable", "unknown", "none", ""})
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class DriverError(Exception):
@@ -57,34 +74,53 @@ class MarstekEntities:
     """
     Entity ids of the marstek_modbus integration, user-chosen.
 
-    The device exposes separate charge and discharge power registers
-    (42020 / 42021, both 0-2500 W), hence two number entities.
+    The three optional ids degrade gracefully when unset: no
+    charge-to-SoC backstop and no setup-time cutoff writes. On the
+    Venus E V3 the cutoff numbers are in the upstream register map's
+    MISSING list (not created at all), so unset is the expected state
+    there — the executor's SoC floor guard is the primary protection.
     """
 
     mode_select: str
     charge_power_number: str
-    discharge_power_number: str
     soc_sensor: str
+    rs485_switch: str
+    work_mode_select: str
+    charge_to_soc_number: str | None = None
+    charge_cutoff_number: str | None = None
+    discharge_cutoff_number: str | None = None
 
 
 class BatteryDriver(ABC):
-    """What the executor needs from a battery: mode, powers, SoC."""
+    """What the executor needs from a battery (ADR-0006 states)."""
 
     @abstractmethod
-    async def set_mode(self, mode: Mode) -> None:
-        """Switch the battery between charge, discharge and idle."""
+    async def set_state(
+        self,
+        state: BatteryState,
+        *,
+        charge_power_w: float | None = None,
+        target_soc_pct: float | None = None,
+    ) -> None:
+        """Transition to a battery state (idempotent on repeats)."""
 
     @abstractmethod
     async def set_charge_power(self, watts: float) -> None:
-        """Set the charge power setpoint in W."""
-
-    @abstractmethod
-    async def set_discharge_power(self, watts: float) -> None:
-        """Set the discharge power setpoint in W."""
+        """Update the charge setpoint without leaving CHARGE."""
 
     @abstractmethod
     async def read_soc(self) -> float:
         """Return the state of charge in percent (0-100)."""
+
+    @abstractmethod
+    async def write_soc_cutoffs(self, floor_pct: float, ceiling_pct: float) -> bool:
+        """
+        Write the firmware SOC cutoffs once, at setup. Never fatal.
+
+        Returns True only if both cutoffs are confirmed written (or
+        already held the target value — the registers are EEPROM-backed,
+        so equal values are never rewritten).
+        """
 
 
 class MarstekDriver(BatteryDriver):
@@ -94,15 +130,14 @@ class MarstekDriver(BatteryDriver):
         self,
         hass: Any,  # duck-typed HomeAssistant; no HA import at runtime
         entities: MarstekEntities,
-        mode_options: dict[Mode, str] | None = None,
     ) -> None:
         """Bind to a hass instance and the user-configured entities."""
         self._hass = hass
         self._entities = entities
-        self._mode_options = (
-            DEFAULT_MODE_OPTIONS if mode_options is None else (mode_options)
-        )
         self._failures = 0
+        # None = unknown (startup, or a transition failed midway):
+        # the next set_state replays the full sequence.
+        self._state: BatteryState | None = None
 
     def _record_failure(self, cause: BaseException) -> DriverError:
         self._failures += 1
@@ -119,15 +154,72 @@ class MarstekDriver(BatteryDriver):
             raise self._record_failure(err) from err
         self._failures = 0
 
-    async def set_mode(self, mode: Mode) -> None:
-        """Switch mode via select.select_option on the mode entity."""
+    async def _external_control(self, *, engaged: bool) -> None:
+        await self._call(
+            "switch",
+            "turn_on" if engaged else "turn_off",
+            {"entity_id": self._entities.rs485_switch},
+        )
+
+    async def _force_mode(self, option: str) -> None:
         await self._call(
             "select",
             "select_option",
-            {
-                "entity_id": self._entities.mode_select,
-                "option": self._mode_options[mode],
-            },
+            {"entity_id": self._entities.mode_select, "option": option},
+        )
+
+    async def set_state(
+        self,
+        state: BatteryState,
+        *,
+        charge_power_w: float | None = None,
+        target_soc_pct: float | None = None,
+    ) -> None:
+        """Run the spec §8 transition sequence into `state`."""
+        if state == self._state:
+            return
+        previous, self._state = self._state, None
+        if state == "charge":
+            if charge_power_w is None:
+                msg = "CHARGE requires charge_power_w"
+                raise ValueError(msg)
+            # From HOLD external control is already engaged (spec §8:
+            # internal changes are single writes); from DISCHARGE or
+            # unknown, engage it first.
+            if previous != "hold":
+                await self._external_control(engaged=True)
+            await self.set_charge_power(charge_power_w)
+            await self._write_charge_to_soc(target_soc_pct)
+            await self._force_mode(FORCE_CHARGE)
+        elif state == "hold":
+            if previous != "charge":
+                await self._external_control(engaged=True)
+            await self._force_mode(FORCE_STANDBY)
+        else:  # discharge
+            await self._force_mode(FORCE_STANDBY)
+            await self._external_control(engaged=False)
+            # Re-asserted on EVERY entry: entering force mode flips the
+            # work mode back to manual (spec §8, verify item 2).
+            await self._call(
+                "select",
+                "select_option",
+                {
+                    "entity_id": self._entities.work_mode_select,
+                    "option": WORK_MODE_ANTI_FEED,
+                },
+            )
+        self._state = state
+
+    async def _write_charge_to_soc(self, target_soc_pct: float | None) -> None:
+        # Backstop against the integration dying mid-window; gated on
+        # the entity being configured at all (checklist item 3).
+        if target_soc_pct is None or self._entities.charge_to_soc_number is None:
+            return
+        value = min(_CHARGE_TO_SOC_MAX, max(_CHARGE_TO_SOC_MIN, target_soc_pct))
+        await self._call(
+            "number",
+            "set_value",
+            {"entity_id": self._entities.charge_to_soc_number, "value": value},
         )
 
     async def set_charge_power(self, watts: float) -> None:
@@ -136,14 +228,6 @@ class MarstekDriver(BatteryDriver):
             "number",
             "set_value",
             {"entity_id": self._entities.charge_power_number, "value": watts},
-        )
-
-    async def set_discharge_power(self, watts: float) -> None:
-        """Set the discharge W setpoint via number.set_value."""
-        await self._call(
-            "number",
-            "set_value",
-            {"entity_id": self._entities.discharge_power_number, "value": watts},
         )
 
     async def read_soc(self) -> float:
@@ -159,6 +243,50 @@ class MarstekDriver(BatteryDriver):
         self._failures = 0
         return soc
 
+    async def write_soc_cutoffs(self, floor_pct: float, ceiling_pct: float) -> bool:
+        """
+        Setup-time cutoff writes: compare-before-write, never fatal.
+
+        Outside the three-strike counter on purpose — a missing or
+        write-rejecting cutoff entity (upstream marks both MISSING on
+        the Venus E V3) must not poison actuation health.
+        """
+        ok = True
+        targets = (
+            (self._entities.discharge_cutoff_number, floor_pct, "floor"),
+            (self._entities.charge_cutoff_number, ceiling_pct, "ceiling"),
+        )
+        for entity_id, value, label in targets:
+            if entity_id is None:
+                _LOGGER.info(
+                    "SOC %s cutoff entity not configured; relying on the "
+                    "integration-level guard (expected on Venus E V3)",
+                    label,
+                )
+                ok = False
+                continue
+            current = self._hass.states.get(entity_id)
+            try:
+                if current is not None and float(current.state) == value:
+                    continue  # EEPROM-backed: never rewrite an equal value
+            except ValueError:
+                pass
+            try:
+                await self._hass.services.async_call(
+                    "number",
+                    "set_value",
+                    {"entity_id": entity_id, "value": value},
+                )
+            except Exception:  # noqa: BLE001 - never fatal by contract
+                _LOGGER.warning(
+                    "SOC %s cutoff write to %s rejected; relying on the "
+                    "integration-level guard",
+                    label,
+                    entity_id,
+                )
+                ok = False
+        return ok
+
 
 @dataclass
 class FakeDriver(BatteryDriver):
@@ -167,19 +295,26 @@ class FakeDriver(BatteryDriver):
     soc_percent: float = 27.0
     calls: list[tuple[str, object]] = field(default_factory=list)
 
-    async def set_mode(self, mode: Mode) -> None:
-        """Record the mode change."""
-        self.calls.append(("set_mode", mode))
+    async def set_state(
+        self,
+        state: BatteryState,
+        *,
+        charge_power_w: float | None = None,
+        target_soc_pct: float | None = None,
+    ) -> None:
+        """Record the state transition."""
+        self.calls.append(("set_state", (state, charge_power_w, target_soc_pct)))
 
     async def set_charge_power(self, watts: float) -> None:
         """Record the charge setpoint."""
         self.calls.append(("set_charge_power", watts))
 
-    async def set_discharge_power(self, watts: float) -> None:
-        """Record the discharge setpoint."""
-        self.calls.append(("set_discharge_power", watts))
-
     async def read_soc(self) -> float:
         """Record the read and return the configured SoC."""
         self.calls.append(("read_soc", None))
         return self.soc_percent
+
+    async def write_soc_cutoffs(self, floor_pct: float, ceiling_pct: float) -> bool:
+        """Record the cutoff write and report success."""
+        self.calls.append(("write_soc_cutoffs", (floor_pct, ceiling_pct)))
+        return True

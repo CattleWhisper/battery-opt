@@ -158,7 +158,7 @@ async def test_no_prices_falls_back_to_static_plan(hass: HomeAssistant) -> None:
     assert hass.states.get("binary_sensor.battery_opt_healthy").state == "off"
     plan_state = hass.states.get("sensor.battery_opt_plan")
     assert plan_state.attributes["fallback"] == "static"
-    assert plan_state.state in ("charge", "discharge", "idle")
+    assert plan_state.state in ("charge", "discharge", "hold")
 
 
 async def test_successful_refresh_archives_the_day(hass: HomeAssistant) -> None:

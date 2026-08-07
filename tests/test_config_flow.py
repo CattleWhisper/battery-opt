@@ -32,14 +32,15 @@ if TYPE_CHECKING:
 from custom_components.battery_opt.const import (
     CONF_CAPACITY_KWH,
     CONF_CHARGE_POWER_NUMBER,
-    CONF_DISCHARGE_POWER_NUMBER,
     CONF_GRID_ENERGY_SENSOR,
     CONF_LOAD_SENSOR,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
+    CONF_RS485_SWITCH,
     CONF_SOC_SENSOR,
     CONF_WEAR_COST,
+    CONF_WORK_MODE_SELECT,
     DOMAIN,
 )
 from custom_components.battery_opt.core.prices import price
@@ -47,8 +48,9 @@ from custom_components.battery_opt.core.prices import price
 BATTERY_ENTITIES = {
     CONF_MODE_SELECT: "select.marstek_force_mode",
     CONF_CHARGE_POWER_NUMBER: "number.marstek_set_charge_power",
-    CONF_DISCHARGE_POWER_NUMBER: "number.marstek_set_discharge_power",
     CONF_SOC_SENSOR: "sensor.marstek_soc",
+    CONF_RS485_SWITCH: "switch.marstek_rs485_control_mode",
+    CONF_WORK_MODE_SELECT: "select.marstek_user_work_mode",
 }
 
 PARAMETERS = {
@@ -146,7 +148,7 @@ async def test_flow_rejects_partial_battery_entities(hass: HomeAssistant) -> Non
     partial = {
         key: value
         for key, value in VALID_INPUT.items()
-        if key not in (CONF_CHARGE_POWER_NUMBER, CONF_DISCHARGE_POWER_NUMBER)
+        if key not in (CONF_CHARGE_POWER_NUMBER, CONF_RS485_SWITCH)
     }
     result = await hass.config_entries.flow.async_configure(result["flow_id"], partial)
     assert result["type"] is FlowResultType.FORM
@@ -269,7 +271,7 @@ async def test_planning_only_computes_plan_from_core_omie(
 
     plan_state = hass.states.get("sensor.battery_opt_plan")
     assert plan_state.attributes["mode"] == "planning_only"
-    assert plan_state.state in ("charge", "discharge", "idle")
+    assert plan_state.state in ("charge", "discharge", "hold")
     savings = hass.states.get("sensor.battery_opt_forecast_savings")
     assert savings.state not in ("unknown", "unavailable")
     assert hass.states.get("sensor.battery_opt_vs_static") is not None
@@ -357,7 +359,7 @@ async def test_current_price_and_plan_index_by_lisbon_not_ha_local_time(
         if charge[lisbon_quarter] > 0
         else "discharge"
         if discharge[lisbon_quarter] > 0
-        else "idle"
+        else "hold"
     )
     assert plan_state.state == expected_action
 
@@ -455,15 +457,19 @@ async def test_entities_exist_and_health_follows_the_executor(
     assert healthy.state == "off"  # no tick yet
     assert healthy.attributes["status"] == "no tick yet"
 
-    # A quarter-hour tick (winter cheias, 13:00): idle command, healthy on.
+    # A quarter-hour tick (winter cheias, 13:00): HOLD, healthy on.
+    # ADR-0006 from an unknown state: engage external control (rs485
+    # switch on), then force standby — all service calls (ADR-0004).
     select_calls = async_mock_service(hass, "select", "select_option")
+    switch_on_calls = async_mock_service(hass, "switch", "turn_on")
     async_mock_service(hass, "number", "set_value")
     await entry.runtime_data.executor.tick(datetime(2026, 1, 15, 13, 0))
     await hass.async_block_till_done()
-    assert len(select_calls) == 1  # ADR-0004: actuation is a service call
+    assert len(switch_on_calls) == 1
+    assert len(select_calls) == 1
     assert select_calls[0].data["option"] == "standby"
     assert hass.states.get("binary_sensor.battery_opt_healthy").state == "on"
     plan_state = hass.states.get("sensor.battery_opt_plan")
-    assert plan_state.state == "idle"
+    assert plan_state.state == "hold"
     assert plan_state.attributes["mode"] == "active"
     assert plan_state.attributes["executor_plan_date"] == "2026-01-15"

@@ -29,15 +29,19 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_CAPACITY_KWH,
+    CONF_CHARGE_CUTOFF_NUMBER,
     CONF_CHARGE_POWER_NUMBER,
-    CONF_DISCHARGE_POWER_NUMBER,
+    CONF_CHARGE_TO_SOC_NUMBER,
+    CONF_DISCHARGE_CUTOFF_NUMBER,
     CONF_GRID_ENERGY_SENSOR,
     CONF_LOAD_SENSOR,
     CONF_MODE_SELECT,
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
+    CONF_RS485_SWITCH,
     CONF_SOC_SENSOR,
     CONF_WEAR_COST,
+    CONF_WORK_MODE_SELECT,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_PLAN_WEAR,
     DEFAULT_RESERVE_FLOOR_PCT,
@@ -92,12 +96,16 @@ def _parameter_schema(defaults: dict[str, Any]) -> dict[vol.Marker, Any]:
 
 
 # Battery entities are optional as a group: absent until the battery
-# arrives (planning-only mode), all three once it does.
+# arrives (planning-only mode), all five once it does (ADR-0006: the
+# rs485 switch and work-mode select carry the state transitions;
+# discharge power is gone — discharge is a mode switch, never a
+# setpoint).
 BATTERY_ENTITY_KEYS = (
     CONF_MODE_SELECT,
     CONF_CHARGE_POWER_NUMBER,
-    CONF_DISCHARGE_POWER_NUMBER,
     CONF_SOC_SENSOR,
+    CONF_RS485_SWITCH,
+    CONF_WORK_MODE_SELECT,
 )
 
 
@@ -116,13 +124,32 @@ def _entity_schema(current: dict[str, Any]) -> dict[vol.Marker, Any]:
             CONF_CHARGE_POWER_NUMBER,
             description=suggested(CONF_CHARGE_POWER_NUMBER),
         ): _entity("number"),
-        vol.Optional(
-            CONF_DISCHARGE_POWER_NUMBER,
-            description=suggested(CONF_DISCHARGE_POWER_NUMBER),
-        ): _entity("number"),
         vol.Optional(CONF_SOC_SENSOR, description=suggested(CONF_SOC_SENSOR)): (
             _entity("sensor")
         ),
+        vol.Optional(CONF_RS485_SWITCH, description=suggested(CONF_RS485_SWITCH)): (
+            _entity("switch")
+        ),
+        vol.Optional(
+            CONF_WORK_MODE_SELECT, description=suggested(CONF_WORK_MODE_SELECT)
+        ): _entity("select"),
+        # Optional control extras (spec §8): the charge-to-SoC backstop
+        # and the setup-time cutoff writes activate only when their
+        # entity is configured — the cutoff numbers are MISSING on the
+        # Venus E V3 upstream register map, so leaving them empty is
+        # the expected state there.
+        vol.Optional(
+            CONF_CHARGE_TO_SOC_NUMBER,
+            description=suggested(CONF_CHARGE_TO_SOC_NUMBER),
+        ): _entity("number"),
+        vol.Optional(
+            CONF_CHARGE_CUTOFF_NUMBER,
+            description=suggested(CONF_CHARGE_CUTOFF_NUMBER),
+        ): _entity("number"),
+        vol.Optional(
+            CONF_DISCHARGE_CUTOFF_NUMBER,
+            description=suggested(CONF_DISCHARGE_CUTOFF_NUMBER),
+        ): _entity("number"),
         # Meter entities (plan Tasks 11/13): optional, independent of
         # the battery entities above. Unset -> flat load forecast and
         # an unavailable cost sensor; nothing else changes.

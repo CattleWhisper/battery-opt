@@ -384,7 +384,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return "charge"
         if discharge[index] > 0:
             return "discharge"
-        return "idle"
+        return "hold"
 
     def current_price_eur_kwh(self) -> float | None:
         """Delivered price (EDP formula) for the current quarter-hour."""
