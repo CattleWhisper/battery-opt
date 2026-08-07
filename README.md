@@ -56,26 +56,27 @@ series:
   - entity: sensor.battery_opt_current_price
     name: Price (EUR/kWh)
     type: line
+    yaxis_id: price
     data_generator: |
       const prices = entity.attributes.prices_eur_kwh || [];
-      const start = new Date(entity.attributes.plan_date + "T00:00:00");
-      return prices.map((p, i) => [start.getTime() + i * 15 * 60 * 1000, p]);
+      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
+      return prices.map((p, i) => [dayStart.getTime() + i * 15 * 60 * 1000, p]);
   - entity: sensor.battery_opt_plan
     name: Charge (W)
     type: column
     yaxis_id: power
     data_generator: |
       const w = entity.attributes.charge_w || [];
-      const start = new Date(entity.attributes.plan_date + "T00:00:00");
-      return w.map((v, i) => [start.getTime() + i * 15 * 60 * 1000, v]);
+      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
+      return w.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, v]);
   - entity: sensor.battery_opt_plan
     name: Discharge (W)
     type: column
     yaxis_id: power
     data_generator: |
       const w = entity.attributes.discharge_w || [];
-      const start = new Date(entity.attributes.plan_date + "T00:00:00");
-      return w.map((v, i) => [start.getTime() + i * 15 * 60 * 1000, -v]);
+      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
+      return w.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, -v]);
 yaxis:
   - id: price
     decimals: 3
