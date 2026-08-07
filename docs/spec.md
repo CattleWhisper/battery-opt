@@ -163,17 +163,19 @@ plans are seeded at the reserve floor and no SoC is read anywhere.
 
 | Entity | Description |
 |---|---|
-| `sensor.battery_opt_plan` | 96-interval plan, in attributes; also `tomorrow_charge_w` / `tomorrow_discharge_w` once D+1's own price series builds (seeded at the reserve floor, not chained from today — decision 9) |
+| `sensor.battery_opt_plan` | Current action; attributes carry `schedule` — the advisory plan as merged charge/discharge windows `{start, end, direction, power_w}` (ISO timestamps with offset, hold windows omitted), one flat list spanning today and, once D+1's own price series builds, tomorrow (seeded at the reserve floor, not chained from today — decision 9) |
 | `sensor.battery_opt_forecast_savings` | Forecast saving vs. not cycling |
 | `sensor.battery_opt_vs_static` | **Forecast gain vs. the fixed schedule — the metric that justifies the project** |
 | `sensor.battery_opt_realised_savings` | Ex-post, from actual SoC and prices |
-| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; full day vector and TAR period in attributes; also `tomorrow_prices_eur_kwh` once D+1's own price series builds |
+| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; attributes carry `prices` — merged segments `{start, end, price_eur_kwh, tar_period}` (split at every TAR boundary so each value is checkable against the tariff table), spanning today and, once D+1's own price series builds, tomorrow |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter-hour (%, same unit as the battery's own SoC sensor, for direct forecast-vs-real comparison — the Checkpoint C soak metric); full day trajectory (97 boundary values, kWh and %) in attributes; sourced from the executor's actuated plan when a battery runs, the advisory plan otherwise |
 | `sensor.battery_opt_load_mae` | Mean absolute error (W) of yesterday's load forecast vs. observed, computed at day close; unavailable until a load meter is configured and one full day has closed (plan Task 11) |
 | `sensor.battery_opt_cost_today` | Grid-import cost today, EUR, excl. VAT (Task 13 pulled forward): variable = Σ(meter delta × delivered price at that instant, negative deltas from a meter reset counting as 0) + the daily fixed term (K3 + TAR potência); `state_class` TOTAL, `last_reset` at local midnight; attributes `variable_eur`, `fixed_eur`, `energy_today_kwh`; unavailable without a configured grid-import energy sensor |
 | `binary_sensor.battery_opt_healthy` | With a battery: the executor's safe-to-actuate latch — off on an invalid plan or a three-strike driver failure. Missing prices are NOT unhealthy there: the static fallback still actuates, marked `fallback: static` (SC-5). Planning-only: off when no price vector can be built, since plans are then impossible |
 | `switch.battery_opt_executor_actuation` | Manual override (default on, restored across restarts): off = the executor keeps planning and validating but skips every driver write; its commanded state is forgotten while off, so re-enabling replays the full transition — safe after manual battery control. Active mode only |
 | `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = keeps computing (fallback flag stays live), writes no setpoints. Exists only when the loop's sensors are configured |
+| `button.battery_opt_recalculate_plan` | Immediate full recomputation (direct refresh: refetch prices, rebuild the load forecast, re-solve today + tomorrow's preview); recomputes only, never actuates |
+| `button.battery_opt_apply_plan` | Runs a real executor tick now instead of at the quarter boundary — validation, the override gate and the health latch all apply; idempotent via the write-once tracking. Active mode only |
 
 ### Actuation — control state machine (ADR-0006)
 

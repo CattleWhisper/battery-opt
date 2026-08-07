@@ -1,13 +1,13 @@
 """
 Tests for the D+1 preview (plan Task 10 comfort, decision 9).
 
-`sensor.battery_opt_current_price` gains `tomorrow_prices_eur_kwh`;
-`sensor.battery_opt_plan` gains `tomorrow_charge_w` /
-`tomorrow_discharge_w`, seeded at the reserve floor rather than
-chained from today's (not-yet-executed) plan. Published only when
-D+1's own Lisbon day itself builds (market date D+1 available at
-all) — structurally always tail-padded, since market date D+2 is
-never published this far ahead.
+Once D+1's own Lisbon day builds, tomorrow's segments join the
+multi-day `prices` list on `sensor.battery_opt_current_price` and the
+`schedule` list on `sensor.battery_opt_plan` (seeded at the reserve
+floor rather than chained from today's not-yet-executed plan).
+Published only when market date D+1 is available at all —
+structurally always tail-padded, since market date D+2 is never
+published this far ahead.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from custom_components.battery_opt.const import (
 )
 
 if TYPE_CHECKING:
+    from freezegun.api import FrozenDateTimeFactory
     from homeassistant.core import HomeAssistant
 
 PARAMETERS = {
@@ -93,6 +94,7 @@ def _register_core_omie_service(hass: HomeAssistant, days_available: int) -> Non
 
 async def test_tomorrow_preview_published_when_d_plus_1_is_available(
     hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """
     Market date D+1 published (D+2 is not, as always) -> preview builds.
@@ -100,7 +102,13 @@ async def test_tomorrow_preview_published_when_d_plus_1_is_available(
     This is the normal daily case: by the time the 13:45 fetch runs,
     OMIE has published D+1 (tomorrow relative to today), which is
     exactly what tomorrow's OWN Lisbon day needs as ITS "D".
+
+    Frozen mid-week: tomorrow (a Thursday) has ponta, so the greedy
+    provably plans actions for it — without this, a real-world weekend
+    tomorrow has no ponta, legitimately plans nothing, and the
+    schedule assertion below would flake by calendar date.
     """
+    freezer.move_to("2026-01-14T12:00:00+00:00")
     _register_core_omie_service(hass, days_available=2)  # today, today+1
     entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
     entry.add_to_hass(hass)
@@ -117,11 +125,19 @@ async def test_tomorrow_preview_published_when_d_plus_1_is_available(
     assert len(coordinator.data["tomorrow_charge_w"]) == 96
 
     price_state = hass.states.get("sensor.battery_opt_current_price")
-    assert len(price_state.attributes["tomorrow_prices_eur_kwh"]) == 96
+    tomorrow = dt_util.now().date() + timedelta(days=1)
+    tomorrow_segments = [
+        s
+        for s in price_state.attributes["prices"]
+        if str(s["start"]).startswith(tomorrow.isoformat())
+    ]
+    assert tomorrow_segments  # tomorrow joined the multi-day list
     assert price_state.attributes["tomorrow_prices_padded"] is True
+    # A flat OMIE spot still varies by TAR period once delivered, so
+    # the greedy cycles — and tomorrow's actions join the same list.
     plan_state = hass.states.get("sensor.battery_opt_plan")
-    assert len(plan_state.attributes["tomorrow_charge_w"]) == 96
-    assert len(plan_state.attributes["tomorrow_discharge_w"]) == 96
+    schedule = plan_state.attributes["schedule"]
+    assert any(str(s["start"]).startswith(tomorrow.isoformat()) for s in schedule)
 
 
 async def test_tomorrow_preview_absent_when_d_plus_1_not_yet_published(
@@ -142,10 +158,12 @@ async def test_tomorrow_preview_absent_when_d_plus_1_not_yet_published(
     assert coordinator.data["tomorrow_discharge_w"] is None
 
     price_state = hass.states.get("sensor.battery_opt_current_price")
-    assert price_state.attributes["tomorrow_prices_eur_kwh"] is None
-    plan_state = hass.states.get("sensor.battery_opt_plan")
-    assert plan_state.attributes["tomorrow_charge_w"] is None
-    assert plan_state.attributes["tomorrow_discharge_w"] is None
+    tomorrow = dt_util.now().date() + timedelta(days=1)
+    assert not any(
+        str(s["start"]).startswith(tomorrow.isoformat())
+        for s in price_state.attributes["prices"]
+    )
+    assert price_state.attributes["tomorrow_prices_padded"] is None
 
 
 async def test_tomorrow_preview_absent_without_omie(hass: HomeAssistant) -> None:

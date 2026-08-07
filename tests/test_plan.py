@@ -7,12 +7,18 @@ The validator encodes C-1..C-7 from docs/spec.md §6; every strategy
 single-day cost function the backtest (Task 6) will reuse.
 """
 
+import itertools
+from datetime import date, datetime
+
 import pytest
 
+from custom_components.battery_opt.core.calendar import period
 from custom_components.battery_opt.core.plan import (
     BatteryParams,
     Plan,
+    price_segments,
     saving_vs_no_cycling,
+    schedule_segments,
     soc_trajectory,
     validate_plan,
 )
@@ -109,3 +115,98 @@ def test_saving_vs_no_cycling_hand_computed() -> None:
     plan = Plan(charge_w=(2000.0, 0.0), discharge_w=(0.0, 1000.0))
     saving = saving_vs_no_cycling(plan, [0.10, 0.30], PARAMS)
     assert saving == pytest.approx(0.02)
+
+
+def test_schedule_segments_merges_runs_and_skips_hold() -> None:
+    """Consecutive equal quarters merge; hold quarters yield nothing."""
+    charge = [0.0, 0.0, 1000.0, 1000.0, 500.0, 0.0, 0.0, 0.0]
+    discharge = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 800.0, 800.0]
+    segments = schedule_segments(date(2026, 1, 15), charge, discharge)
+    assert segments == [
+        {
+            "start": "2026-01-15T00:30:00+00:00",
+            "end": "2026-01-15T01:00:00+00:00",
+            "direction": "charge",
+            "power_w": 1000.0,
+        },
+        {
+            "start": "2026-01-15T01:00:00+00:00",
+            "end": "2026-01-15T01:15:00+00:00",
+            "direction": "charge",
+            "power_w": 500.0,
+        },
+        {
+            "start": "2026-01-15T01:30:00+00:00",
+            "end": "2026-01-15T02:00:00+00:00",
+            "direction": "discharge",
+            "power_w": 800.0,
+        },
+    ]
+
+
+def test_schedule_segments_splits_adjacent_direction_change() -> None:
+    """A charge quarter directly followed by discharge splits cleanly."""
+    segments = schedule_segments(date(2026, 1, 15), [2500.0, 0.0], [0.0, 1040.0])
+    assert [s["direction"] for s in segments] == ["charge", "discharge"]
+    assert segments[0]["end"] == segments[1]["start"]
+
+
+def test_schedule_segments_summer_offset_and_final_interval() -> None:
+    """Lisbon summer is +01:00; a run to the end of day closes at 24:00."""
+    n = 96
+    discharge = [0.0] * n
+    discharge[92:] = [1040.0] * 4  # 23:00-24:00
+    segments = schedule_segments(date(2026, 8, 7), [0.0] * n, discharge)
+    assert segments == [
+        {
+            "start": "2026-08-07T23:00:00+01:00",
+            "end": "2026-08-08T00:00:00+01:00",
+            "direction": "discharge",
+            "power_w": 1040.0,
+        }
+    ]
+
+
+def test_schedule_segments_all_hold_is_empty() -> None:
+    """A day with no actions produces an empty schedule."""
+    assert schedule_segments(date(2026, 1, 15), [0.0] * 96, [0.0] * 96) == []
+
+
+def test_schedule_segments_rounds_power_for_display() -> None:
+    """Float dust rounds away (and merges) instead of splitting runs."""
+    segments = schedule_segments(
+        date(2026, 1, 15), [588.8888888888891, 588.8888888888886], [0.0, 0.0]
+    )
+    assert segments == [
+        {
+            "start": "2026-01-15T00:00:00+00:00",
+            "end": "2026-01-15T00:30:00+00:00",
+            "direction": "charge",
+            "power_w": 588.9,
+        }
+    ]
+
+
+def test_price_segments_merge_equal_quarters_within_a_period() -> None:
+    """00:00-02:00 winter vazio: merging is purely on the rounded price."""
+    prices = [0.05, 0.05, 0.07, 0.07, 0.07, 0.05, 0.05, 0.05]
+    segments = price_segments(date(2026, 1, 15), prices)
+    assert [s["price_eur_kwh"] for s in segments] == [0.05, 0.07, 0.05]
+    assert all(s["tar_period"] == "vazio" for s in segments)
+    assert segments[0]["start"] == "2026-01-15T00:00:00+00:00"
+    assert segments[-1]["end"] == "2026-01-15T02:00:00+00:00"
+
+
+def test_price_segments_flat_day_splits_only_on_tar_boundaries() -> None:
+    """A flat delivered price still splits at every TAR period switch."""
+    segments = price_segments(date(2026, 8, 7), [0.1] * 96)  # summer Friday
+    assert segments[0]["start"] == "2026-08-07T00:00:00+01:00"
+    assert segments[-1]["end"] == "2026-08-08T00:00:00+01:00"
+    for first, second in itertools.pairwise(segments):
+        assert first["end"] == second["start"]  # contiguous, no gaps
+        assert first["tar_period"] != second["tar_period"]
+    for segment in segments:
+        assert segment["price_eur_kwh"] == 0.1
+        naive_start = datetime.fromisoformat(str(segment["start"])).replace(tzinfo=None)
+        assert segment["tar_period"] == period(naive_start)
+    assert len(segments) >= 3  # a summer weekday has ponta, cheias, vazio

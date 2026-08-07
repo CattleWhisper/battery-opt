@@ -70,8 +70,8 @@ All grouped under one **Battery Opt** service device.
 
 | Entity | What it shows |
 |---|---|
-| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry the full day vectors, tomorrow's preview, the static-fallback flag and the charge-loop setpoint/fallback |
-| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); day vector + TAR period in attributes; Energy-dashboard-ready |
+| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — plus the static-fallback flag and the charge-loop setpoint/fallback |
+| `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
@@ -85,21 +85,25 @@ All grouped under one **Battery Opt** service device.
 
 ## Dashboards
 
-`sensor.battery_opt_current_price` carries the whole day's delivered
-price vector in its `prices_eur_kwh` attribute (and, once OMIE
-publishes D+1, `tomorrow_prices_eur_kwh`); `sensor.battery_opt_plan`
-carries the matching `charge_w` / `discharge_w` vectors (and their
-`tomorrow_*` previews). All four are 96-entry arrays, one value per
-quarter-hour starting at local midnight (`plan_date`). An
+`sensor.battery_opt_current_price` carries the delivered prices in
+its `prices` attribute and `sensor.battery_opt_plan` carries the plan
+in `schedule`. Both are flat lists of segments — `{start, end, …}`
+with full ISO timestamps — covering today and, once OMIE publishes
+D+1 (~13:30 CET), tomorrow as well: price segments carry
+`price_eur_kwh` + `tar_period` (split at every TAR boundary, so each
+value is directly checkable against the tariff table), schedule
+segments carry `direction` + `power_w` (hold windows are simply
+absent). An
 [ApexCharts card](https://github.com/RomRider/apexcharts-card) (HACS)
-can graph both against each other:
+can graph both against each other — set `graph_span: 48h` to see
+tomorrow once it arrives:
 
 ```yaml
 type: custom:apexcharts-card
 header:
   show: true
-  title: Battery Opt — today's plan
-graph_span: 24h
+  title: Battery Opt — plan
+graph_span: 48h
 span:
   start: day
 series:
@@ -108,25 +112,41 @@ series:
     type: line
     yaxis_id: price
     data_generator: |
-      const prices = entity.attributes.prices_eur_kwh || [];
-      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
-      return prices.map((p, i) => [dayStart.getTime() + i * 15 * 60 * 1000, p]);
+      const pts = [];
+      (entity.attributes.prices || []).forEach(s => {
+        const end = new Date(s.end).getTime();
+        for (let t = new Date(s.start).getTime(); t < end; t += 900000)
+          pts.push([t, s.price_eur_kwh]);
+      });
+      return pts;
   - entity: sensor.battery_opt_plan
     name: Charge (W)
     type: column
     yaxis_id: power
     data_generator: |
-      const w = entity.attributes.charge_w || [];
-      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
-      return w.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, v]);
+      const pts = [];
+      (entity.attributes.schedule || [])
+        .filter(s => s.direction === "charge")
+        .forEach(s => {
+          const end = new Date(s.end).getTime();
+          for (let t = new Date(s.start).getTime(); t < end; t += 900000)
+            pts.push([t, s.power_w]);
+        });
+      return pts;
   - entity: sensor.battery_opt_plan
     name: Discharge (W)
     type: column
     yaxis_id: power
     data_generator: |
-      const w = entity.attributes.discharge_w || [];
-      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
-      return w.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, -v]);
+      const pts = [];
+      (entity.attributes.schedule || [])
+        .filter(s => s.direction === "discharge")
+        .forEach(s => {
+          const end = new Date(s.end).getTime();
+          for (let t = new Date(s.start).getTime(); t < end; t += 900000)
+            pts.push([t, -s.power_w]);
+        });
+      return pts;
 yaxis:
   - id: price
     decimals: 3

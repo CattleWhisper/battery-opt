@@ -3,8 +3,10 @@ Sensors for battery_opt (spec §8).
 
 - sensor.battery_opt_plan: with a battery, the executor's last
   commanded action; in planning-only mode, the advisory plan's action
-  for the current quarter-hour. The advisory plan vectors ride in the
-  attributes either way.
+  for the current quarter-hour. Either way the attributes carry
+  `schedule`: the advisory plan as merged charge/discharge windows
+  (ISO start/end, direction, power_w), spanning today and — once the
+  D+1 preview builds — tomorrow in one flat list.
 - sensor.battery_opt_forecast_savings: the advisory capped-greedy
   plan's forecast saving vs not cycling (EUR/day, excl. fixed terms
   and VAT), from real OMIE prices.
@@ -26,6 +28,7 @@ Sensors for battery_opt (spec §8).
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
@@ -37,6 +40,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import CONF_GRID_ENERGY_SENSOR
 from .core.calendar import period
+from .core.plan import price_segments, schedule_segments
 from .cost import CostTracker
 from .entity import device_info_for
 
@@ -147,8 +151,7 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
         attributes: dict[str, Any] = {
             "mode": "active" if self._executor is not None else "planning_only",
             "plan_date": str(data.get("plan_date") or ""),
-            "charge_w": data.get("plan_charge_w"),
-            "discharge_w": data.get("plan_discharge_w"),
+            "schedule": self._schedule(data),
             "prices_ok": data.get("prices_ok"),
             "prices_padded": data.get("prices_padded"),
             # Decision 6: set to "static" whenever no trustworthy
@@ -156,10 +159,6 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
             # invalid solve) and the fixed seasonal schedule is
             # published instead; None otherwise.
             "fallback": data.get("fallback"),
-            # Decision 9: only set once D+1 itself builds; seeded at
-            # the reserve floor since today has not finished yet.
-            "tomorrow_charge_w": data.get("tomorrow_charge_w"),
-            "tomorrow_discharge_w": data.get("tomorrow_discharge_w"),
         }
         if self._executor is not None:
             attributes["executor_status"] = self._executor.status
@@ -169,6 +168,31 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
             attributes["charge_loop_setpoint_w"] = self._charge_loop.last_setpoint_w
             attributes["charge_loop_fallback"] = self._charge_loop.fallback
         return attributes
+
+    @staticmethod
+    def _schedule(data: dict[str, Any]) -> list[dict[str, Any]]:
+        """
+        Merge the advisory plan into multi-day charge/discharge windows.
+
+        Today's segments, extended with tomorrow's the moment the D+1
+        preview builds (decision 9) — the ISO timestamps carry the
+        date, so one flat list spans both days.
+        """
+        plan_date = data.get("plan_date")
+        if plan_date is None:
+            return []
+        segments: list[dict[str, Any]] = []
+        charge = data.get("plan_charge_w")
+        discharge = data.get("plan_discharge_w")
+        if charge and discharge:
+            segments += schedule_segments(plan_date, charge, discharge)
+        tomorrow_charge = data.get("tomorrow_charge_w")
+        tomorrow_discharge = data.get("tomorrow_discharge_w")
+        if tomorrow_charge and tomorrow_discharge:
+            segments += schedule_segments(
+                plan_date + timedelta(days=1), tomorrow_charge, tomorrow_discharge
+            )
+        return segments
 
 
 class ForecastSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
@@ -216,23 +240,41 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose the TAR period and the whole day for graphing."""
+        """Expose the TAR period and the day's prices for graphing."""
         data = self.coordinator.data or {}
-        prices = data.get("prices_eur_kwh")
         return {
             "tar_period": period(dt_util.now()),
             "plan_date": str(data.get("plan_date") or ""),
-            "prices_eur_kwh": (
-                [round(p, 5) for p in prices] if prices is not None else None
-            ),
+            "prices": self._price_segments(data),
             "prices_padded": data.get("prices_padded"),
-            # Decision 9: D+1 preview, only when D+1 itself builds.
-            # Structurally always tail-padded (D+2 never exists yet),
-            # so the flag mostly says "yes" — exposed for symmetry
-            # with prices_padded and honesty about the last hour.
-            "tomorrow_prices_eur_kwh": data.get("tomorrow_prices_eur_kwh"),
+            # Decision 9: tomorrow joins `prices` only once D+1 itself
+            # builds. Its padding flag stays separate — structurally
+            # almost always "yes" (D+2 never exists yet), exposed for
+            # symmetry with prices_padded and honesty about the last
+            # hour. None while there is no preview at all.
             "tomorrow_prices_padded": data.get("tomorrow_prices_padded"),
         }
+
+    @staticmethod
+    def _price_segments(data: dict[str, Any]) -> list[dict[str, Any]]:
+        """
+        Merge the delivered prices into multi-day display segments.
+
+        Today's prices, extended with tomorrow's the moment the D+1
+        preview builds — one flat list, each segment carrying its TAR
+        period so the value is checkable against the tariff table.
+        """
+        plan_date = data.get("plan_date")
+        if plan_date is None:
+            return []
+        segments: list[dict[str, Any]] = []
+        prices = data.get("prices_eur_kwh")
+        if prices:
+            segments += price_segments(plan_date, prices)
+        tomorrow_prices = data.get("tomorrow_prices_eur_kwh")
+        if tomorrow_prices:
+            segments += price_segments(plan_date + timedelta(days=1), tomorrow_prices)
+        return segments
 
 
 class SocForecastSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):

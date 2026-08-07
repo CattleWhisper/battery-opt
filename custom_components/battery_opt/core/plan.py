@@ -21,10 +21,14 @@ what values it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from .calendar import TZ_PORTUGAL, period
+
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
+    from datetime import date, tzinfo
 
 # Numeric slack for float comparisons in the validator: refers to
 # quantities in W or kWh, far below any physically meaningful amount.
@@ -127,6 +131,93 @@ def validate_plan(
         if soc > params.cap_usable_kwh + _EPS:
             violations.append(f"C-5[{i}] SoC {soc:.3f} above usable capacity")
     return violations
+
+
+def _runs[T](values: Sequence[T | None]) -> Iterator[tuple[int, int, T]]:
+    """Yield (start, end, value) for maximal runs of equal non-None values."""
+    current: T | None = None
+    start = 0
+    for i in range(len(values) + 1):
+        value = values[i] if i < len(values) else None
+        if value == current:
+            continue
+        if current is not None:
+            yield (start, i, current)
+        current = value
+        start = i
+
+
+def schedule_segments(
+    day: date,
+    charge_w: Sequence[float],
+    discharge_w: Sequence[float],
+    tz: tzinfo = TZ_PORTUGAL,
+    interval: timedelta = timedelta(minutes=15),
+) -> list[dict[str, str | float]]:
+    """
+    Merge a day's parallel power vectors into schedule segments.
+
+    Returns `[{"start", "end", "direction", "power_w"}, ...]`:
+    consecutive intervals merge while both the direction
+    ("charge"/"discharge") and the rounded power hold; hold intervals
+    produce no segment. Times are the vectors' own wall-clock
+    convention localised to `tz`, ISO 8601 with offset — so lists
+    built for consecutive days concatenate into one multi-day
+    schedule.
+    """
+    midnight = datetime(day.year, day.month, day.day, tzinfo=tz)
+    actions: list[tuple[str, float] | None] = []
+    for charge, discharge in zip(charge_w, discharge_w, strict=True):
+        if charge > 0:
+            actions.append(("charge", round(charge, 1)))
+        elif discharge > 0:
+            actions.append(("discharge", round(discharge, 1)))
+        else:
+            actions.append(None)
+    return [
+        {
+            "start": (midnight + start * interval).isoformat(),
+            "end": (midnight + end * interval).isoformat(),
+            "direction": direction,
+            "power_w": power,
+        }
+        for start, end, (direction, power) in _runs(actions)
+    ]
+
+
+def price_segments(
+    day: date,
+    prices_eur_kwh: Sequence[float],
+    tz: tzinfo = TZ_PORTUGAL,
+    interval: timedelta = timedelta(minutes=15),
+) -> list[dict[str, str | float]]:
+    """
+    Merge a day's delivered-price vector into display segments.
+
+    Returns `[{"start", "end", "price_eur_kwh", "tar_period"}, ...]`:
+    consecutive intervals merge while both the rounded price and the
+    TAR period hold — quarter-hourly OMIE rarely repeats, but flat or
+    hourly-padded stretches collapse, and the period boundary always
+    starts a fresh segment so each one is checkable against the
+    tariff table. Same timestamp convention as `schedule_segments`,
+    so consecutive days concatenate.
+    """
+    # Naive = Portugal legal time, the calendar API contract.
+    naive_midnight = datetime(day.year, day.month, day.day)  # noqa: DTZ001
+    values: list[tuple[float, str]] = [
+        (round(p, 5), period(naive_midnight + i * interval))
+        for i, p in enumerate(prices_eur_kwh)
+    ]
+    midnight = naive_midnight.replace(tzinfo=tz)
+    return [
+        {
+            "start": (midnight + start * interval).isoformat(),
+            "end": (midnight + end * interval).isoformat(),
+            "price_eur_kwh": value,
+            "tar_period": tar,
+        }
+        for start, end, (value, tar) in _runs(values)
+    ]
 
 
 def saving_vs_no_cycling(

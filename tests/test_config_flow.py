@@ -8,6 +8,7 @@ service with a response in the shape verified from
 home-assistant/core sources.
 """
 
+import itertools
 import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -349,7 +350,15 @@ async def test_current_price_sensor_tracks_the_edp_formula(
     assert state.attributes["unit_of_measurement"] == "€/kWh"
     assert state.attributes["state_class"] == "measurement"
     assert state.attributes["tar_period"] in ("ponta", "cheias", "vazio")
-    assert len(state.attributes["prices_eur_kwh"]) == 96
+    # Flat stub prices: segments merge to exactly the day's TAR
+    # periods, contiguous from local midnight to local midnight.
+    segments = state.attributes["prices"]
+    assert segments[0]["start"].endswith("T00:00:00+01:00")
+    assert segments[-1]["end"].endswith("T00:00:00+01:00")
+    assert all(
+        first["end"] == second["start"]
+        for first, second in itertools.pairwise(segments)
+    )
 
 
 async def test_current_price_and_plan_index_by_lisbon_not_ha_local_time(
@@ -379,26 +388,35 @@ async def test_current_price_and_plan_index_by_lisbon_not_ha_local_time(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    lisbon_quarter = 40  # 10:00 Lisbon == interval 40 of 96
     lisbon_now = datetime(2026, 7, 15, 10, 0, tzinfo=ZoneInfo("Europe/Lisbon"))
     price_state = hass.states.get("sensor.battery_opt_current_price")
     assert float(price_state.state) == pytest.approx(price(60.0, lisbon_now))
-    # The attribute vector is rounded to 5 dp for display; abs tolerance
+    # The price segments are rounded to 5 dp for display; abs tolerance
     # absorbs that, this is still the same slot, not a fresh assertion.
-    assert price_state.attributes["prices_eur_kwh"][lisbon_quarter] == pytest.approx(
+    price_segment = next(
+        s
+        for s in price_state.attributes["prices"]
+        if datetime.fromisoformat(s["start"])
+        <= lisbon_now
+        < datetime.fromisoformat(s["end"])
+    )
+    assert price_segment["price_eur_kwh"] == pytest.approx(
         float(price_state.state), abs=1e-4
     )
+    assert price_segment["tar_period"] == "ponta"
 
     plan_state = hass.states.get("sensor.battery_opt_plan")
-    charge = plan_state.attributes["charge_w"]
-    discharge = plan_state.attributes["discharge_w"]
-    expected_action = (
-        "charge"
-        if charge[lisbon_quarter] > 0
-        else "discharge"
-        if discharge[lisbon_quarter] > 0
-        else "hold"
+    plan_segment = next(
+        (
+            s
+            for s in plan_state.attributes["schedule"]
+            if datetime.fromisoformat(s["start"])
+            <= lisbon_now
+            < datetime.fromisoformat(s["end"])
+        ),
+        None,
     )
+    expected_action = plan_segment["direction"] if plan_segment else "hold"
     assert plan_state.state == expected_action
 
 
