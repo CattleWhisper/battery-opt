@@ -9,9 +9,9 @@ never actuate when unhealthy, three driver failures set healthy off
 with a notification.
 
 ADR-0006: intervals map to CHARGE/HOLD/DISCHARGE states; set_state is
-issued only on decision changes, DISCHARGE never carries a power
-setpoint, and the reserve floor guard (with hysteresis) overrides
-DISCHARGE because the firmware cutoffs are MISSING on the V3.
+issued only on decision changes and DISCHARGE never carries a power
+setpoint. The executor reads no SoC (owner decision 2026-08-07): the
+reserve floor is the battery's to manage.
 """
 
 import asyncio
@@ -53,14 +53,12 @@ class FlakyDriver(FakeDriver):
 
 def _executor(
     driver: FakeDriver,
-    soc_kwh: float | None = 1.35,
     plan_factory: object = None,
     notifications: list[str] | None = None,
 ) -> BatteryOptExecutor:
     return BatteryOptExecutor(
         driver=driver,
         get_params=lambda: PARAMS,
-        get_soc_kwh=lambda: soc_kwh,
         plan_factory=plan_factory,
         notify=(notifications.append if notifications is not None else None),
     )
@@ -89,7 +87,6 @@ def test_charge_entry_uses_the_loop_setpoint_and_reports_it() -> None:
     executor = BatteryOptExecutor(
         driver=driver,
         get_params=lambda: PARAMS,
-        get_soc_kwh=lambda: 1.35,
         get_charge_entry_w=lambda: 2500.0,
         on_charge_entry=written.append,
     )
@@ -103,10 +100,11 @@ def test_discharge_interval_is_a_mode_switch_never_a_setpoint() -> None:
     Ponta: DISCHARGE delegates magnitude to the firmware's anti-feed.
 
     ADR-0006: force-discharge exports when house load drops below the
-    setpoint, so the executor must never send a discharge power.
+    setpoint, so the executor must never send a discharge power. The
+    floor-seeded plan charged 00:00-07:00, so 10:00 ponta discharges.
     """
     driver = FakeDriver()
-    executor = _executor(driver, soc_kwh=5.0)  # full: ponta can be served
+    executor = _executor(driver)
     asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 0)))
     assert driver.calls == [("set_state", ("discharge", None, None))]
     assert executor.last_action == "discharge"
@@ -151,50 +149,6 @@ def test_executor_never_touches_power_within_charge() -> None:
     asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 15)))
     assert len(driver.calls) == 1
     assert driver.calls[0][0] == "set_state"
-
-
-def test_floor_guard_forces_hold_with_hysteresis() -> None:
-    """
-    Floor during DISCHARGE → HOLD; recovery needs floor + 0.15 kWh.
-
-    The plan validates against its build-time SoC (4.0 kWh); the guard
-    watches the LIVE SoC, which is exactly how reality diverges from
-    the plan when anti-feed drains faster than the planned load.
-    """
-
-    def factory(_day: object, load: list, _solar: list, _params: object) -> Plan:
-        n = len(load)
-        discharge = [0.0] * n
-        for i in range(40, 48):  # 10:00-12:00
-            discharge[i] = 1000.0
-        return Plan(charge_w=(0.0,) * n, discharge_w=tuple(discharge))
-
-    soc = {"kwh": 4.0}
-    driver = FakeDriver()
-    executor = BatteryOptExecutor(
-        driver=driver,
-        get_params=lambda: PARAMS,
-        get_soc_kwh=lambda: soc["kwh"],
-        plan_factory=factory,
-    )
-    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 0)))
-    assert driver.calls[-1] == ("set_state", ("discharge", None, None))
-
-    soc["kwh"] = 1.35  # at the floor: guard trips
-    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 15)))
-    assert driver.calls[-1] == ("set_state", ("hold", None, None))
-    assert executor.last_action == "hold"
-    assert "floor guard" in executor.status
-
-    soc["kwh"] = 1.45  # inside the hysteresis band: still holding
-    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 30)))
-    assert driver.calls[-1] == ("set_state", ("hold", None, None))
-    assert len(driver.calls) == 2  # no rewrite: state unchanged
-
-    soc["kwh"] = 1.55  # recovered past floor + 0.15: discharge again
-    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 45)))
-    assert driver.calls[-1] == ("set_state", ("discharge", None, None))
-    assert executor.status == "ok"
 
 
 def test_actuation_disabled_computes_everything_but_writes_nothing() -> None:
@@ -256,15 +210,6 @@ def test_invalid_plan_never_actuates() -> None:
     assert notifications  # the human is told
 
 
-def test_missing_soc_blocks_actuation() -> None:
-    """No SoC reading: unhealthy, no driver calls."""
-    driver = FakeDriver()
-    executor = _executor(driver, soc_kwh=None)
-    asyncio.run(executor.tick(datetime(2026, 1, 15, 3, 0)))
-    assert driver.calls == []
-    assert executor.healthy is False
-
-
 def test_driver_unavailable_goes_unhealthy_then_recovers() -> None:
     """
     Three-strike failure: healthy off, notified once, then recovery.
@@ -305,8 +250,13 @@ def test_transient_driver_error_stays_healthy_and_replays() -> None:
     assert driver.calls[-1] == ("set_state", ("hold", None, None))
 
 
-def test_plan_rebuilds_on_date_change_seeded_with_current_soc() -> None:
-    """Midnight rollover: a fresh plan starts from the measured SoC."""
+def test_plan_rebuilds_on_date_change_seeded_at_the_floor() -> None:
+    """
+    Midnight rollover: a fresh plan starts at the reserve floor.
+
+    No live SoC seed (owner decision 2026-08-07): the plan is a
+    schedule, and both run-time magnitudes are closed loops.
+    """
     seen: list[tuple[object, float]] = []
 
     def spy_factory(
@@ -320,7 +270,6 @@ def test_plan_rebuilds_on_date_change_seeded_with_current_soc() -> None:
     executor = BatteryOptExecutor(
         driver=driver,
         get_params=lambda: PARAMS,
-        get_soc_kwh=lambda: 3.2,
         plan_factory=spy_factory,
     )
     asyncio.run(executor.tick(datetime(2026, 1, 15, 23, 45)))
@@ -329,7 +278,7 @@ def test_plan_rebuilds_on_date_change_seeded_with_current_soc() -> None:
         datetime(2026, 1, 15).date(),
         datetime(2026, 1, 16).date(),
     ]
-    assert all(soc == pytest.approx(3.2) for _, soc in seen)
+    assert all(soc == pytest.approx(PARAMS.cap_min_kwh) for _, soc in seen)
 
 
 def test_current_action_reflects_the_active_interval() -> None:

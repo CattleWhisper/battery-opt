@@ -65,8 +65,10 @@ class CostToday:
         Callers must floor a negative delta (meter reset) to zero
         before calling — decision 8: "a negative delta counts as 0".
         A delta with no known price (prices_ok False at that instant)
-        still counts as energy consumed, just not as cost — rare: only
-        before the first successful daily price fetch.
+        still counts as energy consumed, just not as cost. This window
+        is the ~30 s after midnight before the 00:00:30 refresh loads
+        today's vector (plan_date lags the date change until then),
+        plus genuine price outages.
         """
         if delta_kwh <= 0:
             return

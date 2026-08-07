@@ -20,6 +20,12 @@ Discharge is NEVER a power setpoint: force-discharge exports whenever
 house load drops below the setpoint. The firmware's anti-feed tracking
 is the only mechanism with native zero-export.
 
+The driver does NOT read the SoC (owner decision 2026-08-07): the
+reserve floor is the battery's to manage — the firmware discharge
+cutoff where the register exists, the device's own internal minimum
+otherwise. The integration plans with the floor (C-4) but never
+polices it at run time.
+
 The module imports nothing from `homeassistant` at runtime: `hass` is
 duck-typed (`services.async_call`, `states.get`), which keeps the
 driver and its tests runnable without an HA install. Failure policy
@@ -56,8 +62,6 @@ WORK_MODE_ANTI_FEED = "anti_feed"
 _CHARGE_TO_SOC_MIN = 10.0
 _CHARGE_TO_SOC_MAX = 100.0
 
-_BAD_STATES = frozenset({"unavailable", "unknown", "none", ""})
-
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -83,7 +87,6 @@ class MarstekEntities:
 
     mode_select: str
     charge_power_number: str
-    soc_sensor: str
     rs485_switch: str
     work_mode_select: str
     charge_to_soc_number: str | None = None
@@ -107,10 +110,6 @@ class BatteryDriver(ABC):
     @abstractmethod
     async def set_charge_power(self, watts: float) -> None:
         """Update the charge setpoint without leaving CHARGE."""
-
-    @abstractmethod
-    async def read_soc(self) -> float:
-        """Return the state of charge in percent (0-100)."""
 
     @abstractmethod
     async def write_soc_cutoffs(self, floor_pct: float, ceiling_pct: float) -> bool:
@@ -230,19 +229,6 @@ class MarstekDriver(BatteryDriver):
             {"entity_id": self._entities.charge_power_number, "value": watts},
         )
 
-    async def read_soc(self) -> float:
-        """Read the SoC sensor state; unavailable states are failures."""
-        state = self._hass.states.get(self._entities.soc_sensor)
-        if state is None or str(state.state).lower() in _BAD_STATES:
-            cause = ValueError(f"{self._entities.soc_sensor} unavailable")
-            raise self._record_failure(cause) from cause
-        try:
-            soc = float(state.state)
-        except ValueError as err:
-            raise self._record_failure(err) from err
-        self._failures = 0
-        return soc
-
     async def write_soc_cutoffs(self, floor_pct: float, ceiling_pct: float) -> bool:
         """
         Setup-time cutoff writes: compare-before-write, never fatal.
@@ -292,7 +278,6 @@ class MarstekDriver(BatteryDriver):
 class FakeDriver(BatteryDriver):
     """In-memory driver for tests: records every call in order."""
 
-    soc_percent: float = 27.0
     calls: list[tuple[str, object]] = field(default_factory=list)
 
     async def set_state(
@@ -308,11 +293,6 @@ class FakeDriver(BatteryDriver):
     async def set_charge_power(self, watts: float) -> None:
         """Record the charge setpoint."""
         self.calls.append(("set_charge_power", watts))
-
-    async def read_soc(self) -> float:
-        """Record the read and return the configured SoC."""
-        self.calls.append(("read_soc", None))
-        return self.soc_percent
 
     async def write_soc_cutoffs(self, floor_pct: float, ceiling_pct: float) -> bool:
         """Record the cutoff write and report success."""

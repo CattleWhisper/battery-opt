@@ -4,7 +4,7 @@
 Phase 1 runs the static seasonal plan; Task 12 swaps in the greedy
 with static as fallback. Every tick re-validates the whole plan
 against C-1..C-7 before touching the battery (spec §11) — an invalid
-plan or a missing SoC reading means no actuation at all.
+plan means no actuation at all.
 
 ADR-0006 state machine, ADR-0007 states-only plan: each interval maps
 to CHARGE, HOLD or DISCHARGE — the plan's power vectors are pure
@@ -16,19 +16,21 @@ Transition sequences live in the driver; the executor issues
 `set_state` only on decision changes (spec §8: write once, rewrite on
 change).
 
-The reserve floor is never delegated (spec §8): during DISCHARGE,
-SoC at or below the floor forces HOLD, and DISCHARGE is only allowed
-again once SoC recovers above floor + hysteresis — the firmware
-cutoff registers are MISSING on the Venus E V3, so this guard is the
-primary floor protection, not belt-and-braces.
+The reserve floor is the battery's to manage (owner decision
+2026-08-07): the plan honours C-4 in its model, but at run time the
+floor is enforced by the firmware discharge cutoff where the register
+exists — on the Venus E V3 (register MISSING upstream) by the
+device's own internal minimum. The executor reads no SoC and runs no
+floor guard.
 
 Health policy (spec §9): the driver's third consecutive failure
 (DriverUnavailableError) flips `healthy` off and notifies once; a
 later fully-successful tick restores it. Transient failures below the
 limit keep `healthy` on — the next tick retries, and the commanded
 state is forgotten so the full transition replays. The plan rebuilds
-at date change, seeded with the measured SoC so days chain like the
-backtest.
+at date change, seeded at the reserve floor (the plan is a schedule;
+both run-time magnitudes are closed loops, so the model's SoC needs
+no live seed).
 
 This module is HA-free like the driver: the quarter-hour timer and
 the notification service live in the integration __init__; tests
@@ -37,7 +39,6 @@ drive tick() directly.
 
 from __future__ import annotations
 
-import dataclasses
 import math
 from typing import TYPE_CHECKING, Literal
 
@@ -60,10 +61,6 @@ if TYPE_CHECKING:
 INTERVALS_PER_DAY = 96
 INTERVAL_MINUTES = 15
 
-# Floor-guard hysteresis (spec §8): once the guard forces HOLD,
-# DISCHARGE needs SoC ≥ floor + this margin — no flapping at the edge.
-FLOOR_GUARD_HYSTERESIS_KWH = 0.15
-
 # charge_to_soc backstop margin: slightly above the planned end-of-
 # window SoC so the firmware stop never truncates the plan itself.
 BACKSTOP_MARGIN_PCT = 2.0
@@ -80,7 +77,6 @@ class BatteryOptExecutor:
         self,
         driver: BatteryDriver,
         get_params: Callable[[], BatteryParams],
-        get_soc_kwh: Callable[[], float | None],
         plan_factory: PlanFactory | None = None,
         notify: Callable[[str], None] | None = None,
         get_charge_entry_w: Callable[[], float] | None = None,
@@ -97,7 +93,6 @@ class BatteryOptExecutor:
         """
         self._driver = driver
         self._get_params = get_params
-        self._get_soc_kwh = get_soc_kwh
         self._plan_factory: PlanFactory = plan_factory or static_plan
         self._notify = notify or (lambda _message: None)
         self._get_charge_entry_w = get_charge_entry_w or (lambda: CHARGE_FALLBACK_W)
@@ -113,7 +108,6 @@ class BatteryOptExecutor:
         self._solar_w = [0.0] * INTERVALS_PER_DAY
         # Last state the driver confirmed; None forces a full apply.
         self._commanded_state: BatteryState | None = None
-        self._floor_guard_active = False
         # Manual override (switch.battery_opt_executor_actuation):
         # False = keep computing everything, skip the driver writes.
         self.actuation_enabled = True
@@ -141,14 +135,16 @@ class BatteryOptExecutor:
             for listener in self._listeners:
                 listener()
 
-    def _ensure_plan(self, now: datetime, soc_kwh: float) -> tuple[Plan, BatteryParams]:
+    def _ensure_plan(self, now: datetime) -> tuple[Plan, BatteryParams]:
         if (
             self.plan is not None
             and self._plan_params is not None
             and self.plan_day == now.date()
         ):
             return self.plan, self._plan_params
-        params = dataclasses.replace(self._get_params(), soc_start_kwh=soc_kwh)
+        # soc_start_kwh=None → the reserve floor (BatteryParams default):
+        # the plan is a schedule, not a tracker — no live SoC seed.
+        params = self._get_params()
         self.plan = self._plan_factory(now.date(), self._load_w, self._solar_w, params)
         self.plan_day = now.date()
         self._plan_params = params
@@ -178,22 +174,6 @@ class BatteryOptExecutor:
     def _interval_index(now: datetime) -> int:
         return (now.hour * 60 + now.minute) // INTERVAL_MINUTES
 
-    def _apply_floor_guard(
-        self, desired: Action, soc_kwh: float, params: BatteryParams
-    ) -> Action:
-        """Never delegate the reserve floor (spec §8), with hysteresis."""
-        if desired != "discharge":
-            return desired
-        if self._floor_guard_active:
-            if soc_kwh >= params.cap_min_kwh + FLOOR_GUARD_HYSTERESIS_KWH:
-                self._floor_guard_active = False
-                return "discharge"
-            return "hold"
-        if soc_kwh <= params.cap_min_kwh:
-            self._floor_guard_active = True
-            return "hold"
-        return "discharge"
-
     def _charge_window_target_pct(
         self, plan: Plan, params: BatteryParams, index: int
     ) -> float:
@@ -207,11 +187,7 @@ class BatteryOptExecutor:
 
     async def tick(self, now: datetime) -> None:
         """Validate, then apply the current interval's battery state."""
-        soc_kwh = self._get_soc_kwh()
-        if soc_kwh is None:
-            self._set_health(healthy=False, status="battery SoC unavailable")
-            return
-        plan, plan_params = self._ensure_plan(now, soc_kwh)
+        plan, plan_params = self._ensure_plan(now)
         violations = validate_plan(plan, self._load_w, self._solar_w, plan_params)
         if violations:
             self._set_health(healthy=False, status=f"invalid plan: {violations[0]}")
@@ -224,34 +200,32 @@ class BatteryOptExecutor:
             if plan.discharge_w[index] > 0
             else "hold"
         )
-        guarded = self._apply_floor_guard(desired, soc_kwh, plan_params)
         if not self.actuation_enabled:
-            # Manual override: everything above still ran (plan,
-            # validation, guards) — only the driver write is skipped.
-            # The commanded state is forgotten so re-enabling replays
-            # the FULL transition: the user may have changed anything.
+            # Manual override: everything above still ran (plan and
+            # validation) — only the driver write is skipped. The
+            # commanded state is forgotten so re-enabling replays the
+            # FULL transition: the user may have changed anything.
             self._commanded_state = None
-            self.last_action = guarded
-            suffix = "" if guarded == desired else "; floor guard: holding"
-            self._set_health(healthy=True, status=f"ok (actuation disabled{suffix})")
+            self.last_action = desired
+            self._set_health(healthy=True, status="ok (actuation disabled)")
             return
         try:
-            if guarded != self._commanded_state:
+            if desired != self._commanded_state:
                 # ADR-0007: entry power comes from the charge-power
                 # loop (or its fallback), never from the plan; within
                 # CHARGE the loop owns every subsequent setpoint.
-                entry_w = self._get_charge_entry_w() if guarded == "charge" else None
+                entry_w = self._get_charge_entry_w() if desired == "charge" else None
                 target = (
                     self._charge_window_target_pct(plan, plan_params, index)
-                    if guarded == "charge"
+                    if desired == "charge"
                     else None
                 )
                 await self._driver.set_state(
-                    guarded,
+                    desired,
                     charge_power_w=entry_w,
                     target_soc_pct=target,
                 )
-                self._commanded_state = guarded
+                self._commanded_state = desired
                 if entry_w is not None:
                     self._on_charge_entry(entry_w)
         except DriverUnavailableError as err:
@@ -263,6 +237,5 @@ class BatteryOptExecutor:
             self._commanded_state = None
             self.status = f"transient driver error: {err}"
             return
-        self.last_action = guarded
-        status = "ok" if guarded == desired else "ok (floor guard: holding)"
-        self._set_health(healthy=True, status=status)
+        self.last_action = desired
+        self._set_health(healthy=True, status="ok")

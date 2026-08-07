@@ -39,7 +39,6 @@ from custom_components.battery_opt.const import (
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_RS485_SWITCH,
-    CONF_SOC_SENSOR,
     CONF_WEAR_COST,
     CONF_WORK_MODE_SELECT,
     DOMAIN,
@@ -49,7 +48,6 @@ from custom_components.battery_opt.core.prices import price
 BATTERY_ENTITIES = {
     CONF_MODE_SELECT: "select.marstek_force_mode",
     CONF_CHARGE_POWER_NUMBER: "number.marstek_set_charge_power",
-    CONF_SOC_SENSOR: "sensor.marstek_soc",
     CONF_RS485_SWITCH: "switch.marstek_rs485_control_mode",
     CONF_WORK_MODE_SELECT: "select.marstek_user_work_mode",
 }
@@ -112,9 +110,15 @@ def _register_core_omie_service(hass: HomeAssistant, days_available: int = 2) ->
     )
 
 
+async def _set_lisbon(hass: HomeAssistant) -> None:
+    """Flows validate the HA timezone; the test default is US/Pacific."""
+    await hass.config.async_set_time_zone("Europe/Lisbon")
+
+
 async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     """The single-step form creates a config entry with the input."""
     _register_core_omie_service(hass)
+    await _set_lisbon(hass)
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
     )
@@ -143,6 +147,7 @@ async def test_flow_errors_when_omie_not_set_up(hass: HomeAssistant) -> None:
 async def test_flow_rejects_partial_battery_entities(hass: HomeAssistant) -> None:
     """One battery entity without the others is a form error."""
     _register_core_omie_service(hass)
+    await _set_lisbon(hass)
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
     )
@@ -156,36 +161,49 @@ async def test_flow_rejects_partial_battery_entities(hass: HomeAssistant) -> Non
     assert result["errors"] == {"base": "battery_entities_all_or_none"}
 
 
-async def test_setup_entry_polls_soc_through_the_driver(
+async def test_flow_rejects_non_lisbon_timezone(hass: HomeAssistant) -> None:
+    """
+    HA's timezone must be Europe/Lisbon (the test default is US/Pacific).
+
+    The tariff calendar, the OMIE market day and every trigger are
+    Portugal-local; the flow refuses rather than half-defending.
+    """
+    _register_core_omie_service(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], dict(PARAMETERS)
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "timezone_not_lisbon"}
+
+
+async def test_setup_entry_with_battery_loads(
     hass: HomeAssistant,
 ) -> None:
-    """First refresh reads the SoC sensor; params come from the entry."""
-    hass.states.async_set("sensor.marstek_soc", "57.0")
+    """
+    A full battery config loads; params come from the entry.
+
+    No SoC is read anywhere (owner decision 2026-08-07): the entry
+    loads with no Marstek state present at all.
+    """
     entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
     coordinator = entry.runtime_data.coordinator
-    assert coordinator.data["soc_percent"] == pytest.approx(57.0)
-    assert coordinator.data["soc_kwh"] == pytest.approx(2.85)
+    assert not coordinator.planning_only
+    assert entry.runtime_data.executor is not None
     assert coordinator.battery_params.cap_min_kwh == pytest.approx(1.35)
     assert coordinator.plan_wear_eur_kwh == pytest.approx(0.0467)
-
-
-async def test_setup_retries_when_soc_unavailable(hass: HomeAssistant) -> None:
-    """No SoC state yet: the entry goes to setup-retry, not loaded."""
-    entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
-    entry.add_to_hass(hass)
-    assert not await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
 async def test_options_flow_edits_parameters(hass: HomeAssistant) -> None:
     """Numeric parameters are editable afterwards and take effect."""
     _register_core_omie_service(hass)
-    hass.states.async_set("sensor.marstek_soc", "57.0")
+    await _set_lisbon(hass)
     entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -221,6 +239,7 @@ async def test_meter_sensors_are_optional_and_editable_later(
     entities.
     """
     _register_core_omie_service(hass)
+    await _set_lisbon(hass)
     entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -412,7 +431,7 @@ async def test_options_flow_adds_battery_entities_later(
     Adding the four entities reloads the entry out of planning-only.
     """
     _register_core_omie_service(hass)
-    hass.states.async_set("sensor.marstek_soc", "57.0")
+    await _set_lisbon(hass)
     entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -427,6 +446,48 @@ async def test_options_flow_adds_battery_entities_later(
     await hass.async_block_till_done()
     assert entry.runtime_data.executor is not None
     assert not entry.runtime_data.coordinator.planning_only
+
+
+async def test_options_flow_validates_the_post_save_config(
+    hass: HomeAssistant,
+) -> None:
+    """
+    Clearing one battery entity in options errors instead of passing.
+
+    Regression: saving REPLACES the options with the form input, so
+    validation must run on {data + user_input} — validating against
+    the pre-save merged view let a 3-of-4 battery group through,
+    silently dropping the entry to planning-only.
+    """
+    _register_core_omie_service(hass)
+    await _set_lisbon(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # Battery arrives: all four entities land in the OPTIONS.
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {**BATTERY_ENTITIES, **PARAMETERS}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.runtime_data.executor is not None
+
+    # Re-open options and clear ONE battery entity (absent from the
+    # submission). The post-save config would hold 3 of 4 → error.
+    cleared = {
+        key: value
+        for key, value in {**BATTERY_ENTITIES, **PARAMETERS}.items()
+        if key != CONF_RS485_SWITCH
+    }
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], cleared
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "battery_entities_all_or_none"}
 
 
 async def test_all_entities_group_under_one_service_device(
@@ -467,7 +528,6 @@ async def test_charge_loop_wires_and_clamps_against_measured_import(
     2600 W) must throttle the setpoint so import stays under 4400 W.
     """
     freezer.move_to("2026-01-15T08:00:00+00:00")  # 00:00 Pacific (hass tz)
-    hass.states.async_set("sensor.marstek_soc", "27.0")
     hass.states.async_set("sensor.grid_power", "1040")
     hass.states.async_set("sensor.marstek_battery_power", "0")
     entry = MockConfigEntry(
@@ -517,7 +577,6 @@ async def test_actuation_switches_gate_writes_without_stopping_loops(
     transition (post-manual state is unknown by design).
     """
     freezer.move_to("2026-01-15T13:00:00+00:00")
-    hass.states.async_set("sensor.marstek_soc", "57.0")
     entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -569,7 +628,6 @@ async def test_entities_exist_and_health_follows_the_executor(
     # Frozen so the executor's plan_day matches "today" — the SoC
     # forecast sensor only serves the executor trajectory for today.
     freezer.move_to("2026-01-15T13:00:00+00:00")
-    hass.states.async_set("sensor.marstek_soc", "57.0")
     entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)

@@ -8,7 +8,7 @@
 
 Four phases. Phase 0 runs **entirely outside Home Assistant** and answers the three open questions (is the dynamic optimiser worth it? is a second unit worth it? is Horária the right tariff?) before any integration code exists. Only then is the HA shell built.
 
-This is not excessive caution: the total gain of dynamic over static is €30–80/year. If the backtest shows €15, the correct decision is to run the fixed schedule and stop.
+This is not excessive caution: the total gain of dynamic over static was estimated at €30–80/year when this plan was written (Checkpoint B later measured it at **+€130.64/year** — gate cleared 4.4×). Had the backtest shown €15, the correct decision would have been to run the fixed schedule and stop.
 
 ---
 
@@ -21,6 +21,9 @@ See `docs/adr/`. In brief:
 - **ADR-0003** — Own greedy before EMHASS
 - **ADR-0004** — Planner, not driver: never open Modbus directly
 - **ADR-0005** — Tariff calendar versioned by effective date
+- **ADR-0006** — Discharge via the firmware's anti-feed mode, not force-discharge
+- **ADR-0007** — Charge power by closed loop on measured import; the plan carries states only
+- **ADR-0008** — Reserve floor delegated to the battery; no SoC readback
 
 ---
 
@@ -140,7 +143,7 @@ not for capturing savings.
 **Acceptance criteria:**
 - [x] Produces a valid plan without consulting prices
 - [x] Respects C-1..C-7
-- [x] Switches the charging window by season
+- [x] Switches the charging window by calendar month (Nov–Apr overnight vazio, May–Oct midday — this task's own wording above). Note the month rule diverges from the tariff *season* for a few days around each switch (late Oct, all of Apr) — deliberate and worth well under €1/yr; see the `static_schedule.py` docstring
 
 **Verification:**
 - [x] Annual backtest (Task 6) yields **€196.10/yr incl. VAT** — supersedes the MA30-derived ~€267 estimate, which assumed full ponta coverage (winter weekdays demand 5.2 kWh vs 3.46 deliverable) and did not net wear. See `docs/findings.md`.
@@ -199,7 +202,7 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 
 ### Task 7: Driver
 
-**Description:** Thin layer over the `marstek_venus_modbus` integration. Interface: `set_mode()`, `set_charge_power()`, `set_discharge_power()`, `read_soc()` — the device has separate charge/discharge power registers (42020/42021), verified from the integration source. **Never direct Modbus** (ADR-0004).
+**Description:** Thin layer over the `marstek_venus_modbus` integration. Interface: `set_mode()`, `set_charge_power()`, `set_discharge_power()`, `read_soc()` — the device has separate charge/discharge power registers (42020/42021), verified from the integration source. **Never direct Modbus** (ADR-0004). *(Interface since reshaped twice: ADR-0006 made discharge a mode switch — `set_discharge_power` gone; ADR-0008 removed `read_soc` — the integration reads no SoC.)*
 
 **Acceptance criteria:**
 - [x] Abstract interface + real implementation + fake implementation for tests
@@ -246,8 +249,8 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 - [x] Validates the plan against C-1..C-7 before each actuation
 
 **Verification:**
-- [ ] 48 h in production on the static plan: zero export, SoC within bounds — **blocked: battery not yet arrived**
-- [ ] Power off the battery → `healthy` goes off within 45 min — **blocked: battery not yet arrived**
+- [ ] 48 h in production on the static plan: zero export, SoC within bounds (observed on the Marstek's own SoC sensor — ADR-0008: this integration reads none) — **blocked: battery not yet arrived**
+- [ ] Power off the battery → `healthy` goes off at the next state transition (ADR-0008: no per-tick SoC read, so detection rides the 3-strike driver policy on transition writes, typically within a few hours) — **blocked: battery not yet arrived**
 
 **Dependencies:** Task 8
 **Files:** `sensor.py`, `binary_sensor.py`, `executor.py`
@@ -266,8 +269,9 @@ virtual battery from the reserve floor, nothing actuates. Sensors
 `battery_opt_vs_static` are live from real prices. This pulls forward the
 safe parts of Task 10 (basic price reading) and Task 12 (dry-run +
 `vs_static` sensor); their remaining criteria stand. It also settled the
-production half of open question #1 from the `hass_omie` source:
-quarter-hourly (`docs/spec.md` §12).
+production half of open question #1, initially from the `hass_omie`
+source: quarter-hourly (`docs/spec.md` §12 — the source itself was
+superseded the next day by HA core's `omie` service).
 
 Added alongside (2026-08-05): `sensor.battery_opt_current_price` — the
 delivered price for the current quarter-hour per the EDP Indexada
@@ -289,8 +293,8 @@ behaviour we already know is wrong.
 
 - [ ] 2 weeks in production on the static plan
 - [ ] Zero export recorded
-- [ ] SoC never below 27%
-- [ ] Ponta coverage ≥95%
+- [ ] SoC never below 27% (observed on the Marstek's own SoC sensor — ADR-0008)
+- [ ] Ponta coverage ≥95% in summer / at the ~67% one-unit deliverable ceiling in winter (SC-6 as revised — the Checkpoint B finding: winter weekdays demand 5.2 kWh vs 3.46 deliverable)
 - [ ] **Human review before enabling dynamic**
 
 ---
@@ -301,7 +305,7 @@ behaviour we already know is wrong.
 
 **Description:** Read the `omie` integration entity, build the 96-price vector, with retry and fallback.
 
-*Partially delivered early (planning-only mode, 2026-08-05): `prices_source.py` reads the entity and builds the delivered-price vector, verified against the `hass_omie` attribute shape. The 13:45 trigger/retry schedule, the `healthy=off`+static fallback and price archiving remain.*
+*Partially delivered early (planning-only mode, 2026-08-05): `prices_source.py` reads the entity and builds the delivered-price vector, verified against the `hass_omie` attribute shape. The 13:45 trigger/retry schedule, the `healthy=off`+static fallback and price archiving remain. (Superseded 2026-08-06: the price source moved to HA core's `omie` integration — `prices_source.py` now consumes its `get_prices_for_date` service; see spec §12 #1.)*
 
 **Delivered 2026-08-06, planning-only** (overnight session, Task A): the
 remaining three criteria landed together. `__init__.py` registers four
@@ -440,16 +444,21 @@ house load drops below the setpoint.
       setup with compare-before-write; skipped with a log line when the
       entities are unset — which is the expected state on the V3, where
       the upstream register map lists both numbers as MISSING
-- [x] SoC floor guard during DISCHARGE (floor → HOLD, hysteresis
-      +0.15 kWh) — the PRIMARY floor protection on the V3, see above
-- [x] Every transition and guard unit-tested against the fake driver
+- [x] ~~SoC floor guard during DISCHARGE (floor → HOLD, hysteresis
+      +0.15 kWh) — the PRIMARY floor protection on the V3~~ —
+      **removed 2026-08-07 (ADR-0008):** the guard read the SoC through
+      the coordinator, which freezes its last value when the sensor
+      dies — blind exactly when needed. The floor is now fully the
+      battery's to manage; C-4 remains a plan-validation property
+- [x] Every transition unit-tested against the fake driver
 
 *Code delivered 2026-08-07: driver/executor/config-flow rework, 210
-tests. The battery entity group is now FIVE entities (force_mode,
-set_charge_power, SoC, rs485_control_mode switch, user_work_mode
-select) — existing entries fall back to planning-only until the two
-new entities are selected in Options. The plan/healthy sensors say
-"hold" where they used to say "idle".*
+tests. Amended same day by ADR-0008: the battery entity group is FOUR
+entities (force_mode, set_charge_power, rs485_control_mode switch,
+user_work_mode select) — the SoC sensor left the config; existing
+entries fall back to planning-only until the group is complete in
+Options. The plan/healthy sensors say "hold" where they used to say
+"idle".*
 
 **Verification:**
 - [ ] Full on-device checklist from spec §8 executed and results recorded

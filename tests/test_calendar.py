@@ -16,6 +16,7 @@ from custom_components.battery_opt.core.calendar import (
     Calendars,
     period,
     season,
+    season_switch,
     weekly_hours,
 )
 
@@ -78,6 +79,15 @@ def test_season_switches() -> None:
     assert season(date(2026, 3, 29)) == "summer"  # last Sunday of March
     assert season(date(2026, 10, 24)) == "summer"
     assert season(date(2026, 10, 25)) == "winter"  # last Sunday of October
+
+
+def test_season_switch_detects_only_the_two_switch_days() -> None:
+    """season_switch names the season that BEGINS on a switch day."""
+    assert season_switch(date(2026, 3, 29)) == "summer"
+    assert season_switch(date(2026, 10, 25)) == "winter"
+    assert season_switch(date(2026, 3, 28)) is None  # day before
+    assert season_switch(date(2026, 3, 30)) is None  # day after
+    assert season_switch(date(2026, 7, 15)) is None  # mid-season
 
 
 def test_weekly_totals() -> None:

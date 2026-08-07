@@ -246,6 +246,59 @@ Per-day CSVs for these runs are under `backtest/data/results/`
 
 ---
 
+## Overnight-session decisions 1–11 (2026-08-06) — register
+
+**Reconstructed 2026-08-07** from the "decision N" citations spread
+across code, tests, spec and plan — the original list lived only in
+the session that produced Tasks A/B/C and was never written down.
+NOTE: this numbering is INDEPENDENT of the "Checkpoint B decisions
+1–5" above; a bare "decision 1" in `docs/plan.md`/`const.py` means
+THIS list.
+
+1. **Meter config keys.** Two new optional config entities, chosen by
+   the owner: `CONF_LOAD_SENSOR` (house consumption, power W or
+   energy kWh — feeds the Task 11 forecast) and
+   `CONF_GRID_ENERGY_SENSOR` (grid-import energy kWh — feeds the cost
+   sensor). Independent of the battery group; everything degrades
+   gracefully while unset.
+2. **Hourly statistics resolution.** Recorder long-term statistics are
+   hourly (5-minute stats survive only ~10 days — too short for the
+   4-week lookback), so `load_history.py` expands each hour into its
+   4 identical quarters. A deliberate deviation from Task 11's
+   quarter-hourly wording; true quarter resolution arrives later from
+   the own load archive (decision 5).
+3. *(Not reconstructable — no surviving citation anywhere in the
+   repo. Owner to fill in or strike.)*
+4. **Archive every successful full-day price build** to
+   `battery_opt/prices/YYYY-MM-DD.json`; a padded day is overwritten
+   in place once its tail resolves. `DaySeries` carries the raw OMIE
+   points the archive needs.
+5. **Day close at 00:05** archives yesterday's OBSERVED load curve to
+   `battery_opt/load/` — accumulating the future quarter-resolution
+   forecast dataset that supersedes decision 2's hourly adapter.
+6. **Fail closed to static.** Any untrustworthy dynamic input —
+   missing prices or (defensively) an invalid solve — publishes the
+   static seasonal schedule instead, marked `fallback: "static"` on
+   the plan sensor.
+7. **Load-MAE persistence.** `sensor.battery_opt_load_mae` survives
+   restarts via its own `homeassistant.helpers.storage.Store`.
+8. **Cost-today sensor semantics.** `sensor.battery_opt_cost_today`:
+   `state_class` TOTAL with `last_reset` at local midnight (not
+   `total_increasing` — meter resets), negative deltas count as 0,
+   the daily fixed term (K3 + TAR potência) added once per day, VAT
+   excluded (billing-window computation, parked for Task 13), own
+   Store per concern.
+9. **D+1 preview.** `tomorrow_*` attributes publish only once D+1's
+   own price series builds; the preview plan is seeded at the reserve
+   floor, not chained from today (today has not finished executing).
+10. **Diagnostics.** `diagnostics.py` dumps entry data/options and the
+    coordinator snapshot; nothing secret lives there, no redaction.
+11. **README dashboards.** The ApexCharts card examples (price/plan
+    overlay, SoC forecast-vs-real) and the Energy-dashboard note are
+    part of the deliverable, kept in sync with the sensor attributes.
+
+---
+
 ## Negative OMIE prices
 
 Delivered price = OMIE/1000 × 1.164 × 1.08 + 0.0185 + TAR. K2 and TAR are added

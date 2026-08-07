@@ -3,11 +3,10 @@
     "step": {
       "user": {
         "title": "Battery Opt",
-        "description": "Prices come from Home Assistant's own OMIE integration - set it up first (Settings > Devices & services > Add > OMIE). The marstek_modbus entities are optional until the battery arrives: leave all five empty for planning-only mode (plans and savings are computed, nothing actuates). Note: force_mode, rs485_control_mode, set_charge_power and charge_to_soc ship disabled by default in the Marstek integration - enable them first (user_work_mode is enabled by default). The charge-to-SoC and cutoff numbers are optional extras; the cutoff numbers do not exist on the Venus E V3, so leave them empty there. The load and grid-import sensors are also optional - everything degrades gracefully (flat load forecast, cost sensor unavailable) until they are set.",
+        "description": "Prices come from Home Assistant's own OMIE integration - set it up first (Settings > Devices & services > Add > OMIE). The marstek_modbus entities are optional until the battery arrives: leave all four empty for planning-only mode (plans and savings are computed, nothing actuates). Note: force_mode, rs485_control_mode, set_charge_power and charge_to_soc ship disabled by default in the Marstek integration - enable them first (user_work_mode is enabled by default). The charge-to-SoC and cutoff numbers are optional extras; the cutoff numbers do not exist on the Venus E V3, so leave them empty there - the reserve floor is the battery's to manage. The load and grid-import sensors are also optional - everything degrades gracefully (flat load forecast, cost sensor unavailable) until they are set.",
         "data": {
           "mode_select": "Battery mode select entity (force_mode)",
           "charge_power_number": "Charge power entity (set_charge_power)",
-          "soc_sensor": "Battery state-of-charge sensor",
           "rs485_switch": "External control switch (rs485_control_mode)",
           "work_mode_select": "Work mode select entity (user_work_mode)",
           "charge_to_soc_number": "Charge-to-SoC backstop entity (charge_to_soc, optional)",
@@ -26,7 +25,8 @@
     },
     "error": {
       "omie_not_set_up": "The OMIE integration is not set up. Add it first: Settings > Devices & services > Add integration > OMIE.",
-      "battery_entities_all_or_none": "Provide all five battery entities (mode, charge power, SoC, external-control switch, work mode), or none of them (planning-only mode until the battery arrives)."
+      "battery_entities_all_or_none": "Provide all four battery entities (mode, charge power, external-control switch, work mode), or none of them (planning-only mode until the battery arrives).",
+      "timezone_not_lisbon": "Home Assistant's timezone must be Europe/Lisbon: the tariff calendar, the OMIE market day and every trigger are Portugal-local. Change it under Settings > System > General."
     }
   },
   "options": {
@@ -36,7 +36,6 @@
         "data": {
           "mode_select": "Battery mode select entity (force_mode)",
           "charge_power_number": "Charge power entity (set_charge_power)",
-          "soc_sensor": "Battery state-of-charge sensor",
           "rs485_switch": "External control switch (rs485_control_mode)",
           "work_mode_select": "Work mode select entity (user_work_mode)",
           "charge_to_soc_number": "Charge-to-SoC backstop entity (charge_to_soc, optional)",
@@ -51,12 +50,13 @@
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
           "plan_wear_eur_kwh": "Planning wear — cycle cap (EUR/kWh)"
         },
-        "description": "Entities and parameters can be changed here at any time; the integration reloads on save. Add the five Marstek control entities when the battery arrives."
+        "description": "Entities and parameters can be changed here at any time; the integration reloads on save. Add the four Marstek control entities when the battery arrives."
       }
     },
     "error": {
       "omie_not_set_up": "The OMIE integration is not set up. Add it first: Settings > Devices & services > Add integration > OMIE.",
-      "battery_entities_all_or_none": "Provide all five battery entities (mode, charge power, SoC, external-control switch, work mode), or none of them (planning-only mode until the battery arrives)."
+      "battery_entities_all_or_none": "Provide all four battery entities (mode, charge power, external-control switch, work mode), or none of them (planning-only mode until the battery arrives).",
+      "timezone_not_lisbon": "Home Assistant's timezone must be Europe/Lisbon: the tariff calendar, the OMIE market day and every trigger are Portugal-local. Change it under Settings > System > General."
     }
   }
 }

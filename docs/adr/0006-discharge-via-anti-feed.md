@@ -56,7 +56,11 @@ All transitions go through `marstek_venus_modbus` entities — ADR-0004
 - Zero-export enforcement during DISCHARGE is delegated to firmware; the
   integration keeps the reserve-floor guard (SoC at floor → HOLD) because
   invariant #3 is never delegated, and the firmware SOC cutoffs are written
-  once at setup as a backstop (spec §8).
+  once at setup as a backstop (spec §8). **Superseded by ADR-0008
+  (2026-08-07):** the floor guard was removed and the floor fully delegated
+  to the battery — the guard's SoC source froze on sensor death, making it
+  blind exactly when needed. The cutoff writes remain; on the V3 (registers
+  MISSING upstream) the device's internal minimum governs.
 - Watchdog/keepalive semantics become load-bearing: the Modbus
   integration's poll interval must stay well below the watchdog period, and
   the semantics must be re-verified after every firmware OTA (spec §8

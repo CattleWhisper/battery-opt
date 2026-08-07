@@ -31,7 +31,6 @@ from custom_components.battery_opt.driver import (
 ENTITIES = MarstekEntities(
     mode_select="select.marstek_force_mode",
     charge_power_number="number.marstek_set_charge_power",
-    soc_sensor="sensor.marstek_battery_soc",
     rs485_switch="switch.marstek_rs485_control_mode",
     work_mode_select="select.marstek_user_work_mode",
 )
@@ -39,7 +38,6 @@ ENTITIES = MarstekEntities(
 ENTITIES_FULL = MarstekEntities(
     mode_select="select.marstek_force_mode",
     charge_power_number="number.marstek_set_charge_power",
-    soc_sensor="sensor.marstek_battery_soc",
     rs485_switch="switch.marstek_rs485_control_mode",
     work_mode_select="select.marstek_user_work_mode",
     charge_to_soc_number="number.marstek_charge_to_soc",
@@ -80,9 +78,7 @@ class StubStates:
 
 
 def _hass(states: dict[str, str] | None = None) -> SimpleNamespace:
-    if states is None:
-        states = {"sensor.marstek_battery_soc": "57.0"}
-    return SimpleNamespace(services=StubServices(), states=StubStates(states))
+    return SimpleNamespace(services=StubServices(), states=StubStates(states or {}))
 
 
 def _summary(hass: SimpleNamespace) -> list[tuple]:
@@ -228,24 +224,6 @@ def test_failed_transition_replays_the_full_sequence() -> None:
     ]
 
 
-def test_read_soc_parses_the_sensor_state() -> None:
-    """SoC comes from the sensor entity as a percentage."""
-    driver = MarstekDriver(_hass(), ENTITIES)
-    assert asyncio.run(driver.read_soc()) == pytest.approx(57.0)
-
-
-def test_read_soc_unavailable_raises_driver_error() -> None:
-    """A missing or unavailable entity is a driver failure."""
-    driver = MarstekDriver(_hass({}), ENTITIES)
-    with pytest.raises(DriverError):
-        asyncio.run(driver.read_soc())
-    driver = MarstekDriver(
-        _hass({"sensor.marstek_battery_soc": "unavailable"}), ENTITIES
-    )
-    with pytest.raises(DriverError):
-        asyncio.run(driver.read_soc())
-
-
 def test_three_consecutive_failures_raise_unavailable() -> None:
     """Failures 1-2 raise DriverError; the third DriverUnavailableError."""
     hass = _hass()
@@ -274,12 +252,7 @@ def test_success_resets_the_failure_counter() -> None:
 
 def test_cutoffs_written_once_with_compare_before_write() -> None:
     """Both cutoffs write when absent; equal values never rewrite."""
-    hass = _hass(
-        {
-            "sensor.marstek_battery_soc": "57.0",
-            "number.marstek_charging_cutoff_capacity": "100.0",
-        }
-    )
+    hass = _hass({"number.marstek_charging_cutoff_capacity": "100.0"})
     driver = MarstekDriver(hass, ENTITIES_FULL)
     assert asyncio.run(driver.write_soc_cutoffs(27.0, 100.0)) is True
     # Ceiling already reads 100.0 → only the floor is written.
@@ -315,18 +288,15 @@ def test_cutoff_write_rejection_is_non_fatal_and_uncounted() -> None:
 def test_fake_driver_records_the_call_sequence() -> None:
     """The executor tests replay against this exact recording."""
 
-    async def scenario(driver: FakeDriver) -> float:
+    async def scenario(driver: FakeDriver) -> None:
         await driver.set_state("charge", charge_power_w=2000.0, target_soc_pct=90.0)
         await driver.set_charge_power(1500.0)
         await driver.set_state("hold")
-        return await driver.read_soc()
 
-    fake = FakeDriver(soc_percent=27.0)
-    soc = asyncio.run(scenario(fake))
+    fake = FakeDriver()
+    asyncio.run(scenario(fake))
     assert fake.calls == [
         ("set_state", ("charge", 2000.0, 90.0)),
         ("set_charge_power", 1500.0),
         ("set_state", ("hold", None, None)),
-        ("read_soc", None),
     ]
-    assert soc == pytest.approx(27.0)

@@ -48,6 +48,7 @@ from backtest.load_omie import (
 )
 from backtest.report import DayResult, annualize, write_csv
 from custom_components.battery_opt.core.calendar import period, season
+from custom_components.battery_opt.core.forecast import BASE_LOAD_W
 from custom_components.battery_opt.core.optimiser import solve
 from custom_components.battery_opt.core.plan import (
     BatteryParams,
@@ -65,7 +66,6 @@ from custom_components.battery_opt.core.static_schedule import static_plan
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-BASE_LOAD_W = 1040.0  # CONTEXT.md: flat 24/7 load
 SIMPLES_15_EUR_KWH = 0.1420  # CONTEXT.md: Simples at the 15% discount
 
 # Default Checkpoint B window: the 11 quarter-hourly months. Sep 2025

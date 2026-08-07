@@ -100,6 +100,21 @@ def season(d: date) -> Season:
     return "winter"
 
 
+def season_switch(d: date) -> Season | None:
+    """
+    Return the season that BEGINS on `d` if it is a switch day, else None.
+
+    Feeds the spec §9 seasonal-switch notification: the calendar is
+    the system's most likely silent failure, so the two switch days a
+    year get a human-verification prompt.
+    """
+    if d == last_sunday(d.year, 3):
+        return "summer"
+    if d == last_sunday(d.year, 10):
+        return "winter"
+    return None
+
+
 def _effective_table(d: date, calendars: Calendars) -> CalendarTable:
     """Return the calendar table in force on a date."""
     table: CalendarTable | None = None

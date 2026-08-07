@@ -23,7 +23,7 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 from custom_components.battery_opt.core.calendar import season
-from custom_components.battery_opt.core.prices import total_daily_cost
+from custom_components.battery_opt.core.prices import VAT, total_daily_cost
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -88,7 +88,7 @@ def annualize(results: list[DayResult], params: BatteryParams) -> dict[str, floa
         for metric, field_name in per_field.items():
             mean_daily = sum(getattr(r, field_name) for r in in_season) / len(in_season)
             annual[metric] += mean_daily * days_per_year
-    annual["annual_saving_eur_incl_vat"] = annual["annual_saving_eur"] * 1.23
+    annual["annual_saving_eur_incl_vat"] = annual["annual_saving_eur"] * VAT
     annual["annual_billed_cost_eur_incl_vat"] = total_daily_cost(
         annual["annual_cost_eur"], days=365
     )

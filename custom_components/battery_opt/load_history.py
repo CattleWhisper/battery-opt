@@ -16,8 +16,8 @@ per-slot contract.
 
 This module is deliberately thin and HA-only: `core/` stays free of
 homeassistant imports (ADR-0001). It is not exercised against a real
-recorder in tests — `coordinator.py` takes the loader as an injectable
-callable so tests substitute a fake one; unit tests instead cover
+recorder in tests — integration tests monkeypatch
+`coordinator.async_load_samples` instead; unit tests cover
 `core.forecast.forecast_load` exhaustively.
 """
 

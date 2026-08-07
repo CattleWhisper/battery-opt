@@ -44,17 +44,11 @@ People *love* thorough bug reports. I'm not even kidding.
 
 ## Use a Consistent Coding Style
 
-Use [black](https://github.com/ambv/black) to make sure the code follows the style.
+Run `scripts/lint` (ruff format + `ruff check --fix`, with `select = ALL`) before pushing — CI and reviewers expect a clean run.
 
 ## Test your code modification
 
-This custom component is based on [integration_blueprint template](https://github.com/ludeeus/integration_blueprint).
-
-It comes with development environment in a container, easy to launch
-if you use Visual Studio Code. With this container you will have a stand alone
-Home Assistant instance running and already configured with the included
-[`configuration.yaml`](./config/configuration.yaml)
-file.
+Run `pytest` for the full suite (backtest-data tests skip without the OMIE download). `scripts/develop` starts a standalone Home Assistant instance with the integration loaded, configured by the included [`configuration.yaml`](./config/configuration.yaml); a VS Code devcontainer is provided for the same environment. (The repository started from the [integration_blueprint template](https://github.com/ludeeus/integration_blueprint); the template code itself is long gone.)
 
 ## License
 

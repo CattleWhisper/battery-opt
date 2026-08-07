@@ -1,9 +1,9 @@
 """
 Health binary sensor (spec §8): on = safe to actuate.
 
-Off on missing SoC, an invalid plan, or a three-strike driver failure
-— exactly the executor's health latch. The executor never actuates
-while this is off (spec §11); the sensor only reports it.
+Off on an invalid plan or a three-strike driver failure — exactly the
+executor's health latch. The executor never actuates while this is
+off (spec §11); the sensor only reports it.
 """
 
 from __future__ import annotations

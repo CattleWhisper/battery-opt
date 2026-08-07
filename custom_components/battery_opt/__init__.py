@@ -23,7 +23,6 @@ from .const import (
     CONF_MODE_SELECT,
     CONF_RESERVE_FLOOR_PCT,
     CONF_RS485_SWITCH,
-    CONF_SOC_SENSOR,
     CONF_WORK_MODE_SELECT,
     DEFAULT_RESERVE_FLOOR_PCT,
 )
@@ -41,17 +40,27 @@ if TYPE_CHECKING:
 
 PLATFORMS: list[str] = ["binary_sensor", "sensor", "switch"]
 
-# Plan Task 10 / spec §9: aligned fetch at 13:45 Lisbon local (OMIE D+1
+# Plan Task 10 / spec §9: aligned fetch at 13:45 local (OMIE D+1
 # publishes ~13:30), retried at 14:15, 15:00 and 16:00 in case it was
 # not yet published. Each entry just forces a coordinator refresh —
 # the 15-minute steady-state poll already covers everything else, so
-# a fetch that already succeeded is a harmless extra refresh.
+# a fetch that already succeeded is a harmless extra refresh. The
+# config flow requires HA's timezone to be Europe/Lisbon, so "local"
+# here IS Lisbon.
 _PRICE_FETCH_TIMES: tuple[tuple[int, int], ...] = (
     (13, 45),
     (14, 15),
     (15, 0),
     (16, 0),
 )
+
+# Just past midnight: today's price vector exists (market date D was
+# published yesterday ~13:30) but the coordinator's steady 15-minute
+# poll can lag the date change by up to a full interval, leaving the
+# current-price sensor (and the cost tracker's price lookup) blank for
+# those minutes every night. Second 30 avoids racing the cost
+# tracker's own 00:00:00 day roll.
+_MIDNIGHT_REFRESH = (0, 0, 30)
 
 
 @dataclass
@@ -124,7 +133,6 @@ def _wire_actuation(
     executor = BatteryOptExecutor(
         driver=driver,
         get_params=lambda: coordinator.battery_params,
-        get_soc_kwh=lambda: (coordinator.data or {}).get("soc_kwh"),
         notify=_notify,
         get_charge_entry_w=_charge_entry_w,
         on_charge_entry=_charge_entry_written,
@@ -170,6 +178,7 @@ async def async_setup_entry(
     from homeassistant.util import dt as dt_util  # noqa: PLC0415
 
     from .coordinator import BatteryOptCoordinator  # noqa: PLC0415
+    from .core.calendar import season_switch  # noqa: PLC0415
     from .driver import MarstekDriver, MarstekEntities  # noqa: PLC0415
 
     # Options overlay data: the options flow can re-point entities
@@ -178,7 +187,6 @@ async def async_setup_entry(
     battery_keys = (
         CONF_MODE_SELECT,
         CONF_CHARGE_POWER_NUMBER,
-        CONF_SOC_SENSOR,
         CONF_RS485_SWITCH,
         CONF_WORK_MODE_SELECT,
     )
@@ -188,7 +196,6 @@ async def async_setup_entry(
         entities = MarstekEntities(
             mode_select=merged[CONF_MODE_SELECT],
             charge_power_number=merged[CONF_CHARGE_POWER_NUMBER],
-            soc_sensor=merged[CONF_SOC_SENSOR],
             rs485_switch=merged[CONF_RS485_SWITCH],
             work_mode_select=merged[CONF_WORK_MODE_SELECT],
             charge_to_soc_number=merged.get(CONF_CHARGE_TO_SOC_NUMBER),
@@ -226,12 +233,46 @@ async def async_setup_entry(
                 hass, _on_price_fetch_time, hour=hour, minute=minute, second=0
             )
         )
+    midnight_hour, midnight_minute, midnight_second = _MIDNIGHT_REFRESH
+    entry.async_on_unload(
+        async_track_time_change(
+            hass,
+            _on_price_fetch_time,
+            hour=midnight_hour,
+            minute=midnight_minute,
+            second=midnight_second,
+        )
+    )
 
     async def _on_day_close(now: datetime) -> None:
         await coordinator.async_day_close(dt_util.as_local(now))
 
     entry.async_on_unload(
         async_track_time_change(hass, _on_day_close, hour=0, minute=5, second=0)
+    )
+
+    async def _on_seasonal_check(now: datetime) -> None:
+        # Spec §9: the two season-switch days a year get a manual-
+        # verification prompt — the calendar is the #1 silent trap.
+        new_season = season_switch(dt_util.as_local(now).date())
+        if new_season is None:
+            return
+        await hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": "Battery Opt: tariff season switch",
+                "message": (
+                    f"Today is the last Sunday of the month: the tri-horária "
+                    f"calendar switches to {new_season} hours. Verify the "
+                    f"plan's charge/discharge windows against the new "
+                    f"season (spec §9)."
+                ),
+            },
+        )
+
+    entry.async_on_unload(
+        async_track_time_change(hass, _on_seasonal_check, hour=2, minute=0, second=0)
     )
 
     if executor is not None:

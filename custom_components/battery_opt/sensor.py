@@ -227,7 +227,11 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
             ),
             "prices_padded": data.get("prices_padded"),
             # Decision 9: D+1 preview, only when D+1 itself builds.
+            # Structurally always tail-padded (D+2 never exists yet),
+            # so the flag mostly says "yes" — exposed for symmetry
+            # with prices_padded and honesty about the last hour.
             "tomorrow_prices_eur_kwh": data.get("tomorrow_prices_eur_kwh"),
+            "tomorrow_prices_padded": data.get("tomorrow_prices_padded"),
         }
 
 

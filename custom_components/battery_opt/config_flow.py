@@ -41,7 +41,6 @@ from .const import (
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_RS485_SWITCH,
-    CONF_SOC_SENSOR,
     CONF_WEAR_COST,
     CONF_WORK_MODE_SELECT,
     DEFAULT_CAPACITY_KWH,
@@ -98,14 +97,14 @@ def _parameter_schema(defaults: dict[str, Any]) -> dict[vol.Marker, Any]:
 
 
 # Battery entities are optional as a group: absent until the battery
-# arrives (planning-only mode), all five once it does (ADR-0006: the
+# arrives (planning-only mode), all four once it does (ADR-0006: the
 # rs485 switch and work-mode select carry the state transitions;
 # discharge power is gone — discharge is a mode switch, never a
-# setpoint).
+# setpoint; the SoC sensor is gone too — the reserve floor is the
+# battery's to manage, owner decision 2026-08-07).
 BATTERY_ENTITY_KEYS = (
     CONF_MODE_SELECT,
     CONF_CHARGE_POWER_NUMBER,
-    CONF_SOC_SENSOR,
     CONF_RS485_SWITCH,
     CONF_WORK_MODE_SELECT,
 )
@@ -126,9 +125,6 @@ def _entity_schema(current: dict[str, Any]) -> dict[vol.Marker, Any]:
             CONF_CHARGE_POWER_NUMBER,
             description=suggested(CONF_CHARGE_POWER_NUMBER),
         ): _entity("number"),
-        vol.Optional(CONF_SOC_SENSOR, description=suggested(CONF_SOC_SENSOR)): (
-            _entity("sensor")
-        ),
         vol.Optional(CONF_RS485_SWITCH, description=suggested(CONF_RS485_SWITCH)): (
             _entity("switch")
         ),
@@ -175,12 +171,22 @@ def _entity_schema(current: dict[str, Any]) -> dict[vol.Marker, Any]:
     }
 
 
+# The tariff calendar, the OMIE market day and every wall-clock
+# trigger are Portugal-local. Rather than half-defending against a
+# foreign HA timezone (the pre-fix code converted in _quarter_index
+# but trusted hass everywhere else), the integration requires it.
+REQUIRED_TIME_ZONE = "Europe/Lisbon"
+
+
 def _validate(hass: Any, merged: dict[str, Any]) -> dict[str, str]:
-    """Shared validation: OMIE must be set up, battery all-or-none."""
+    """Shared validation: OMIE set up, Lisbon timezone, battery all-or-none."""
     errors: dict[str, str] = {}
     if not hass.services.has_service("omie", "get_prices_for_date"):
         # Prices come exclusively from HA core's OMIE integration.
         errors["base"] = "omie_not_set_up"
+        return errors
+    if hass.config.time_zone != REQUIRED_TIME_ZONE:
+        errors["base"] = "timezone_not_lisbon"
         return errors
     provided = sum(1 for key in BATTERY_ENTITY_KEYS if merged.get(key))
     if provided not in (0, len(BATTERY_ENTITY_KEYS)):
@@ -236,7 +242,12 @@ class BatteryOptOptionsFlow(OptionsFlow):
         current = {**self.config_entry.data, **self.config_entry.options}
         errors: dict[str, str] = {}
         if user_input is not None:
-            merged = {**current, **user_input}
+            # Validate the POST-SAVE effective config: saving REPLACES
+            # the options with user_input, so the effective config is
+            # data + user_input — not data + old options + user_input.
+            # Merging `current` here once let a cleared battery entity
+            # pass all-or-none while silently dropping to planning-only.
+            merged = {**self.config_entry.data, **user_input}
             errors = _validate(self.hass, merged)
             if not errors:
                 return self.async_create_entry(data=user_input)

@@ -83,6 +83,30 @@ def test_service_response_missing_day_returns_none() -> None:
     assert padded is False
 
 
+def test_mid_day_gap_is_an_error_not_a_shifted_vector() -> None:
+    """
+    A non-tail gap must refuse to build the day (no silent shift).
+
+    Consumers index the vector positionally by quarter-hour; padding a
+    mid-day hole at the tail would move every later price one slot
+    early. The parser errors out instead.
+    """
+    entries = _service_entries(DAY) + _service_entries(DAY + timedelta(days=1))
+    with_gap = [e for i, e in enumerate(entries) if i != 40]  # drop one quarter
+    vector, padded = day_price_vector_from_service(DAY, with_gap)
+    assert vector is None
+    assert padded is False
+
+
+def test_head_gap_is_an_error() -> None:
+    """A day whose first quarters are missing is refused, not padded."""
+    entries = _service_entries(DAY) + _service_entries(DAY + timedelta(days=1))
+    headless = entries[8:]  # first two Lisbon hours missing
+    vector, padded = day_price_vector_from_service(DAY, headless)
+    assert vector is None
+    assert padded is False
+
+
 def test_negative_prices_flow_through() -> None:
     """OMIE below zero stays below zero in the market term (no clamp)."""
     vector, _ = day_price_vector_from_service(

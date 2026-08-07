@@ -19,6 +19,7 @@ callers that only need the delivered vector.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 
 _TZ_LISBON = ZoneInfo("Europe/Lisbon")
 _ONE_DAY = timedelta(days=1)
+
+_LOGGER = logging.getLogger(__name__)
 
 # Only the Lisbon day's final hour lives in the NEXT market date
 # (published ~13:30 CET), so at most four tail quarters can be
@@ -67,6 +70,12 @@ def day_series_from_service(
     the missing tail is padded with the last known price, flagged via
     `DaySeries.padded`.
 
+    The series must be CONTIGUOUS from local midnight in exact 15-min
+    steps: consumers index the vector positionally by quarter, so a
+    head or mid-day gap would silently shift every later price one
+    slot early. Any such gap (or a duplicate/off-grid start) is an
+    error — logged, and the day is not built.
+
     Returns None when the day cannot be built at all.
     """
     day_points = [
@@ -78,7 +87,6 @@ def day_series_from_service(
     )
     if not local_points:
         return None
-    vector = [price(omie, start) for start, omie in local_points]
     # The day's true quarter count (92/96/100 across DST) from real
     # elapsed time — a plain count set cannot tell a DST-short day
     # from a normal day missing its tail.
@@ -86,6 +94,18 @@ def day_series_from_service(
     next_day = day_start + _ONE_DAY
     day_end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=_TZ_LISBON)
     expected = round((day_end.timestamp() - day_start.timestamp()) / 900)
+    for index, (start, _omie) in enumerate(local_points):
+        if round(start.timestamp() - day_start.timestamp()) != index * 900:
+            _LOGGER.error(
+                "OMIE series for %s is not contiguous: slot %d starts at %s, "
+                "expected %s — refusing to build a misaligned price vector",
+                day,
+                index,
+                start.isoformat(),
+                (day_start + timedelta(seconds=index * 900)).isoformat(),
+            )
+            return None
+    vector = [price(omie, start) for start, omie in local_points]
     if len(vector) == expected:
         return DaySeries(
             omie_points=tuple(local_points),

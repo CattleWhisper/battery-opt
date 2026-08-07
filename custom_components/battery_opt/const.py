@@ -11,6 +11,8 @@ DOMAIN = "battery_opt"
 
 CONF_MODE_SELECT = "mode_select"
 CONF_CHARGE_POWER_NUMBER = "charge_power_number"
+# legacy: pre-2026-08-07 entries carry it; the integration no longer
+# reads the SoC — the reserve floor is the battery's to manage
 CONF_SOC_SENSOR = "soc_sensor"
 # ADR-0006 control entities: rs485 switch + work-mode select complete
 # the required battery group; the three numbers are optional-with-

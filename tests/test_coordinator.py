@@ -118,6 +118,8 @@ async def test_price_fetch_schedule_registers_four_triggers(
     }
     assert set(_PRICE_FETCH_TIMES) <= set(registered)
     assert (0, 5) in registered  # day-close (Task 11, decision 5)
+    assert (0, 0) in registered  # post-midnight refresh (price gap fix)
+    assert (2, 0) in registered  # seasonal-switch notification (spec §9)
 
     coordinator = entry.runtime_data.coordinator
     calls: list[None] = []

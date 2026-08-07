@@ -35,20 +35,24 @@ is versioned by effective date (ADR-0005) because ERSE revises it.
 Add this repository as a custom repository in HACS, install
 "Battery Opt", restart, then add the integration.
 
-**Prerequisites:** Home Assistant's own **OMIE** integration
-(Settings → Devices & services → Add → OMIE) — prices come
-exclusively from its `omie.get_prices_for_date` service. For
-actuation, the **marstek_venus_modbus** integration must own the
+**Prerequisites (the config flow enforces both):** Home Assistant's
+own **OMIE** integration (Settings → Devices & services → Add →
+OMIE) — prices come exclusively from its `omie.get_prices_for_date`
+service — and HA's timezone set to **Europe/Lisbon** (the tariff
+calendar, the OMIE market day and every trigger are Portugal-local).
+For actuation, the **marstek_venus_modbus** integration must own the
 battery's Modbus connection, with its disabled-by-default entities
 enabled (`force_mode`, `rs485_control_mode`, `set_charge_power`, and
 `charge_to_soc` if you want the firmware backstop).
 
 **Two modes.** Leave the battery entities empty for
 **planning-only** mode: plans, prices and savings are computed and
-published, nothing actuates. Add all five battery entities (force
-mode select, charge power number, SoC sensor, rs485 control switch,
-work mode select) via Configure to go **active**. Everything is
-editable later through the options flow; the entry reloads on save.
+published, nothing actuates. Add all four battery entities (force
+mode select, charge power number, rs485 control switch, work mode
+select) via Configure to go **active**. No SoC sensor is configured:
+the reserve floor is the battery's to manage (ADR-0008). Everything
+is editable later through the options flow; the entry reloads on
+save.
 
 **Optional entities**, each degrading gracefully when unset:
 
@@ -58,7 +62,7 @@ editable later through the options flow; the entry reloads on save.
 | Grid import energy sensor (kWh) | `sensor.battery_opt_cost_today` |
 | Grid import power sensor (W) + battery power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W) |
 | Charge-to-SoC number | Firmware charge backstop (gate on the spec §8 checklist) |
-| SOC cutoff numbers | Setup-time firmware cutoffs — do not exist on the Venus E V3; leave empty there |
+| SOC cutoff numbers | Setup-time firmware cutoffs — the discharge cutoff is the run-time floor where it exists; the numbers do not exist on the Venus E V3, so leave them empty there |
 
 ## Entities
 
@@ -68,13 +72,13 @@ All grouped under one **Battery Opt** service device.
 |---|---|
 | `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry the full day vectors, tomorrow's preview, the static-fallback flag and the charge-loop setpoint/fallback |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); day vector + TAR period in attributes; Energy-dashboard-ready |
-| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the battery's own SoC sensor); full day trajectory in attributes |
+| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
 | `sensor.battery_opt_cost_today` | Grid-import cost today incl. the daily fixed terms, excl. VAT (needs the grid energy sensor) |
 | `sensor.battery_opt_load_mae` | Load-forecast error (W), computed at each day close (needs the load sensor) |
-| `binary_sensor.battery_opt_healthy` | Off on missing prices, driver failure, or an invalid plan — the executor never actuates while off |
-| `switch.battery_opt_executor_actuation` | **Manual override** (active mode): off = the executor keeps planning and guarding but skips every battery write, so you can drive the battery yourself; re-enabling replays the full transition sequence. Default on, restored across restarts |
+| `binary_sensor.battery_opt_healthy` | Safe-to-actuate: off on driver failure or an invalid plan (active mode; missing prices degrade to the static plan instead, marked `fallback: static`), or on missing prices in planning-only mode — the executor never actuates while off |
+| `switch.battery_opt_executor_actuation` | **Manual override** (active mode): off = the executor keeps planning and validating but skips every battery write, so you can drive the battery yourself; re-enabling replays the full transition sequence. Default on, restored across restarts |
 | `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = it keeps computing but writes no setpoints (shown only when the loop's sensors are configured) |
 
 ## Dashboards

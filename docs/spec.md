@@ -12,7 +12,7 @@
 
 A Home Assistant integration that, each day after OMIE publishes day-ahead prices, computes the optimal charge/discharge plan for the next day's 96 fifteen-minute intervals and executes it through the `marstek_venus_modbus` integration.
 
-**Why:** the static seasonal schedule yields ~€267/year. The dynamic optimiser should add **€30–80/year** by exploiting:
+**Why:** the static seasonal schedule yields **€196/year measured** (Task 6 backtest; the MA30-era estimate was ~€267). The dynamic optimiser adds **+€131/year measured** (Checkpoint B; estimated €30–80 pre-backtest) by exploiting:
 
 1. picking the cheapest quarter-hour within each period;
 2. the seasonal inversion of the charging window (vazio in winter, midday in summer);
@@ -30,8 +30,8 @@ A Home Assistant integration that, each day after OMIE publishes day-ahead price
 | SC-2 | Contracted power respected | No breaker trips; `total_load <= 4400 W` in the plan |
 | SC-3 | Reserve floor respected | `SoC >= 27%` in every interval |
 | SC-4 | Beats the static baseline | Realised saving ≥ static + €30/year |
-| SC-5 | Graceful degradation | With no prices, runs the fixed seasonal schedule without intervention |
-| SC-6 | Ponta covered | ≥95% of ponta consumption served by battery or solar, monthly |
+| SC-5 | Graceful degradation | With no prices, runs the fixed seasonal schedule without intervention, marked `fallback: static` on the plan sensor |
+| SC-6 | Ponta covered | Summer months: ≥95% of ponta consumption served by battery or solar. Winter months: tracked against the one-unit deliverable ceiling — 3.46 kWh/day vs the 5.2 kWh weekday demand (~67%, Checkpoint B measurement) — not gated |
 | SC-7 | Calendar correct | Weekly totals: 15 h ponta (summer), 25 h (winter) |
 
 ---
@@ -51,6 +51,7 @@ A Home Assistant integration that, each day after OMIE publishes day-ahead price
    at the 15% discount level, switching is worth ~€183/year.
 6. Control via **local Modbus TCP**, through the `marstek_venus_modbus` integration.
 7. A 460 W balcony solar panel may or may not be installed. The system works either way.
+8. **Home Assistant's timezone is Europe/Lisbon** — enforced by the config flow (2026-08-07): the tariff calendar, the OMIE market day and every wall-clock trigger are Portugal-local.
 
 ---
 
@@ -61,7 +62,7 @@ A Home Assistant integration that, each day after OMIE publishes day-ahead price
 | Form factor | **Custom integration** (HACS) | ADR-0002 |
 | Repository | **Single**, with `core/` free of HA dependencies | ADR-0001 |
 | Optimiser | **Own greedy** in v1; EMHASS reconsidered in v2 | ADR-0003 |
-| OMIE prices | HACS `omie` integration (pyomie) | — |
+| OMIE prices | HA core `omie` integration — the `get_prices_for_date` service (its sensors carry only the current price) | — |
 | Battery | `marstek_venus_modbus` via service calls | ADR-0004 |
 | Tests | `pytest` + `pytest-homeassistant-custom-component` | — |
 | Solar | `forecast_solar` or `solcast` | — |
@@ -140,6 +141,8 @@ Summer = last Sunday of March → last Sunday of October.
 
 **Known limitation:** greedy picks pairs locally. With one battery and 96 intervals, the gap to optimal is typically <2%. If the backtest shows more than €10/year of headroom, reconsider EMHASS (ADR-0003).
 
+**Implementation note (Checkpoint A):** `core/optimiser.py` guarantees C-1..C-7 **by construction** (causality plus ceiling-checked pair sizing) rather than step 3's validate-and-repair; step 3 survives as the executor's independent validation of every plan before actuation (spec §11).
+
 ---
 
 ## 8. Interfaces
@@ -152,7 +155,9 @@ Summer = last Sunday of March → last Sunday of October.
 | TAR calendar | pure function | — |
 | Load forecast | median of the last 4 same-weekday occurrences | flat 1.04 kW |
 | Solar forecast | `forecast_solar` | 0 |
-| SoC | `marstek_venus_modbus` | last reading |
+
+The SoC is deliberately NOT an input (ADR-0008, owner 2026-08-07):
+plans are seeded at the reserve floor and no SoC is read anywhere.
 
 ### Outputs (entities)
 
@@ -166,8 +171,8 @@ Summer = last Sunday of March → last Sunday of October.
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter-hour (%, same unit as the battery's own SoC sensor, for direct forecast-vs-real comparison — the Checkpoint C soak metric); full day trajectory (97 boundary values, kWh and %) in attributes; sourced from the executor's actuated plan when a battery runs, the advisory plan otherwise |
 | `sensor.battery_opt_load_mae` | Mean absolute error (W) of yesterday's load forecast vs. observed, computed at day close; unavailable until a load meter is configured and one full day has closed (plan Task 11) |
 | `sensor.battery_opt_cost_today` | Grid-import cost today, EUR, excl. VAT (Task 13 pulled forward): variable = Σ(meter delta × delivered price at that instant, negative deltas from a meter reset counting as 0) + the daily fixed term (K3 + TAR potência); `state_class` TOTAL, `last_reset` at local midnight; attributes `variable_eur`, `fixed_eur`, `energy_today_kwh`; unavailable without a configured grid-import energy sensor |
-| `binary_sensor.battery_opt_healthy` | False on missing prices, Modbus failure, or an invalid plan |
-| `switch.battery_opt_executor_actuation` | Manual override (default on, restored across restarts): off = the executor keeps planning/validating/guarding but skips every driver write; its commanded state is forgotten while off, so re-enabling replays the full transition — safe after manual battery control. Active mode only |
+| `binary_sensor.battery_opt_healthy` | With a battery: the executor's safe-to-actuate latch — off on an invalid plan or a three-strike driver failure. Missing prices are NOT unhealthy there: the static fallback still actuates, marked `fallback: static` (SC-5). Planning-only: off when no price vector can be built, since plans are then impossible |
+| `switch.battery_opt_executor_actuation` | Manual override (default on, restored across restarts): off = the executor keeps planning and validating but skips every driver write; its commanded state is forgotten while off, so re-enabling replays the full transition — safe after manual battery control. Active mode only |
 | `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = keeps computing (fallback flag stays live), writes no setpoints. Exists only when the loop's sensors are configured |
 
 ### Actuation — control state machine (ADR-0006)
@@ -205,12 +210,12 @@ cross-checking against community sources):
   stop (42010=0).
 
 **Charge stop policy (decided 2026-08-07):** time-boxed — the plan says
-which quarters are CHARGE and the executor exits the state on schedule,
-SoC readback each tick confirming. Additionally write `charge_to_soc`
-(42011) = the window's planned end SoC (small margin, capped at 100) as
-a firmware backstop against the integration dying mid-window. The
-backstop activates only after verify-on-device item 3 confirms 42011
-coexists with force-charge on this firmware.
+which quarters are CHARGE and the executor exits the state on schedule.
+Additionally write `charge_to_soc` (42011) = the window's planned end
+SoC (small margin, capped at 100) as a firmware backstop against the
+integration dying mid-window. The backstop activates only after
+verify-on-device item 3 confirms 42011 coexists with force-charge on
+this firmware. (No SoC readback confirms the stop — ADR-0008.)
 
 **Charge-power control loop (ADR-0007, Task 15 — decided and
 implemented 2026-08-07; bench verification pending):** while the state
@@ -246,18 +251,21 @@ setpoint   = clamp(P_USABLE_W - other_load, 0, 2500)   # floor to 50 W
 (44000) = 100 % and `discharging_cutoff_capacity` (44001) = 27 % are
 written **once at integration setup** — never per transition; the 44xxx
 block is EEPROM-backed, and equal values are never rewritten
-(compare-before-write). They mirror invariants the integration already
-enforces. **Implementation finding (2026-08-07):** the upstream register
-map lists both cutoff numbers as MISSING on the Venus E V3 — the entities
-do not exist there at all, so on V3 the cutoff config fields stay empty,
-the setup write is skipped with a log line, and the executor's SoC floor
-guard is the PRIMARY floor protection, not belt-and-braces.
+(compare-before-write). The discharge cutoff IS the run-time floor
+mechanism (ADR-0008). **Implementation finding (2026-08-07):** the
+upstream register map lists both cutoff numbers as MISSING on the Venus
+E V3 — the entities do not exist there at all, so on V3 the cutoff
+config fields stay empty, the setup write is skipped with a log line,
+and the device's own internal minimum governs during anti-feed.
 
-**Guards during DISCHARGE (decided 2026-08-07):** zero-export is delegated
-to the firmware, the reserve floor never is. Coordinator SoC polling
-enforces: SoC ≤ 27 % during DISCHARGE → force HOLD, with hysteresis
-against flapping at the boundary. A meter-pairing guard is added only if
-the Modbus integration exposes a health/pairing observable; until then,
+**Guards during DISCHARGE (revised 2026-08-07, ADR-0008):** zero-export
+AND the reserve floor are both delegated to the firmware. The original
+integration-level SoC floor guard was removed: it read the SoC through
+the coordinator, which keeps its last value when the sensor dies, so
+the guard was blind exactly when it mattered while making the system
+look protected. The floor is a planning constraint (C-4); at run time
+the battery manages it. A meter-pairing guard is added only if the
+Modbus integration exposes a health/pairing observable; until then,
 pairing-loss behaviour is verify-on-device item 6.
 
 **Polling is the keepalive:** the force-mode watchdog (~15 s reported)
@@ -298,11 +306,13 @@ are undocumented firmware behaviour):
 
 | Time | Action | On failure |
 |---|---|---|
-| 13:45 | Fetch D+1 prices, compute, archive | Retry 14:15, 15:00, 16:00; then `healthy=off` and fixed schedule |
-| 23:55 | Validate plan against real SoC | Recompute if deviation >20% |
+| 13:45 | Fetch D+1 prices, compute, archive | Retry 14:15, 15:00, 16:00; then fixed schedule marked `fallback: static` (planning-only additionally reports `healthy=off`; with a battery, healthy stays the executor's latch and static actuation continues — see §8) |
+| 00:00:30 | Refresh so today's vector loads seconds after the date change (the 15-min poll would otherwise lag, blanking the price sensor and the cost tracker's lookup) | — |
 | Every 15 min | Apply the current interval's state (CHARGE setpoint / HOLD / DISCHARGE) | 3 Modbus failures → `healthy=off` + notification |
-| 00:05 | Close the day: realised saving, archive | — |
-| Last Sunday of Mar/Oct, 02:00 | Seasonal switch | Notification for manual verification |
+| 00:05 | Close the day: load archive + MAE (realised saving arrives with Task 13) | — |
+| 02:00 daily | If today is the last Sunday of Mar/Oct: persistent notification prompting manual verification of the seasonal switch | — |
+
+*(A 23:55 plan-vs-real-SoC validation row was removed 2026-08-07: obsolete under ADR-0008 — no SoC is read.)*
 
 ---
 
@@ -352,10 +362,13 @@ are undocumented firmware behaviour):
    (H1Q1 = 00:00–00:15 CET) since the SDAC 15-minute MTU go-live on
    2025-10-01. 96 periods/day, matching EDP's billing granularity. The
    backtest has true quarter-hourly data for 11 of 12 months; Sep-2025 is
-   hourly-only. Production half **RESOLVED** (2026-08-05): the `omie` HACS
-   integration (luuuis/hass_omie, verified from source) is quarter-hourly —
-   `today_hours`/`tomorrow_hours` attributes carry local quarter-hour-start
-   datetimes → €/MWh, with `*_provisional` flags.
+   hourly-only. Production half **RESOLVED** (2026-08-05, superseded
+   2026-08-06): first verified against the HACS `omie` integration
+   (luuuis/hass_omie — quarter-hourly `today_hours`/`tomorrow_hours`
+   attributes); the shell then moved to **HA core's `omie` integration**,
+   whose `get_prices_for_date` service returns the quarter-hourly day
+   series per market date (its sensors carry only the current price) —
+   the source `prices_source.py` reads today.
 2. **Variable losses.** Where does E-Redes publish the quarter-hourly loss profiles?
 3. ~~Zero-export~~ **RESOLVED** (owner, 2026-08-05): enforced internally by
    the device via its smart meter. C-1 in the plan is a defensive check;

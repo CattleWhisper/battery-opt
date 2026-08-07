@@ -28,9 +28,9 @@ Practical consequence: **any strategy that ignores the TAR and follows OMIE pric
 | **Indexada Média** | EDP tariff billing at the monthly average OMIE price per period. K₁ = 1.10 |
 | **Indexada Horária** | EDP tariff billing at the quarter-hourly OMIE price. K₁ = 1.08. **This is the target** |
 | **Interval** | A 15-minute slot. The day has 96 |
-| **Plan** | Vector of 96 setpoints (mode + power) for the next day |
+| **Plan** | The day's 96 quarter-hour battery states (CHARGE/HOLD/DISCHARGE). The optimiser still models power and energy internally (C-3..C-6), but actuation reads states only (ADR-0007) |
 | **Zero-export** | Mode in which discharge never exceeds instantaneous consumption. Nothing is injected into the grid |
-| **Reserve floor** | Minimum SoC that arbitrage never consumes, held for outages |
+| **Reserve floor** | Minimum SoC that arbitrage never plans into, held for outages. A planning constraint (C-4); run-time enforcement is the battery's (ADR-0008) |
 | **Wear cost** | Marginal cost, in €/kWh, of battery ageing per unit of energy processed |
 | **Static baseline** | Fixed seasonal schedule, no optimisation. The reference the optimiser must beat |
 | **Battery state** | Planner-level state at any instant: `CHARGE`, `HOLD` or `DISCHARGE`. Each state uses a different control mechanism (ADR-0006) |
@@ -97,6 +97,13 @@ WEAR_COST     = 0.020 EUR/kWh   # default; test sensitivity between 0 and 0.0467
 
 Without this term the optimiser cycles for one-cent spreads and consumes battery life for nothing.
 
+**Basis note (2026-08-07):** C-8 and the evaluator book `WEAR_COST`
+per **meter-side** kWh discharged; `WEAR_COST_MAX` above is derived
+per **battery-side** kWh (30,000 kWh lifetime through the cells). The
+~5% (1/√η) mismatch is well inside the tested 0–0.0467 sensitivity
+band (cycling volume responds, the decision does not — findings);
+if aligning ever matters, divide the meter-side rate by √η.
+
 ---
 
 ## Actual consumption profile
@@ -110,14 +117,31 @@ Measured on the EDP invoice for 2 Jun – 1 Jul 2026 (644 kWh over 30 days) and 
 
 2.6% deviation — confirms the load is **effectively flat** and the meter is on the **weekly cycle**.
 
-Ponta consumption at ~750 kWh/month:
+Ponta consumption at ~750 kWh/month (≈ DAILY_KWH × 30.4; the June
+invoice measured 644):
 
 | Season | Ponta hours/day | kWh in ponta/day |
 |---|---|---|
 | Summer (7 months) | 2.14 | **2.20** |
 | Winter (5 months) | 3.57 | **3.67** |
 
-**One 5 kWh unit covers 100% of ponta in both seasons.** Capacity is not the binding constraint — the length of the ponta window and the household load are.
+**Coverage (corrected at Checkpoint B):** the winter row is a 7-day
+average that hides the weekday reality — ponta exists only Mon–Fri, at
+5 h/weekday = **5.2 kWh**, against **3.46 kWh deliverable** above the
+reserve floor (3.65 kWh × √η). One 5 kWh unit covers all of summer
+ponta but only **~67% of winter weekday ponta**; capacity binds on
+winter weekdays (which is exactly what the second-unit measurement
+priced at +€111/yr — not bought). Elsewhere the window length and the
+household load bind. The original "one unit covers 100% in both
+seasons" claim was wrong.
+
+**Figure hygiene (2026-08-07):** three daily-consumption figures
+coexist — the June invoice (644 kWh/30 d = 21.5 kWh/day), `DAILY_KWH
+= 24.6`, and `BASE_LOAD` 1040 W ⇒ 24.96 kWh/day, which is what the
+backtest simulates. The backtest therefore runs ~16% above the
+measured invoice; savings scale roughly with load, so the measured-€
+figures are mildly optimistic until a real load meter feeds Task 11
+(see also `docs/findings.md` §Measured ponta share).
 
 ---
 
@@ -127,7 +151,7 @@ Violating any of these is a bug, not a configuration choice.
 
 1. **Never export.** `discharge[i] <= net_load[i]`, always.
 2. **Never exceed contracted power.** `battery_charge[i] + house_load[i] <= P_USABLE`.
-3. **Never drop below the reserve floor.** `SoC[i] >= CAP_MIN`.
+3. **Never plan below the reserve floor.** `SoC[i] >= CAP_MIN` in every plan's modelled trajectory (C-4). Run-time floor enforcement is delegated to the battery (ADR-0008, owner 2026-08-07): the firmware discharge cutoff where the register exists, the device's own minimum otherwise — the integration reads no SoC.
 4. **Never charge and discharge in the same interval.**
 5. **Never open a second Modbus connection.** The device accepts one at a time, and the `marstek_venus_modbus` integration already owns it.
 6. **The tariff calendar is versioned by effective date.** Never hardcoded to the current year.
@@ -171,7 +195,10 @@ a €183/yr advantage for switching. That margin absorbs a ~16 €/MWh rise in
 average OMIE before it becomes neutral. During the 35% promotion the fixed
 tariff wins by ~€118/yr, so do not switch early. (The Task 6 backtest
 measures the switching advantage at €263/yr on real data, energy component
-only — see `docs/findings.md`.)
+only — see `docs/findings.md`. **VAT basis note:** the ~€1,437/~€1,254
+figures here are MA30-era estimates excl. VAT; findings' measured billed
+counterparts — €1,746.34 vs €1,482.98 — include VAT, hence the different
+magnitudes.)
 
 ---
 

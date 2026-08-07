@@ -110,12 +110,15 @@ async def test_tomorrow_preview_published_when_d_plus_1_is_available(
     coordinator = entry.runtime_data.coordinator
     assert coordinator.data["tomorrow_prices_eur_kwh"] is not None
     assert len(coordinator.data["tomorrow_prices_eur_kwh"]) == 96
+    # Structurally always tail-padded: D+2 never exists this far ahead.
+    assert coordinator.data["tomorrow_prices_padded"] is True
     assert coordinator.data["tomorrow_charge_w"] is not None
     assert coordinator.data["tomorrow_discharge_w"] is not None
     assert len(coordinator.data["tomorrow_charge_w"]) == 96
 
     price_state = hass.states.get("sensor.battery_opt_current_price")
     assert len(price_state.attributes["tomorrow_prices_eur_kwh"]) == 96
+    assert price_state.attributes["tomorrow_prices_padded"] is True
     plan_state = hass.states.get("sensor.battery_opt_plan")
     assert len(plan_state.attributes["tomorrow_charge_w"]) == 96
     assert len(plan_state.attributes["tomorrow_discharge_w"]) == 96

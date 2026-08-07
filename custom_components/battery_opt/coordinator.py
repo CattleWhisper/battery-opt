@@ -1,19 +1,17 @@
 """
 Data update coordinator for battery_opt.
 
-Two modes, decided by whether the Marstek entities are configured:
-
-- planning-only (battery not yet installed): no driver — each refresh
-  pulls the day series from core OMIE's get_prices_for_date
-  service, computes the advisory plan with
-  the capped greedy (plans at the plan-wear from the Checkpoint B
-  decision, books savings at the true wear), and publishes plan +
-  forecast saving + the vs-static delta. Nothing actuates. The
-  virtual battery starts each day at the reserve floor.
-- full: additionally polls the SoC through the driver; the executor
-  (separate) actuates the static plan per Phase 1. The advisory plan
-  is still computed — it is the dry-run the spec's Task 12 wants
-  before dynamic actuation is ever enabled.
+Each refresh pulls the day series from core OMIE's
+get_prices_for_date service, computes the advisory plan with the
+capped greedy (plans at the plan-wear from the Checkpoint B decision,
+books savings at the true wear), and publishes plan + forecast saving
++ the vs-static delta. The virtual battery starts each day at the
+reserve floor; no SoC is read anywhere (owner decision 2026-08-07 —
+the floor is the battery's to manage). With the Marstek entities
+configured, the executor (separate) additionally actuates the static
+plan per Phase 1; the advisory plan is still computed — it is the
+dry-run the spec's Task 12 wants before dynamic actuation is ever
+enabled.
 
 The greedy over 96 intervals is milliseconds — safe inline on the
 event loop (ADR-0002); nothing here blocks.
@@ -28,10 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import (
-    DataUpdateCoordinator,
-    UpdateFailed,
-)
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .archive import async_archive_day, async_archive_load_day
@@ -60,7 +55,6 @@ from .core.plan import (
     validate_plan,
 )
 from .core.static_schedule import static_plan
-from .driver import DriverError
 from .load_history import LOOKBACK_DAYS, async_load_samples
 from .prices_source import day_series_from_service
 
@@ -90,7 +84,7 @@ if TYPE_CHECKING:
 
 
 class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Poll SoC (when a battery exists) and compute the advisory plan."""
+    """Compute the advisory plan from core OMIE prices each refresh."""
 
     def __init__(
         self,
@@ -145,23 +139,15 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return float(merged.get(CONF_PLAN_WEAR, DEFAULT_PLAN_WEAR))
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Read the SoC (full mode), compute the advisory plan, archive."""
+        """Compute the advisory plan and archive the day's prices."""
         params = self.battery_params
-        data: dict[str, Any] = {"soc_percent": None, "soc_kwh": None}
-        if self.driver is not None:
-            try:
-                soc_percent = await self.driver.read_soc()
-            except DriverError as err:
-                msg = f"battery SoC unavailable: {err}"
-                raise UpdateFailed(msg) from err
-            data["soc_percent"] = soc_percent
-            data["soc_kwh"] = soc_percent / 100.0 * params.cap_usable_kwh
+        data: dict[str, Any] = {}
         today = dt_util.now().date()
         series = await self._prices_for_day(today)
         prices = list(series.delivered_eur_kwh) if series is not None else None
         n = len(prices) if prices is not None else _INTERVALS_PER_DAY
         load = await self._forecast_load_vector(today, n)
-        data.update(self._advisory_plan(params, data["soc_kwh"], prices, load))
+        data.update(self._advisory_plan(params, prices, load))
         data["prices_eur_kwh"] = prices if data["prices_ok"] else None
         data["prices_padded"] = series.padded if series is not None else False
         data["load_mae_w"] = self._load_mae_w
@@ -190,6 +176,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         empty: dict[str, Any] = {
             "tomorrow_prices_eur_kwh": None,
+            "tomorrow_prices_padded": None,
             "tomorrow_charge_w": None,
             "tomorrow_discharge_w": None,
         }
@@ -209,9 +196,14 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Fail closed like today's plan (decision 6's spirit): a
             # speculative preview that fails validation just doesn't
             # publish a plan, but the prices are still worth showing.
-            return {**empty, "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices]}
+            return {
+                **empty,
+                "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices],
+                "tomorrow_prices_padded": series.padded,
+            }
         return {
             "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices],
+            "tomorrow_prices_padded": series.padded,
             "tomorrow_charge_w": list(result.plan.charge_w),
             "tomorrow_discharge_w": list(result.plan.discharge_w),
         }
@@ -271,16 +263,14 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _advisory_plan(
         self,
         params: BatteryParams,
-        soc_kwh: float | None,
         prices: list[float] | None,
         load: list[float],
     ) -> dict[str, Any]:
         """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
         solar = [0.0] * len(load)
-        # Virtual battery starts at the floor until a real SoC exists.
-        start_soc = params.cap_min_kwh if soc_kwh is None else soc_kwh
-        plan_params = dataclasses.replace(params, soc_start_kwh=start_soc)
+        # Virtual battery: the day always starts at the reserve floor.
+        plan_params = dataclasses.replace(params, soc_start_kwh=params.cap_min_kwh)
         if prices is None:
             return self._static_fallback(today, load, solar, plan_params)
         solve_params = dataclasses.replace(
@@ -388,7 +378,13 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_request_refresh()
 
     def planned_action_now(self) -> str:
-        """Return the advisory plan action for the current quarter-hour."""
+        """
+        Return the advisory plan action for the current quarter-hour.
+
+        ADR-0007: the plan's power vectors are pure state selectors
+        (`> 0`), matching the executor's mapping exactly — magnitudes
+        belong to the closed loops, never to this display.
+        """
         data = self.data or {}
         charge = data.get("plan_charge_w")
         discharge = data.get("plan_discharge_w")

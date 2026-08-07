@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Home Assistant custom integration (HACS) that plans charge/discharge of a Marstek Venus E 3.0 home battery to arbitrage the Portuguese regulated network tariff (TAR), not the OMIE market price. **Read `CONTEXT.md` before changing any code** — it holds the domain glossary, all constants, the invariants, and the known traps. `docs/spec.md` (design) and `docs/plan.md` (phased task breakdown) are the working documents; `docs/adr/` records the five architecture decisions; `docs/tariff-reference.md` holds the verifiable tariff tables and the mandatory calendar test cases.
+A Home Assistant custom integration (HACS) that plans charge/discharge of a Marstek Venus E 3.0 home battery to arbitrage the Portuguese regulated network tariff (TAR), not the OMIE market price. **Read `CONTEXT.md` before changing any code** — it holds the domain glossary, all constants, the invariants, and the known traps. `docs/spec.md` (design) and `docs/plan.md` (phased task breakdown) are the working documents; `docs/adr/` records the architecture decisions (0001–0008); `docs/tariff-reference.md` holds the verifiable tariff tables and the mandatory calendar test cases; `docs/findings.md` holds the measured results and the decision registers.
 
-**Current state:** the code under `custom_components/integration_blueprint/` is still the untouched [integration_blueprint](https://github.com/ludeeus/integration_blueprint) template. The real integration will be `custom_components/battery_opt/`. Phase 0 of the plan (calendar, price model, optimiser, backtest) runs entirely outside Home Assistant as plain Python + pytest — no HA shell exists until Phase 1.
+**Current state (2026-08-07):** Phase 0 is complete and Checkpoint B passed (dynamic +€131/yr measured over static — GO). The real integration lives at `custom_components/battery_opt/` (the blueprint template is gone): `core/` (HA-free, backtested over 11 months of real OMIE data) plus the full Phase 1/2 shell — config flow, coordinator, sensors, manual-override switches, driver, the ADR-0006 three-state executor and the ADR-0007 charge-power loop, through Task 15. Prices come from HA core's OMIE integration (`get_prices_for_date` service). Blocked before Checkpoint C: the spec §8 on-device verification checklist and bench soaks, then the 2-week static soak.
 
 ## Commands
 
@@ -44,7 +44,7 @@ Key decisions (full rationale in `docs/adr/`):
 
 ## Hard rules
 
-The invariants in `CONTEXT.md` §Invariants are non-negotiable (zero-export, contracted-power ceiling, 27% reserve floor, no simultaneous charge+discharge, single Modbus connection, versioned calendar, HA-free core). Violating one is a bug, not a configuration choice. Spec §11 additionally lists "ask first" items: lowering the reserve floor, charging above 2000 W, raising contracted power, extra cycles into cheias.
+The invariants in `CONTEXT.md` §Invariants are non-negotiable (zero-export, contracted-power ceiling, 27% planning reserve floor — run-time floor enforcement is the battery's per ADR-0008, no simultaneous charge+discharge, single Modbus connection, versioned calendar, HA-free core). Violating one is a bug, not a configuration choice. Spec §11 additionally lists "ask first" items: lowering the reserve floor, raising contracted power, extra cycles into cheias.
 
 Constants (K1, TAR values, battery parameters, wear cost) are defined once in `CONTEXT.md` and sourced from `docs/tariff-reference.md` — do not invent or "correct" tariff values; they are verifiable against ERSE/EDP documents.
 
