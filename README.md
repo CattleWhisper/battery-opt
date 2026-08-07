@@ -106,6 +106,9 @@ header:
 graph_span: 48h
 span:
   start: day
+now:
+  show: true
+  label: now
 series:
   - entity: sensor.battery_opt_current_price
     name: Price (EUR/kWh)
@@ -149,11 +152,16 @@ series:
       return pts;
 yaxis:
   - id: price
+    # Soft zero: the axis always starts at 0 but still extends below
+    # for negative OMIE prices — never assume prices >= 0.
+    min: ~0
     decimals: 3
     apex_config:
       title:
         text: EUR/kWh
   - id: power
+    min: -2500
+    max: 2500
     opposite: true
     apex_config:
       title:
@@ -176,6 +184,9 @@ header:
 graph_span: 24h
 span:
   start: day
+now:
+  show: true
+  label: now
 series:
   - entity: sensor.battery_opt_soc_forecast
     name: Forecast (%)
