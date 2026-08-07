@@ -505,6 +505,62 @@ async def test_charge_loop_wires_and_clamps_against_measured_import(
     assert loop.fallback is False
 
 
+async def test_actuation_switches_gate_writes_without_stopping_loops(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    The override switches skip driver writes; everything keeps running.
+
+    Executor switch off → a tick issues no service calls but still
+    updates the plan sensor; on again → the next tick replays the full
+    transition (post-manual state is unknown by design).
+    """
+    freezer.move_to("2026-01-15T13:00:00+00:00")
+    hass.states.async_set("sensor.marstek_soc", "57.0")
+    entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    executor_switch = hass.states.get("switch.battery_opt_executor_actuation")
+    assert executor_switch is not None
+    assert executor_switch.state == "on"  # default: actuation live
+    # No charge-loop sensors configured -> no charge-loop switch.
+    assert hass.states.get("switch.battery_opt_charge_loop_actuation") is None
+
+    # Only select/number are mocked: the real switch domain must keep
+    # serving our own toggle entities. The driver's rs485 write goes
+    # to a nonexistent marstek switch — a logged warning, nothing more.
+    select_calls = async_mock_service(hass, "select", "select_option")
+    async_mock_service(hass, "number", "set_value")
+
+    await hass.services.async_call(
+        "switch",
+        "turn_off",
+        {"entity_id": "switch.battery_opt_executor_actuation"},
+        blocking=True,
+    )
+    assert entry.runtime_data.executor.actuation_enabled is False
+    await entry.runtime_data.executor.tick(datetime(2026, 1, 15, 13, 0))
+    await hass.async_block_till_done()
+    assert select_calls == []  # loop ran, actuation skipped
+    plan_state = hass.states.get("sensor.battery_opt_plan")
+    assert plan_state.state == "hold"  # decision still published
+    assert "actuation disabled" in plan_state.attributes["executor_status"]
+
+    await hass.services.async_call(
+        "switch",
+        "turn_on",
+        {"entity_id": "switch.battery_opt_executor_actuation"},
+        blocking=True,
+    )
+    await entry.runtime_data.executor.tick(datetime(2026, 1, 15, 13, 15))
+    await hass.async_block_till_done()
+    assert len(select_calls) == 1  # full transition replayed
+    assert select_calls[0].data["option"] == "standby"
+
+
 async def test_entities_exist_and_health_follows_the_executor(
     hass: HomeAssistant,
     freezer: FrozenDateTimeFactory,

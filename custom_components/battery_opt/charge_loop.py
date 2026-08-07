@@ -84,6 +84,10 @@ class ChargePowerLoop:
         self._last_written_w: float | None = None
         self._last_write_monotonic: float | None = None
         self.fallback = False
+        # Manual override (switch.battery_opt_charge_loop_actuation):
+        # False = keep computing (fallback flag stays live), skip the
+        # setpoint writes.
+        self.actuation_enabled = True
 
     @property
     def last_setpoint_w(self) -> float | None:
@@ -125,6 +129,14 @@ class ChargePowerLoop:
         """
         if not self._is_charging():
             # Next CHARGE entry starts from a fresh baseline.
+            self._last_written_w = None
+            self._last_write_monotonic = None
+            return
+        if not self.actuation_enabled:
+            # Manual override: the loop keeps computing (fallback flag
+            # stays live for the sensors) but never writes; the
+            # baseline clears so re-enabling writes fresh immediately.
+            self._compute()
             self._last_written_w = None
             self._last_write_monotonic = None
             return

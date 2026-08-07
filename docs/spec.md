@@ -167,6 +167,8 @@ Summer = last Sunday of March → last Sunday of October.
 | `sensor.battery_opt_load_mae` | Mean absolute error (W) of yesterday's load forecast vs. observed, computed at day close; unavailable until a load meter is configured and one full day has closed (plan Task 11) |
 | `sensor.battery_opt_cost_today` | Grid-import cost today, EUR, excl. VAT (Task 13 pulled forward): variable = Σ(meter delta × delivered price at that instant, negative deltas from a meter reset counting as 0) + the daily fixed term (K3 + TAR potência); `state_class` TOTAL, `last_reset` at local midnight; attributes `variable_eur`, `fixed_eur`, `energy_today_kwh`; unavailable without a configured grid-import energy sensor |
 | `binary_sensor.battery_opt_healthy` | False on missing prices, Modbus failure, or an invalid plan |
+| `switch.battery_opt_executor_actuation` | Manual override (default on, restored across restarts): off = the executor keeps planning/validating/guarding but skips every driver write; its commanded state is forgotten while off, so re-enabling replays the full transition — safe after manual battery control. Active mode only |
+| `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = keeps computing (fallback flag stays live), writes no setpoints. Exists only when the loop's sensors are configured |
 
 ### Actuation — control state machine (ADR-0006)
 

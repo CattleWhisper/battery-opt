@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from .coordinator import BatteryOptCoordinator
     from .executor import BatteryOptExecutor
 
-PLATFORMS: list[str] = ["binary_sensor", "sensor"]
+PLATFORMS: list[str] = ["binary_sensor", "sensor", "switch"]
 
 # Plan Task 10 / spec §9: aligned fetch at 13:45 Lisbon local (OMIE D+1
 # publishes ~13:30), retried at 14:15, 15:00 and 16:00 in case it was

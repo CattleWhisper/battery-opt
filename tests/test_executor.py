@@ -197,6 +197,45 @@ def test_floor_guard_forces_hold_with_hysteresis() -> None:
     assert executor.status == "ok"
 
 
+def test_actuation_disabled_computes_everything_but_writes_nothing() -> None:
+    """
+    Manual override: the tick runs fully, only driver writes skip.
+
+    last_action still reflects the decision (the plan sensor keeps
+    showing what the plan wants), health stays managed, and status
+    carries the disabled marker.
+    """
+    driver = FakeDriver()
+    executor = _executor(driver)
+    executor.actuation_enabled = False
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 0)))
+    assert driver.calls == []
+    assert executor.healthy is True
+    assert executor.last_action == "charge"
+    assert "actuation disabled" in executor.status
+
+
+def test_reenabling_actuation_replays_the_full_transition() -> None:
+    """
+    After a manual period the battery state is unknown: full replay.
+
+    Even if the decision never changed while disabled, the first
+    enabled tick must issue set_state again.
+    """
+    driver = FakeDriver()
+    executor = _executor(driver)
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))  # hold, commanded
+    executor.actuation_enabled = False
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 15)))  # manual period
+    executor.actuation_enabled = True
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 30)))  # same decision
+    assert driver.calls == [
+        ("set_state", ("hold", None, None)),
+        ("set_state", ("hold", None, None)),
+    ]
+    assert executor.status == "ok"
+
+
 def test_invalid_plan_never_actuates() -> None:
     """A plan violating C-1..C-7 blocks all actuation (spec §11)."""
 

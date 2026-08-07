@@ -156,6 +156,37 @@ def test_write_failure_is_swallowed_and_retried() -> None:
     assert driver.calls == [("set_charge_power", 2500.0)]
 
 
+def test_actuation_disabled_computes_but_never_writes() -> None:
+    """Manual override: fallback flag stays live, no setpoint writes."""
+    driver = FakeDriver()
+    inputs = {"value": (None, None)}
+    loop = _loop(driver, inputs, {"value": True})
+    loop.actuation_enabled = False
+    asyncio.run(loop.on_update(now=100.0))
+    assert driver.calls == []
+    assert loop.fallback is True  # the loop still ran and noticed
+    inputs["value"] = (1040.0, 0.0)
+    asyncio.run(loop.on_update(now=200.0))
+    assert driver.calls == []
+    assert loop.fallback is False
+
+
+def test_reenabling_actuation_writes_fresh_immediately() -> None:
+    """The baseline clears while disabled: no stale deadband skip."""
+    driver = FakeDriver()
+    inputs = {"value": (1040.0, 0.0)}
+    loop = _loop(driver, inputs, {"value": True})
+    asyncio.run(loop.on_update(now=100.0))  # writes 2500
+    loop.actuation_enabled = False
+    asyncio.run(loop.on_update(now=200.0))  # manual period
+    loop.actuation_enabled = True
+    asyncio.run(loop.on_update(now=300.0))  # same 2500: writes anyway
+    assert driver.calls == [
+        ("set_charge_power", 2500.0),
+        ("set_charge_power", 2500.0),
+    ]
+
+
 def test_import_spike_mid_window_never_breaches_the_ceiling() -> None:
     """Acceptance: total import stays under 4400 across a spike cycle."""
     driver = FakeDriver()

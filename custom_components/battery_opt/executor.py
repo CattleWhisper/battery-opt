@@ -114,6 +114,9 @@ class BatteryOptExecutor:
         # Last state the driver confirmed; None forces a full apply.
         self._commanded_state: BatteryState | None = None
         self._floor_guard_active = False
+        # Manual override (switch.battery_opt_executor_actuation):
+        # False = keep computing everything, skip the driver writes.
+        self.actuation_enabled = True
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register a state-change callback; returns the remover."""
@@ -222,6 +225,16 @@ class BatteryOptExecutor:
             else "hold"
         )
         guarded = self._apply_floor_guard(desired, soc_kwh, plan_params)
+        if not self.actuation_enabled:
+            # Manual override: everything above still ran (plan,
+            # validation, guards) — only the driver write is skipped.
+            # The commanded state is forgotten so re-enabling replays
+            # the FULL transition: the user may have changed anything.
+            self._commanded_state = None
+            self.last_action = guarded
+            suffix = "" if guarded == desired else "; floor guard: holding"
+            self._set_health(healthy=True, status=f"ok (actuation disabled{suffix})")
+            return
         try:
             if guarded != self._commanded_state:
                 # ADR-0007: entry power comes from the charge-power

@@ -499,6 +499,14 @@ the owner 2026-08-07).
 loop write path shares the driver's three-strike counter but swallows
 its own exceptions — the executor tick owns the health latch.*
 
+*Added alongside (owner request, 2026-08-07): manual-override switches
+`switch.battery_opt_executor_actuation` and
+`switch.battery_opt_charge_loop_actuation` — off gates only the final
+driver writes; every loop keeps computing. The executor forgets its
+commanded state while off, so re-enabling replays the full transition
+sequence (the battery may have been manually driven anywhere in the
+meantime). Defaults on, restored across restarts.*
+
 **Verification:**
 - [ ] Bench: charge window with a deliberately induced load spike
       (kettle/AC) — total import never exceeds 4400 W on the meter,
