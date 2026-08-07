@@ -80,6 +80,8 @@ All grouped under one **Battery Opt** service device.
 | `binary_sensor.battery_opt_healthy` | Safe-to-actuate: off on driver failure or an invalid plan (active mode; missing prices degrade to the static plan instead, marked `fallback: static`), or on missing prices in planning-only mode — the executor never actuates while off |
 | `switch.battery_opt_executor_actuation` | **Manual override** (active mode): off = the executor keeps planning and validating but skips every battery write, so you can drive the battery yourself; re-enabling replays the full transition sequence. Default on, restored across restarts |
 | `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = it keeps computing but writes no setpoints (shown only when the loop's sensors are configured) |
+| `button.battery_opt_recalculate_plan` | Force an immediate full recomputation — refetch prices, rebuild the load forecast, re-solve today's plan and tomorrow's preview — without waiting for the 15-minute poll. Recomputes only; actuation stays with the executor (next quarter tick, or press Apply plan) |
+| `button.battery_opt_apply_plan` | Run an executor tick now (active mode): apply the current quarter's state without waiting for the boundary. It is the real tick — validation, the override switch and the health latch all apply — and it writes nothing if the state is already commanded. Handy right after re-enabling the actuation switch |
 
 ## Dashboards
 

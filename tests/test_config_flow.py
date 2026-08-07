@@ -75,12 +75,18 @@ _OMIE_SERVICE_SCHEMA = vol.Schema(
 )
 
 
-def _register_core_omie_service(hass: HomeAssistant, days_available: int = 2) -> None:
+def _register_core_omie_service(
+    hass: HomeAssistant,
+    days_available: int = 2,
+    calls: list | None = None,
+) -> None:
     """Stub HA core's omie.get_prices_for_date service."""
     cet = ZoneInfo("Europe/Madrid")
     first_served = dt_util.now().date()
 
     async def handler(call: ServiceCall) -> dict:
+        if calls is not None:
+            calls.append(dict(call.data))
         market_date = call.data["date"]
         if (market_date - first_served).days >= days_available:
             msg = "data_not_available"
@@ -512,8 +518,84 @@ async def test_all_entities_group_under_one_service_device(
     entity_registry = er.async_get(hass)
     grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
     # plan, forecast savings, vs static, price, SoC forecast, load MAE,
-    # cost today, healthy
-    assert len(grouped) == 8
+    # cost today, healthy, recalculate button
+    assert len(grouped) == 9
+
+
+async def test_recalculate_button_forces_plan_refresh(hass: HomeAssistant) -> None:
+    """
+    Pressing button.battery_opt_recalculate_plan refreshes NOW.
+
+    The refresh is real, not just wired: the coordinator goes back to
+    the OMIE service (today + tomorrow's preview) instead of waiting
+    for the 15-minute poll or the 13:45 fetch schedule.
+    """
+    calls: list = []
+    _register_core_omie_service(hass, calls=calls)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    baseline = len(calls)
+    assert baseline > 0  # first refresh already fetched
+
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.battery_opt_recalculate_plan"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert len(calls) > baseline
+    assert hass.states.get("sensor.battery_opt_plan").state != "unavailable"
+    # Apply is active-mode only: no executor here, no button.
+    assert hass.states.get("button.battery_opt_apply_plan") is None
+
+
+async def test_apply_plan_button_ticks_the_executor_now(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Pressing button.battery_opt_apply_plan actuates immediately.
+
+    The press is a REAL executor tick — validation, the override gate
+    and the health latch all run — not a bespoke write path. Winter
+    Thursday 13:00 Lisbon is cheias → HOLD; from the unknown boot
+    state that replays the full ADR-0006 entry: rs485 on + standby.
+    """
+    freezer.move_to("2026-01-15T13:00:00+00:00")
+    await _set_lisbon(hass)  # the button reads dt_util.now()
+    entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    select_calls = async_mock_service(hass, "select", "select_option")
+    switch_on_calls = async_mock_service(hass, "switch", "turn_on")
+    async_mock_service(hass, "number", "set_value")
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.battery_opt_apply_plan"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert len(switch_on_calls) == 1
+    assert select_calls[0].data["option"] == "standby"
+    assert hass.states.get("binary_sensor.battery_opt_healthy").state == "on"
+
+    # Idempotent: the state is already commanded — a second press
+    # writes nothing (the executor's write-once tracking).
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.battery_opt_apply_plan"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert len(switch_on_calls) == 1
+    assert len(select_calls) == 1
 
 
 async def test_charge_loop_wires_and_clamps_against_measured_import(
