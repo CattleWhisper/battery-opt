@@ -52,7 +52,12 @@ from .const import (
 from .core.calendar import TZ_PORTUGAL
 from .core.forecast import forecast_load
 from .core.optimiser import solve
-from .core.plan import BatteryParams, saving_vs_no_cycling, validate_plan
+from .core.plan import (
+    BatteryParams,
+    saving_vs_no_cycling,
+    soc_trajectory,
+    validate_plan,
+)
 from .core.static_schedule import static_plan
 from .driver import DriverError
 from .load_history import LOOKBACK_DAYS, async_load_samples
@@ -290,6 +295,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plan_date": today,
             "plan_charge_w": list(result.plan.charge_w),
             "plan_discharge_w": list(result.plan.discharge_w),
+            "plan_soc_kwh": [
+                round(v, 3) for v in soc_trajectory(result.plan, plan_params)
+            ],
             "forecast_saving_eur": round(greedy_saving, 4),
             "vs_static_eur": round(greedy_saving - static_saving, 4),
             "fallback": None,
@@ -316,6 +324,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plan_date": today,
             "plan_charge_w": list(fallback_plan.charge_w),
             "plan_discharge_w": list(fallback_plan.discharge_w),
+            "plan_soc_kwh": [
+                round(v, 3) for v in soc_trajectory(fallback_plan, plan_params)
+            ],
             "forecast_saving_eur": None,
             "vs_static_eur": None,
             "fallback": "static",
@@ -394,6 +405,18 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not prices or data.get("plan_date") != now.date():
             return None
         return prices[_quarter_index(now, len(prices))]
+
+    def forecast_soc_kwh(self) -> float | None:
+        """Advisory plan's SoC (kWh) at the end of the current quarter."""
+        data = self.data or {}
+        trajectory = data.get("plan_soc_kwh")
+        now = dt_util.now()
+        if not trajectory or data.get("plan_date") != now.date():
+            return None
+        # trajectory[i] is the SoC at the START of quarter i (97 values);
+        # end of the current quarter = the next boundary.
+        index = min(_quarter_index(now, len(trajectory) - 1) + 1, len(trajectory) - 1)
+        return trajectory[index]
 
 
 def _quarter_index(now: datetime, length: int) -> int:

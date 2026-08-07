@@ -143,6 +143,12 @@ class BatteryOptExecutor:
         self._plan_params = params
         return self.plan, params
 
+    def planned_soc_trajectory(self) -> list[float] | None:
+        """Planned SoC in kWh at interval boundaries (97 values)."""
+        if self.plan is None or self._plan_params is None:
+            return None
+        return soc_trajectory(self.plan, self._plan_params)
+
     def current_action(self, now: datetime) -> Action:
         """Return what the plan does in the interval containing `now`."""
         if self.plan is None or self.plan_day != now.date():

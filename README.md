@@ -90,6 +90,37 @@ yaxis:
         text: W
 ```
 
+**SoC — forecast vs real:** `sensor.battery_opt_soc_forecast` carries
+the planned SoC for the current quarter (%, same unit as the Marstek
+SoC sensor) and the whole planned day in its `trajectory_pct` /
+`trajectory_kwh` attributes (97 boundary values; index i = start of
+quarter i). Overlaying it on the real SoC shows at a glance whether
+the battery is following the plan — the comparison Checkpoint C
+watches:
+
+```yaml
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Battery Opt — SoC forecast vs real
+graph_span: 24h
+span:
+  start: day
+series:
+  - entity: sensor.battery_opt_soc_forecast
+    name: Forecast (%)
+    type: line
+    data_generator: |
+      const t = entity.attributes.trajectory_pct || [];
+      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
+      return t.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, v]);
+  - entity: sensor.marstek_battery_state_of_charge
+    name: Real (%)
+    type: line
+```
+
+(Point the second series at your Marstek SoC entity id.)
+
 **Energy dashboard:** `sensor.battery_opt_current_price` is declared
 exactly like core OMIE's own price sensor (EUR/kWh, `state_class`
 measurement), so Settings → Dashboards → Energy accepts it directly

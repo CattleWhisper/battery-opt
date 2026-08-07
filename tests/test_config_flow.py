@@ -279,6 +279,18 @@ async def test_planning_only_computes_plan_from_core_omie(
     assert healthy.state == "on"
     assert "planning only" in healthy.attributes["status"]
 
+    # SoC forecast: advisory trajectory, floor-seeded virtual battery.
+    soc_forecast = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert soc_forecast is not None
+    assert soc_forecast.attributes["source"] == "advisory"
+    trajectory = soc_forecast.attributes["trajectory_kwh"]
+    assert len(trajectory) == 97  # 96 quarters + the midnight boundary
+    assert trajectory[0] == pytest.approx(1.35)  # starts at the floor
+    assert min(trajectory) >= 1.35 - 1e-9  # C-4: never below the floor
+    assert max(trajectory) <= 5.0 + 1e-9  # C-5: never above the ceiling
+    assert soc_forecast.attributes["trajectory_pct"][0] == pytest.approx(27.0)
+    assert 27.0 <= float(soc_forecast.state) <= 100.0
+
 
 async def test_current_price_sensor_tracks_the_edp_formula(
     hass: HomeAssistant,
@@ -437,14 +449,19 @@ async def test_all_entities_group_under_one_service_device(
 
     entity_registry = er.async_get(hass)
     grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
-    # plan, forecast savings, vs static, price, load MAE, cost today, healthy
-    assert len(grouped) == 7
+    # plan, forecast savings, vs static, price, SoC forecast, load MAE,
+    # cost today, healthy
+    assert len(grouped) == 8
 
 
 async def test_entities_exist_and_health_follows_the_executor(
     hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """Task 9: plan/savings/healthy entities; healthy mirrors ticks."""
+    # Frozen so the executor's plan_day matches "today" — the SoC
+    # forecast sensor only serves the executor trajectory for today.
+    freezer.move_to("2026-01-15T13:00:00+00:00")
     hass.states.async_set("sensor.marstek_soc", "57.0")
     entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
     entry.add_to_hass(hass)
@@ -473,3 +490,9 @@ async def test_entities_exist_and_health_follows_the_executor(
     assert plan_state.state == "hold"
     assert plan_state.attributes["mode"] == "active"
     assert plan_state.attributes["executor_plan_date"] == "2026-01-15"
+
+    # SoC forecast follows the ACTUATED plan once the executor ticked.
+    soc_forecast = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert soc_forecast.attributes["source"] == "executor"
+    assert len(soc_forecast.attributes["trajectory_kwh"]) == 97
+    assert 27.0 <= float(soc_forecast.state) <= 100.0

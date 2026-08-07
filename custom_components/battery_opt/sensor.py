@@ -29,7 +29,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
-from homeassistant.const import CURRENCY_EURO, UnitOfEnergy, UnitOfPower
+from homeassistant.const import CURRENCY_EURO, PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -64,6 +64,7 @@ async def async_setup_entry(
             ForecastSavingsSensor(runtime.coordinator, entry.entry_id),
             VsStaticSensor(runtime.coordinator, entry.entry_id),
             CurrentPriceSensor(runtime.coordinator, entry.entry_id),
+            SocForecastSensor(runtime.coordinator, runtime.executor, entry.entry_id),
             LoadMaeSensor(runtime.coordinator, entry.entry_id),
             CostTodaySensor(runtime.coordinator, entry.entry_id),
         ]
@@ -215,6 +216,94 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
             "prices_padded": data.get("prices_padded"),
             # Decision 9: D+1 preview, only when D+1 itself builds.
             "tomorrow_prices_eur_kwh": data.get("tomorrow_prices_eur_kwh"),
+        }
+
+
+class SocForecastSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
+    """
+    Planned SoC for the current quarter-hour, in percent.
+
+    Same unit as the Marstek SoC sensor so the two plot directly
+    against each other — the forecast-vs-real comparison Checkpoint C
+    watches. Source is the executor's actual plan when a battery
+    actuates, the advisory plan otherwise; the full day trajectory
+    (97 boundary values, index i = start of quarter i) rides in the
+    attributes in both kWh and percent.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "SoC forecast"
+    _attr_suggested_object_id = "battery_opt_soc_forecast"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:battery-clock"
+
+    def __init__(
+        self,
+        coordinator: BatteryOptCoordinator,
+        executor: BatteryOptExecutor | None,
+        entry_id: str,
+    ) -> None:
+        """Bind to the coordinator and, when present, the executor."""
+        super().__init__(coordinator)
+        self._executor = executor
+        self._attr_unique_id = f"{entry_id}_soc_forecast"
+        self._attr_device_info = device_info_for(entry_id)
+
+    async def async_added_to_hass(self) -> None:
+        """Also refresh whenever the executor state changes."""
+        await super().async_added_to_hass()
+        if self._executor is not None:
+            self.async_on_remove(
+                self._executor.add_listener(self._handle_executor_change)
+            )
+
+    def _handle_executor_change(self) -> None:
+        self.async_write_ha_state()
+
+    def _executor_trajectory(self) -> list[float] | None:
+        """Return the actuated plan's trajectory when it is today's."""
+        if self._executor is None or self._executor.plan_day != dt_util.now().date():
+            return None
+        return self._executor.planned_soc_trajectory()
+
+    def _to_pct(self, kwh: float) -> float:
+        cap = self.coordinator.battery_params.cap_usable_kwh
+        return round(kwh / cap * 100.0, 1)
+
+    @property
+    def native_value(self) -> float | None:
+        """Planned SoC (%) at the end of the current quarter-hour."""
+        trajectory = self._executor_trajectory()
+        if trajectory is not None:
+            now = dt_util.now()
+            index = min((now.hour * 60 + now.minute) // 15 + 1, len(trajectory) - 1)
+            return self._to_pct(trajectory[index])
+        kwh = self.coordinator.forecast_soc_kwh()
+        return None if kwh is None else self._to_pct(kwh)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The day trajectory and where it came from."""
+        trajectory = self._executor_trajectory()
+        if trajectory is not None:
+            source = "executor"
+            plan_date = str(self._executor.plan_day or "")
+        else:
+            data = self.coordinator.data or {}
+            trajectory = data.get("plan_soc_kwh")
+            source = "advisory" if trajectory else None
+            plan_date = str(data.get("plan_date") or "")
+        return {
+            "source": source,
+            "plan_date": plan_date,
+            "trajectory_kwh": (
+                [round(v, 3) for v in trajectory] if trajectory else None
+            ),
+            "trajectory_pct": (
+                [self._to_pct(v) for v in trajectory] if trajectory else None
+            ),
         }
 
 
