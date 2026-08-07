@@ -53,7 +53,7 @@ graph_span: 24h
 span:
   start: day
 series:
-  - entity: sensor.contadores_battery_opt_current_price
+  - entity: sensor.battery_opt_current_price
     name: Price (EUR/kWh)
     type: line
     yaxis_id: price
@@ -61,7 +61,7 @@ series:
       const prices = entity.attributes.prices_eur_kwh || [];
       const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
       return prices.map((p, i) => [dayStart.getTime() + i * 15 * 60 * 1000, p]);
-  - entity: sensor.contadores_battery_opt_plan
+  - entity: sensor.battery_opt_plan
     name: Charge (W)
     type: column
     yaxis_id: power
@@ -69,7 +69,7 @@ series:
       const w = entity.attributes.charge_w || [];
       const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
       return w.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, v]);
-  - entity: sensor.contadores_battery_opt_plan
+  - entity: sensor.battery_opt_plan
     name: Discharge (W)
     type: column
     yaxis_id: power
