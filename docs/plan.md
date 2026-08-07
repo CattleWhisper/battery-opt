@@ -279,7 +279,13 @@ entity; the full day vector and TAR period ride in the attributes.
 
 ### Checkpoint C
 
-**Blocked until the battery arrives and Tasks 7/9 manual verifications run.**
+**The battery arrived and was bench-tested (2026-08-07).** Blocked now
+only on Tasks 7/9 manual verifications plus Task 14's control rework —
+the bench tests produced an architecture change (ADR-0006: discharge via
+the firmware's anti-feed mode, not force-discharge), so the executor must
+be reworked to the three-state machine in spec §8 **before** the 2-week
+static soak starts; soaking the old force-discharge path would validate
+behaviour we already know is wrong.
 
 - [ ] 2 weeks in production on the static plan
 - [ ] Zero export recorded
@@ -409,6 +415,39 @@ meter exists and one day has closed), persisted across restarts via
 
 **Dependencies:** Task 12
 **Files:** `core/reporting.py`, `sensor.py`
+**Scope:** M
+
+---
+
+### Task 14: Control state machine (ADR-0006)
+
+**Description:** Rework driver + executor to the three-state machine from
+the 2026-08 bench tests (spec §8): CHARGE via external force-charge with
+quarter-hourly setpoints, HOLD via force-mode standby, DISCHARGE by
+releasing external control and asserting the firmware's anti-feed mode.
+Replaces the original force-discharge actuation, which exports whenever
+house load drops below the setpoint.
+
+**Acceptance criteria:**
+- [ ] Driver exposes states (CHARGE/HOLD/DISCHARGE), not raw force modes;
+      discharge is a mode switch, never a power setpoint
+- [ ] Transition sequences exactly as spec §8, including re-asserting
+      anti-feed on every entry into DISCHARGE
+- [ ] `charge_to_soc` backstop written per charge window (gated on
+      checklist item 3)
+- [ ] Firmware SOC cutoffs (44000=100 %, 44001=27 %) written once at
+      setup; a rejected 44001 write is logged, never fatal
+- [ ] SoC floor guard during DISCHARGE (floor → HOLD, with hysteresis)
+- [ ] Every transition and guard unit-tested against the fake driver
+
+**Verification:**
+- [ ] Full on-device checklist from spec §8 executed and results recorded
+      in `docs/findings.md` (incl. the watchdog kill-test, item 1)
+- [ ] 48 h bench soak across all three states with zero export on the
+      meter
+
+**Dependencies:** Task 9, ADR-0006; blocks Checkpoint C
+**Files:** `driver.py`, `executor.py`, `coordinator.py`
 **Scope:** M
 
 ---

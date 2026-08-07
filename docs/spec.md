@@ -167,9 +167,86 @@ Summer = last Sunday of March → last Sunday of October.
 | `sensor.battery_opt_cost_today` | Grid-import cost today, EUR, excl. VAT (Task 13 pulled forward): variable = Σ(meter delta × delivered price at that instant, negative deltas from a meter reset counting as 0) + the daily fixed term (K3 + TAR potência); `state_class` TOTAL, `last_reset` at local midnight; attributes `variable_eur`, `fixed_eur`, `energy_today_kwh`; unavailable without a configured grid-import energy sensor |
 | `binary_sensor.battery_opt_healthy` | False on missing prices, Modbus failure, or an invalid plan |
 
-### Actuation
+### Actuation — control state machine (ADR-0006)
 
-Service calls against `marstek_venus_modbus` entities. **Never direct Modbus writes** (ADR-0004).
+Service calls against `marstek_venus_modbus` entities. **Never direct
+Modbus writes** (ADR-0004). One state machine, three battery states,
+mapped from the plan each interval:
+
+| State | Mechanism | Plan mapping |
+|---|---|---|
+| **CHARGE** | External control: force-charge + quarter-hourly power setpoint | `charge_w[i] > 0` |
+| **HOLD** | External control: force-mode standby | `charge_w[i] = discharge_w[i] = 0` |
+| **DISCHARGE** | Firmware **anti-feed** (auto zero-export via the paired meter) | `discharge_w[i] > 0` — the value selects the quarter; magnitude is the firmware's |
+
+**Transitions** (entity operations; underlying registers noted for
+cross-checking against community sources):
+
+- **→ CHARGE:** `rs485_control_mode` on (42000) → `set_charge_power`
+  (42020) → `charge_to_soc` backstop (42011, see below) → `force_mode` =
+  charge (42010=1).
+- **CHARGE/HOLD internal:** setpoint changes are single writes;
+  `force_mode` charge ↔ stop.
+- **→ DISCHARGE:** `force_mode` = stop (42010=0) → `rs485_control_mode`
+  off (42000) → `user_work_mode` = anti-feed (43000=1), **re-asserted on
+  every transition** — entering force mode is reported to flip the work
+  mode to manual (verify-on-device item 2).
+- **DISCHARGE → HOLD:** `rs485_control_mode` on (42000) → `force_mode` =
+  stop (42010=0).
+
+**Charge stop policy (decided 2026-08-07):** time-boxed quarter-hourly
+setpoints are the primary mechanism — the plan says when to stop, SoC
+readback each tick confirms. Additionally write `charge_to_soc` (42011) =
+the window's planned end SoC (small margin, capped at 100) as a firmware
+backstop against the integration dying mid-window. The backstop activates
+only after verify-on-device item 3 confirms 42011 coexists with
+force-charge on this firmware.
+
+**Firmware SOC cutoffs (decided 2026-08-07):** `charging_cutoff_capacity`
+(44000) = 100 % and `discharging_cutoff_capacity` (44001) = 27 % are
+written **once at integration setup** — never per transition; the 44xxx
+block is EEPROM-backed. They mirror invariants the integration already
+enforces (belt-and-braces). If 44001 rejects the write (community-reported
+on V3), log it and rely on the integration-level floor guard.
+
+**Guards during DISCHARGE (decided 2026-08-07):** zero-export is delegated
+to the firmware, the reserve floor never is. Coordinator SoC polling
+enforces: SoC ≤ 27 % during DISCHARGE → force HOLD, with hysteresis
+against flapping at the boundary. A meter-pairing guard is added only if
+the Modbus integration exposes a health/pairing observable; until then,
+pairing-loss behaviour is verify-on-device item 6.
+
+**Polling is the keepalive:** the force-mode watchdog (~15 s reported)
+never fires while the Modbus integration polls — any traffic, reads
+included, resets it. The integration's scan interval must stay well below
+the watchdog period (≤ 5 s), over the single Modbus TCP connection the
+unit accepts. Write setpoints once; rewrite only on decision changes.
+
+**Failure semantics (asymmetric by design):** integration dead during
+DISCHARGE → battery stays in anti-feed: zero-export, still serves the
+house — safe. Dead during CHARGE → the watchdog should stop it (item 1);
+worst case it charges past the window at vazio prices — cheap and safe.
+Dead during HOLD → watchdog clears external control and the battery lands
+in manual/do-nothing (item 2) — HOLD survives.
+
+**On-device verification checklist** (run before enabling actuation, and
+**re-run after every firmware OTA** — the watchdog and mode-flip semantics
+are undocumented firmware behaviour):
+
+1. Kill the integration with force-charge active; time the self-stop
+   (~15–30 s expected). Determines whether shutdown safety writes are
+   belt-and-braces or load-bearing.
+2. Confirm: 43000 is writable directly; entering force mode flips 43000
+   to manual; releasing external control alone does *not* restore
+   anti-feed.
+3. Confirm 42011 works alongside force-charge (charge stops at target).
+4. Confirm 44001 accepts the 27 % write on this firmware.
+5. DISCHARGE → HOLD: anti-feed disengages cleanly when external control
+   takes over.
+6. Meter-pairing loss during anti-feed: does discharge stop dead (safe)
+   or misbehave?
+7. Confirm polling at the configured scan interval suppresses the
+   watchdog indefinitely.
 
 ---
 
@@ -179,7 +256,7 @@ Service calls against `marstek_venus_modbus` entities. **Never direct Modbus wri
 |---|---|---|
 | 13:45 | Fetch D+1 prices, compute, archive | Retry 14:15, 15:00, 16:00; then `healthy=off` and fixed schedule |
 | 23:55 | Validate plan against real SoC | Recompute if deviation >20% |
-| Every 15 min | Apply the current interval's setpoint | 3 Modbus failures → `healthy=off` + notification |
+| Every 15 min | Apply the current interval's state (CHARGE setpoint / HOLD / DISCHARGE) | 3 Modbus failures → `healthy=off` + notification |
 | 00:05 | Close the day: realised saving, archive | — |
 | Last Sunday of Mar/Oct, 02:00 | Seasonal switch | Notification for manual verification |
 
@@ -195,6 +272,7 @@ Service calls against `marstek_venus_modbus` entities. **Never direct Modbus wri
 | **Property** | `optimiser.py` | Saving ≥ the fixed schedule's saving, always |
 | **Backtest** | system | 12 months of OMIE; compare dynamic vs. static vs. no-cycling |
 | **Integration** | driver | Fake driver; verify the service-call sequence |
+| **Unit** | state machine | Every transition sequence and guard (spec §8), against a fake driver |
 | **Acceptance** | production | Real invoice vs. `reporting.py`, monthly |
 
 ---

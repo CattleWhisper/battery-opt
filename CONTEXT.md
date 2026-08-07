@@ -33,6 +33,11 @@ Practical consequence: **any strategy that ignores the TAR and follows OMIE pric
 | **Reserve floor** | Minimum SoC that arbitrage never consumes, held for outages |
 | **Wear cost** | Marginal cost, in €/kWh, of battery ageing per unit of energy processed |
 | **Static baseline** | Fixed seasonal schedule, no optimisation. The reference the optimiser must beat |
+| **Battery state** | Planner-level state at any instant: `CHARGE`, `HOLD` or `DISCHARGE`. Each state uses a different control mechanism (ADR-0006) |
+| **External control** | The battery's Modbus command mode: HA forces charging, standby or discharging directly. Used for CHARGE and HOLD |
+| **Anti-feed** | The firmware's automatic zero-export mode: the battery tracks the paired meter and discharges to match house load, never exporting. The only mechanism with native zero-export tracking; used for DISCHARGE |
+| **Watchdog** | Firmware timer that drops external control shortly (~15 s reported) after Modbus traffic stops. Any traffic — reads included — resets it |
+| **Keepalive** | Whatever prevents the watchdog from firing. Normal sensor polling suffices; no dedicated writes needed |
 
 Portuguese period names (`ponta`, `cheias`, `vazio`) are kept untranslated throughout the code. They are regulatory terms with no clean English equivalent, and translating them invites confusion when cross-checking against ERSE or EDP documents.
 
@@ -171,6 +176,8 @@ only — see `docs/findings.md`.)
 - **Solar cannibalises the battery.** A solar kWh during ponta displaces battery discharge, not grid import. It is worth ~€0.129/kWh, not €0.329. Do not add the two savings together.
 - **VAT and fixed terms do not change the optimum.** They are uniform constants. Include them in reporting only.
 - **OMIE prices can be negative.** Nothing may assume `price >= 0` — no `abs()`, no `max(0, price)`; property-test generators draw from roughly −50 to +300 €/MWh. The parser rejects values outside the SDAC clearing limits (~−500 to +4000 €/MWh) as errors. Delivered price stays positive in practice (K₂ + TAR are added regardless of sign) and a negative OMIE can never invert the ponta/vazio ranking. See `docs/findings.md` §Negative OMIE prices.
+- **The watchdog is undocumented firmware behaviour.** Its semantics (suppressed by any Modbus polling; ~15 s to fire without traffic) were verified on this unit's current firmware only — re-run the on-device checklist (spec §8) after every firmware OTA before trusting a single transition.
+- **Entering force mode flips the work mode to manual** (community report, on the verification checklist): anti-feed must be re-asserted on every transition into DISCHARGE. The flip side is a feature — integration death during HOLD leaves the battery in manual/do-nothing, so HOLD survives the integration dying.
 
 ---
 
