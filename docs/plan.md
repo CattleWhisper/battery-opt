@@ -283,6 +283,9 @@ entity; the full day vector and TAR period ride in the attributes.
 
 ### Checkpoint C
 
+**Tracking:** the full owner-side path from bench to this checkpoint
+is `docs/validation-checklist.md` (working document, tick as you go).
+
 **The battery arrived and was bench-tested (2026-08-07).** Blocked now
 only on Tasks 7/9 manual verifications plus Task 14's control rework —
 the bench tests produced an architecture change (ADR-0006: discharge via
