@@ -390,6 +390,13 @@ meter exists and one day has closed), persisted across restarts via
 - [x] Mean absolute error vs. actual exposed as a sensor, for monitoring (`sensor.battery_opt_load_mae`)
 - [ ] Real-world accuracy check — needs several weeks of accumulated same-weekday history in production; nothing to measure yet the night this landed
 
+*Note 2026-08-08: the battery bench tests briefly distorted the
+original meter-based load readings; the owner resolved it at the
+source by creating dedicated house-load sensors with the correct
+measurement, so no in-code exclusion is needed — point
+`CONF_LOAD_SENSOR` at the corrected sensor. This also settles the
+production question of battery flows polluting the load forecast.*
+
 **Dependencies:** Task 10
 **Files:** `core/forecast.py`, `load_history.py`, `coordinator.py`, `sensor.py`, `config_flow.py`, `strings.json`, `translations/en.json`, `archive.py`, `__init__.py`
 **Scope:** M
@@ -422,15 +429,35 @@ meter exists and one day has closed), persisted across restarts via
 **Description:** Ex-post realised saving, and monthly comparison against the invoice.
 
 **Acceptance criteria:**
-- [ ] `sensor.battery_opt_realised_savings` computed from actual SoC and prices
-- [ ] Monthly report: forecast vs. invoiced, with deviation
-- [ ] Deviation >10% raises a notification
+- [x] `sensor.battery_opt_realised_savings` computed from ~~actual SoC~~
+      **measured battery power** and prices — the SoC wording predates
+      ADR-0008 (no SoC is read); flows integrate from
+      `CONF_BATTERY_POWER_SENSOR` (the charge loop's entity, same sign
+      convention), each slice valued at the delivered price of its
+      instant, wear booked per discharged kWh at TRUE wear
+- [x] Monthly report with deviation — a persistent notification on the
+      month change: realised (measured) vs forecast savings and their
+      deviation. The **invoice** side stays manual by nature (the
+      invoice amount can never be an input): the report points at the
+      cost sensor's monthly statistic as the figure to reconcile
+- [x] Deviation >10% flagged loudly in the monthly notification
 
 **Verification:**
 - [ ] First invoice month reconciled manually
 
+*Delivered 2026-08-08 (except the battery-arrival gating that Task 12
+also waits on — the sensor is live as soon as a battery power sensor
+is configured, active mode or not): `core/reporting.py` (pure
+`RealisedDay` power-integration + `MonthLedger`
+forecast-vs-realised), `realised.py` (tracker mirroring cost.py's
+pattern: state-change integration with a 15-min stale-gap guard,
+midnight day-fold, month-change report notification, Store
+persistence, coordinator listener recording each day's forecast),
+`RealisedSavingsSensor` (EUR, TOTAL, last_reset local midnight;
+month-to-date totals and deviation in attributes).*
+
 **Dependencies:** Task 12
-**Files:** `core/reporting.py`, `sensor.py`
+**Files:** `core/reporting.py`, `realised.py`, `sensor.py`
 **Scope:** M
 
 ---

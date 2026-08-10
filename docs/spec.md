@@ -181,7 +181,7 @@ day it is sold.
 | `sensor.battery_opt_plan` | Current action; attributes carry `schedule` — the advisory plan as merged charge/discharge windows `{start, end, direction, power_w}` (ISO timestamps with offset, hold windows omitted), one flat list spanning today and, once D+1's own price series builds, tomorrow (seeded at the reserve floor, not chained from today — decision 9) |
 | `sensor.battery_opt_forecast_savings` | Forecast saving vs. not cycling |
 | `sensor.battery_opt_vs_static` | **Forecast gain vs. the fixed schedule — the metric that justifies the project** |
-| `sensor.battery_opt_realised_savings` | Ex-post, from actual SoC and prices |
+| `sensor.battery_opt_realised_savings` | Ex-post realised saving today from MEASURED battery flows (Task 13): power-sensor slices valued at the delivered price of their instant, wear at TRUE wear per discharged kWh (no SoC — ADR-0008); month-to-date realised/forecast and their deviation in attributes; unavailable without `CONF_BATTERY_POWER_SENSOR` |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; attributes carry `prices` — merged segments `{start, end, price_eur_kwh, tar_period}` (split at every TAR boundary so each value is checkable against the tariff table), spanning today and, once D+1's own price series builds, tomorrow |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter-hour (%, same unit as the battery's own SoC sensor, for direct forecast-vs-real comparison — the Checkpoint C soak metric); full day trajectory (97 boundary values, kWh and %) in attributes; sourced from the executor's actuated plan when a battery runs, the advisory plan otherwise |
 | `sensor.battery_opt_load_mae` | Mean absolute error (W) of yesterday's load forecast vs. observed, computed at day close; unavailable until a load meter is configured and one full day has closed (plan Task 11) |
@@ -326,7 +326,8 @@ are undocumented firmware behaviour):
 | 13:45 | Fetch D+1 prices, compute, archive | Retry 14:15, 15:00, 16:00; then fixed schedule marked `fallback: static` (planning-only additionally reports `healthy=off`; with a battery, healthy stays the executor's latch and static actuation continues — see §8) |
 | 00:00:30 | Refresh so today's vector loads seconds after the date change (the 15-min poll would otherwise lag, blanking the price sensor and the cost tracker's lookup) | — |
 | Every 15 min | Apply the current interval's state (CHARGE setpoint / HOLD / DISCHARGE) | 3 Modbus failures → `healthy=off` + notification |
-| 00:05 | Close the day: load archive + MAE (realised saving arrives with Task 13) | — |
+| 00:05 | Close the day: load archive + MAE (the realised tracker folds its day at its own 00:00 roll) | — |
+| 00:00 on month change | Monthly reconciliation report (Task 13): persistent notification with realised vs forecast savings; deviation beyond ±10% flagged. Fired by the realised tracker's day roll; a restart landing in a new month sends it late rather than never | — |
 | 02:00 daily | If today is the last Sunday of Mar/Oct: persistent notification prompting manual verification of the seasonal switch | — |
 
 *(A 23:55 plan-vs-real-SoC validation row was removed 2026-08-07: obsolete under ADR-0008 — no SoC is read.)*

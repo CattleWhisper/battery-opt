@@ -24,6 +24,11 @@ Sensors for battery_opt (spec §8).
   VAT), variable (meter deltas x delivered price) plus the daily
   fixed terms (plan Task 13 pulled forward, decision 8). Unavailable
   without CONF_GRID_ENERGY_SENSOR configured.
+- sensor.battery_opt_realised_savings: today's realised saving from
+  MEASURED battery flows (plan Task 13) — discharge value minus
+  charge cost minus true wear, integrated from the battery power
+  sensor; month-to-date realised/forecast and their deviation in the
+  attributes. Unavailable without CONF_BATTERY_POWER_SENSOR.
 """
 
 from __future__ import annotations
@@ -38,11 +43,12 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_GRID_ENERGY_SENSOR
+from .const import CONF_BATTERY_POWER_SENSOR, CONF_GRID_ENERGY_SENSOR
 from .core.calendar import period
 from .core.plan import price_segments, schedule_segments
 from .cost import CostTracker
 from .entity import device_info_for
+from .realised import RealisedTracker
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -77,6 +83,7 @@ async def async_setup_entry(
             SocForecastSensor(runtime.coordinator, runtime.executor, entry.entry_id),
             LoadMaeSensor(runtime.coordinator, entry.entry_id),
             CostTodaySensor(runtime.coordinator, entry.entry_id),
+            RealisedSavingsSensor(runtime.coordinator, entry.entry_id),
         ]
     )
 
@@ -494,4 +501,88 @@ class CostTodaySensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
             "variable_eur": round(state.variable_eur, 4),
             "fixed_eur": round(state.fixed_eur, 4),
             "energy_today_kwh": round(state.energy_today_kwh, 4),
+        }
+
+
+class RealisedSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
+    """
+    Realised saving today from measured battery flows (plan Task 13).
+
+    `state_class` TOTAL with `last_reset` at local midnight, like the
+    cost sensor: Sigma(discharged kWh x delivered price) minus
+    Sigma(charged kWh x delivered price) minus wear per discharged kWh
+    (true wear — Checkpoint B books savings at true wear, plans at
+    plan-wear). Flows integrate from CONF_BATTERY_POWER_SENSOR state
+    changes (positive W = charging, the charge loop's convention —
+    ADR-0008: no SoC is read). Month-to-date totals and the
+    realised-vs-forecast deviation ride in the attributes; the monthly
+    reconciliation report is the tracker's persistent notification.
+    Unavailable without a configured battery power sensor.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Realised savings"
+    _attr_suggested_object_id = "battery_opt_realised_savings"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = CURRENCY_EURO
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:cash-check"
+
+    def __init__(self, coordinator: BatteryOptCoordinator, entry_id: str) -> None:
+        """Build the tracker (if a power sensor is configured)."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_realised_savings"
+        self._attr_device_info = device_info_for(entry_id)
+        merged = {**coordinator.entry.data, **coordinator.entry.options}
+        entity_id = merged.get(CONF_BATTERY_POWER_SENSOR)
+        self._tracker: RealisedTracker | None = (
+            RealisedTracker(
+                coordinator,
+                entry_id,
+                entity_id,
+                on_change=self.async_write_ha_state,
+            )
+            if entity_id
+            else None
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Start the tracker, if a power sensor is configured."""
+        await super().async_added_to_hass()
+        if self._tracker is not None:
+            await self._tracker.async_start()
+            self.async_on_remove(self._tracker.async_stop)
+
+    @property
+    def available(self) -> bool:
+        """False without CONF_BATTERY_POWER_SENSOR configured."""
+        return self._tracker is not None
+
+    @property
+    def native_value(self) -> float | None:
+        """Today's realised saving, EUR (excl. fixed terms and VAT)."""
+        if self._tracker is None:
+            return None
+        return round(self._tracker.state.realised_eur, 4)
+
+    @property
+    def last_reset(self) -> datetime:
+        """Local midnight — the accumulation window start."""
+        return dt_util.start_of_local_day(dt_util.now())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Today's flows and the month-to-date reconciliation view."""
+        if self._tracker is None:
+            return {}
+        state = self._tracker.state
+        ledger = self._tracker.ledger
+        deviation = ledger.deviation_pct()
+        return {
+            "charged_today_kwh": round(state.charged_kwh, 3),
+            "discharged_today_kwh": round(state.discharged_kwh, 3),
+            "month": ledger.month,
+            "month_realised_eur": round(ledger.realised_eur, 4),
+            "month_forecast_eur": round(ledger.forecast_eur, 4),
+            "month_deviation_pct": (None if deviation is None else round(deviation, 1)),
         }

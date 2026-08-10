@@ -60,7 +60,7 @@ save.
 |---|---|
 | House load sensor (W or kWh) | Real load forecast instead of the flat 1.04 kW |
 | Grid import energy sensor (kWh) | `sensor.battery_opt_cost_today` |
-| Grid import power sensor (W) + battery power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W) |
+| Grid import power sensor (W) + battery power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W); the battery power sensor alone also enables `sensor.battery_opt_realised_savings` |
 | Charge-to-SoC number | Firmware charge backstop (gate on the spec §8 checklist) |
 | SOC cutoff numbers | Setup-time firmware cutoffs — the discharge cutoff is the run-time floor where it exists; the numbers do not exist on the Venus E V3, so leave them empty there |
 
@@ -76,6 +76,7 @@ All grouped under one **Battery Opt** service device.
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
 | `sensor.battery_opt_cost_today` | Grid-import cost today incl. the daily fixed terms, excl. VAT (needs the grid energy sensor) |
+| `sensor.battery_opt_realised_savings` | Realised saving today from **measured** battery flows — discharge value − charge cost − wear, integrated from the battery power sensor (needs it configured); month-to-date realised vs forecast and their deviation in attributes; a monthly report notification flags deviations beyond ±10% |
 | `sensor.battery_opt_load_mae` | Load-forecast error (W), computed at each day close (needs the load sensor) |
 | `binary_sensor.battery_opt_healthy` | Safe-to-actuate: off on driver failure or an invalid plan (active mode; missing prices degrade to the static plan instead, marked `fallback: static`), or on missing prices in planning-only mode — the executor never actuates while off |
 | `switch.battery_opt_executor_actuation` | **Manual override** (active mode): off = the executor keeps planning and validating but skips every battery write, so you can drive the battery yourself; re-enabling replays the full transition sequence. Default on, restored across restarts |
