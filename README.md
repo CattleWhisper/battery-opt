@@ -60,7 +60,7 @@ save.
 |---|---|
 | House load sensor (W or kWh) | Real load forecast instead of the flat 1.04 kW |
 | Grid import energy sensor (kWh) | `sensor.battery_opt_cost_today` |
-| Grid import power sensor (W) + battery power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W); the battery power sensor alone also enables `sensor.battery_opt_realised_savings` |
+| Grid import power sensor (W) + battery power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W); the battery power sensor alone also enables `sensor.battery_opt_realised_savings`. The battery sensor follows the **HA battery convention: positive = discharging, negative = charging** |
 | Charge-to-SoC number | Firmware charge backstop — effectively **required** in active mode: the bench kill-test found no firmware watchdog, so this backstop is what stops a charge if the integration dies mid-window |
 | SOC cutoff numbers | Setup-time firmware cutoffs — the discharge cutoff is the run-time floor where it exists; the numbers do not exist on the Venus E V3, so leave them empty there |
 

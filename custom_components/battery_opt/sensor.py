@@ -513,7 +513,8 @@ class RealisedSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
     Sigma(charged kWh x delivered price) minus wear per discharged kWh
     (true wear — Checkpoint B books savings at true wear, plans at
     plan-wear). Flows integrate from CONF_BATTERY_POWER_SENSOR state
-    changes (positive W = charging, the charge loop's convention —
+    changes (HA battery convention: positive W = discharging; the
+    tracker negates into the core's charge-positive booking —
     ADR-0008: no SoC is read). Month-to-date totals and the
     realised-vs-forecast deviation ride in the attributes; the monthly
     reconciliation report is the tracker's persistent notification.

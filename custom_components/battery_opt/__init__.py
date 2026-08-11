@@ -144,9 +144,13 @@ def _wire_actuation(
         return executor, None
 
     def _power_inputs() -> tuple[float | None, float | None]:
+        # The battery sensor follows the HA battery convention
+        # (positive = discharging, owner 2026-08-11); the loop's
+        # battery_charge_w is charge-positive, so negate here.
+        battery_w = _read_power_w(hass, battery_power_id)
         return (
             _read_power_w(hass, grid_power_id),
-            _read_power_w(hass, battery_power_id),
+            None if battery_w is None else -battery_w,
         )
 
     charge_loop = ChargePowerLoop(

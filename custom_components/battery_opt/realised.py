@@ -3,10 +3,12 @@ Realised-savings tracker (plan Task 13): HA wiring for core.reporting.
 
 Mirrors cost.py's tracker pattern. `RealisedTracker` listens to the
 battery power sensor (CONF_BATTERY_POWER_SENSOR — the same entity the
-ADR-0007 charge loop reads, same sign convention: positive W =
-charging), integrates each held sample over its elapsed interval at
-the delivered price of that instant, and persists day + month across
-restarts via its own Store.
+ADR-0007 charge loop reads, following the HA battery convention:
+positive W = DIScharging, owner 2026-08-11), integrates each held
+sample over its elapsed interval at the delivered price of that
+instant, and persists day + month across restarts via its own Store.
+The sign is negated at the core boundary — `core.reporting` books
+charge-positive.
 
 At local midnight the closed day folds into the month ledger; when
 the month changes (or a restart lands in a new month), the monthly
@@ -185,8 +187,10 @@ class RealisedTracker:
         self._last_sample_at = now
         if elapsed_s <= 0 or elapsed_s > MAX_SAMPLE_GAP_S:
             return
+        # Sensor is HA-convention (positive = discharging); the core
+        # books charge-positive — negate at the boundary.
         self.state.add_interval(
-            self._last_power_w,
+            -self._last_power_w,
             elapsed_s / 3600.0,
             self._coordinator.current_price_eur_kwh(),
         )

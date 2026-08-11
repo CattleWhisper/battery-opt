@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from freezegun.api import FrozenDateTimeFactory
     from homeassistant.core import HomeAssistant
 
+# The sensor follows the HA battery convention (positive =
+# DIScharging, owner 2026-08-11); the tracker negates at the core
+# boundary, so a +4000 state books discharge, a -2000 state charge.
 ENTITY_ID = "sensor.marstek_battery_power"
 
 
@@ -56,9 +59,9 @@ async def test_discharge_integrates_at_the_delivered_price(
     hass: HomeAssistant,
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """-4000 W held for 15 min at 0.30 books 1 kWh -> 0.28 net of wear."""
+    """+4000 W held for 15 min at 0.30 books 1 kWh -> 0.28 net of wear."""
     freezer.move_to("2026-08-08T10:00:00+00:00")
-    _set_power(hass, -4000.0)
+    _set_power(hass, 4000.0)
     tracker = RealisedTracker(_StubCoordinator(hass), "entry1", ENTITY_ID)
     await tracker.async_start()
 
@@ -77,14 +80,14 @@ async def test_charge_and_discharge_net_out(
 ) -> None:
     """A charge hour at 0.10 then a discharge hour at 0.30."""
     freezer.move_to("2026-08-08T10:00:00+00:00")
-    _set_power(hass, 2000.0)
+    _set_power(hass, -2000.0)  # charging (HA convention: negative)
     stub = _StubCoordinator(hass)
     stub.price = 0.10
     tracker = RealisedTracker(stub, "entry1", ENTITY_ID)
     await tracker.async_start()
 
     freezer.tick(timedelta(minutes=15))
-    _set_power(hass, -1000.0)  # closes the 0.5 kWh charge slice at 0.10
+    _set_power(hass, 1000.0)  # closes the 0.5 kWh charge slice at 0.10
     await hass.async_block_till_done()
     stub.price = 0.30
     freezer.tick(timedelta(minutes=15))
@@ -104,7 +107,7 @@ async def test_stale_gap_contributes_nothing(
 ) -> None:
     """A sample older than MAX_SAMPLE_GAP_S integrates as zero."""
     freezer.move_to("2026-08-08T10:00:00+00:00")
-    _set_power(hass, -2000.0)
+    _set_power(hass, 2000.0)
     tracker = RealisedTracker(_StubCoordinator(hass), "entry1", ENTITY_ID)
     await tracker.async_start()
 
@@ -129,7 +132,7 @@ async def test_day_folds_and_month_report_fires_with_deviation_flag(
     notifications = async_mock_service(hass, "persistent_notification", "create")
     # The bare hass fixture runs in US/Pacific: 22:00 UTC = 15:00 local.
     freezer.move_to("2026-08-31T22:00:00+00:00")
-    _set_power(hass, -1000.0)
+    _set_power(hass, 1000.0)
     stub = _StubCoordinator(hass)
     tracker = RealisedTracker(stub, "entry1", ENTITY_ID)
     await tracker.async_start()
@@ -161,7 +164,7 @@ async def test_restore_from_store_after_restart(
 ) -> None:
     """A second tracker instance picks up the day and ledger."""
     freezer.move_to("2026-08-08T10:00:00+00:00")
-    _set_power(hass, -4000.0)
+    _set_power(hass, 4000.0)
     first = RealisedTracker(_StubCoordinator(hass), "entryX", ENTITY_ID)
     await first.async_start()
     freezer.tick(timedelta(minutes=15))

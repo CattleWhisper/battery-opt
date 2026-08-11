@@ -699,8 +699,10 @@ async def test_charge_loop_wires_and_clamps_against_measured_import(
     assert entry_writes[-1]["value"] == 2500.0  # loop-fed entry, not 2000
 
     # AC compressor: house load 1040 -> 2600, import spikes to 5100.
+    # Battery sensor is HA-convention (positive = discharging), so a
+    # 2500 W charge reads -2500; the setup wiring negates it.
     hass.states.async_set("sensor.grid_power", "5100")
-    hass.states.async_set("sensor.marstek_battery_power", "2500")
+    hass.states.async_set("sensor.marstek_battery_power", "-2500")
     # The CHARGE entry stamped the loop with real time.monotonic();
     # step the injected clock past the rate-limit window from there.
     await loop.on_update(now=time.monotonic() + 10.0)

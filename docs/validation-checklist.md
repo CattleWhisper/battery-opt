@@ -18,6 +18,10 @@ semantics are undocumented firmware behaviour (spec §8).
         history; the flat fallback covers it meanwhile)
   - [X] Battery power sensor — verify the sign: **positive must mean
         charging** (feeds the charge loop AND realised savings)
+        → 2026-08-11: convention flipped to the **HA battery
+        standard: positive = DIScharging** (the integration now
+        negates internally). Re-verify after updating: a charging
+        battery must read negative on the configured sensor
   - [X] Grid import power sensor
   - [X] Grid import energy sensor
 - [X] Paste the new dashboard YAML from the README (both cards) —

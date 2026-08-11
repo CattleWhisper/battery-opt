@@ -257,7 +257,10 @@ setpoint   = clamp(P_USABLE_W - other_load, 0, 2500)   # floor to 50 W
   4.6 kVA contract (invariant #2, now enforced against MEASUREMENT).
 - Inputs: a grid-import power sensor (W) and the battery's own power
   sensor (to subtract its draw from the import reading) — both new
-  optional config entities; the loop only runs when both are set.
+  optional config entities; the loop only runs when both are set. The
+  battery sensor follows the HA battery convention (positive =
+  discharging, owner 2026-08-11); the HA wiring negates it, so the
+  loop's `battery_charge_w` and `core.reporting` stay charge-positive.
 - Fail safe: either sensor unavailable → fall back to a conservative
   static 2000 W (the previously proven value), flagged in the plan
   sensor's attributes; sensor recovers → loop resumes.
