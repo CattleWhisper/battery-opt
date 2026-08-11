@@ -221,8 +221,10 @@ cross-checking against community sources):
   `force_mode` charge ↔ stop.
 - **→ DISCHARGE:** `force_mode` = stop (42010=0) → `rs485_control_mode`
   off (42000) → `user_work_mode` = anti-feed (43000=1), **re-asserted on
-  every transition** — entering force mode is reported to flip the work
-  mode to manual (verify-on-device item 2).
+  every transition** — entering force mode flips the work mode to manual
+  (item 2, confirmed on-device). Releasing external control *appeared*
+  to restore anti-feed on the current firmware, but nothing is assumed:
+  the re-assert stays.
 - **DISCHARGE → HOLD:** `rs485_control_mode` on (42000) → `force_mode` =
   stop (42010=0).
 
@@ -230,9 +232,12 @@ cross-checking against community sources):
 which quarters are CHARGE and the executor exits the state on schedule.
 Additionally write `charge_to_soc` (42011) = the window's planned end
 SoC (small margin, capped at 100) as a firmware backstop against the
-integration dying mid-window. The backstop activates only after
-verify-on-device item 3 confirms 42011 coexists with force-charge on
-this firmware. (No SoC readback confirms the stop — ADR-0008.)
+integration dying mid-window. Item 3 confirmed on-device that 42011
+coexists with force-charge, so the backstop is active — and since the
+kill-test found **no watchdog** (item 1, 2026-08-11), it is the
+**load-bearing** stop for a dead integration mid-charge, not
+belt-and-braces: treat `charge_to_soc` as required in active mode.
+(No SoC readback confirms the stop — ADR-0008.)
 
 **Charge-power control loop (ADR-0007, Task 15 — decided and
 implemented 2026-08-07; bench verification pending):** while the state
@@ -283,39 +288,57 @@ the guard was blind exactly when it mattered while making the system
 look protected. The floor is a planning constraint (C-4); at run time
 the battery manages it. A meter-pairing guard is added only if the
 Modbus integration exposes a health/pairing observable; until then,
-pairing-loss behaviour is verify-on-device item 6.
+pairing-loss behaviour is verify-on-device item 6 — answered
+2026-08-11: pairing loss stops the output dead (no CT data, no
+output), the safe behaviour.
 
-**Polling is the keepalive:** the force-mode watchdog (~15 s reported)
-never fires while the Modbus integration polls — any traffic, reads
-included, resets it. The integration's scan interval must stay well below
-the watchdog period (≤ 5 s), over the single Modbus TCP connection the
-unit accepts. Write setpoints once; rewrite only on decision changes.
+**No watchdog on this firmware (measured 2026-08-11, item 1):** the
+community-reported ~15 s force-mode watchdog never fired in a
+network-cut test — force-charge continued for over 2 min with all
+Modbus traffic stopped. The keepalive constraint on the scan interval
+is therefore moot (polling cadence is a data-freshness concern only),
+and nothing stops a runaway CHARGE but the 42011 backstop and the
+executor's own time-boxing. Still over the single Modbus TCP
+connection the unit accepts; write setpoints once, rewrite only on
+decision changes. Re-measure after every OTA — a future firmware may
+(re)introduce the watchdog.
 
-**Failure semantics (asymmetric by design):** integration dead during
-DISCHARGE → battery stays in anti-feed: zero-export, still serves the
-house — safe. Dead during CHARGE → the watchdog should stop it (item 1);
-worst case it charges past the window at vazio prices — cheap and safe.
-Dead during HOLD → watchdog clears external control and the battery lands
-in manual/do-nothing (item 2) — HOLD survives.
+**Failure semantics (asymmetric by design; revised 2026-08-11 after
+item 1):** integration dead during DISCHARGE → battery stays in
+anti-feed: zero-export, still serves the house — safe. Dead during
+CHARGE → **no watchdog stops it**: the charge runs on until the 42011
+charge-to-SoC backstop target — bounded and cheap, but only because
+the backstop is written on every CHARGE entry. Dead during HOLD → the
+battery stays in the commanded external-control stop, doing nothing —
+HOLD survives.
 
 **On-device verification checklist** (run before enabling actuation, and
 **re-run after every firmware OTA** — the watchdog and mode-flip semantics
 are undocumented firmware behaviour):
 
+Executed 2026-08-11 — all seven answered; full results register in
+`docs/findings.md` and `docs/validation-checklist.md`:
+
 1. Kill the integration with force-charge active; time the self-stop
    (~15–30 s expected). Determines whether shutdown safety writes are
-   belt-and-braces or load-bearing.
+   belt-and-braces or load-bearing. — **No self-stop within 2 min: no
+   watchdog. The 42011 backstop is load-bearing**
 2. Confirm: 43000 is writable directly; entering force mode flips 43000
    to manual; releasing external control alone does *not* restore
-   anti-feed.
+   anti-feed. — **Confirmed writable and the force-mode flip; releasing
+   external control appeared to restore anti-feed, but the per-transition
+   re-assert stays (assume nothing)**
 3. Confirm 42011 works alongside force-charge (charge stops at target).
-4. Confirm 44001 accepts the 27 % write on this firmware.
+   — **Confirmed**
+4. Confirm 44001 accepts the 27 % write on this firmware. — **Not
+   exposed for the V3 (upstream MISSING) — the expected clean absence;
+   the device's internal minimum governs**
 5. DISCHARGE → HOLD: anti-feed disengages cleanly when external control
-   takes over.
+   takes over. — **Confirmed**
 6. Meter-pairing loss during anti-feed: does discharge stop dead (safe)
-   or misbehave?
+   or misbehave? — **Stops dead (safe)**
 7. Confirm polling at the configured scan interval suppresses the
-   watchdog indefinitely.
+   watchdog indefinitely. — **Moot: no watchdog (item 1)**
 
 ---
 

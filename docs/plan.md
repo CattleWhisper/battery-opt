@@ -211,7 +211,7 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 
 **Verification:**
 - [x] Fake-driver tests verify the call sequence
-- [ ] Manual test: force 500 W charge and confirm on the device — **blocked: battery not yet arrived**. Mode labels (`charge`/`discharge`/`standby`) verified against the integration source meanwhile; entities ship disabled by default and must be enabled in HA first
+- [x] Manual test: force 500 W charge and confirm on the device (owner, 2026-08-11 — done as part of the Phase 1/2 bench work; charge windows have since run daily under the ADR-0007 loop). Mode labels (`charge`/`discharge`/`standby`) had been verified against the integration source while the battery was in transit; entities ship disabled by default and must be enabled in HA first
 
 **Dependencies:** None (parallelisable with Phase 0)
 **Files:** `custom_components/battery_opt/driver.py`, `tests/test_driver.py`
@@ -249,8 +249,8 @@ Report Sep-2025 separately as a data point on what resolution is worth.
 - [x] Validates the plan against C-1..C-7 before each actuation
 
 **Verification:**
-- [ ] 48 h in production on the static plan: zero export, SoC within bounds (observed on the Marstek's own SoC sensor — ADR-0008: this integration reads none) — **blocked: battery not yet arrived**
-- [ ] Power off the battery → `healthy` goes off at the next state transition (ADR-0008: no per-tick SoC read, so detection rides the 3-strike driver policy on transition writes, typically within a few hours) — **blocked: battery not yet arrived**
+- [x] 48 h in production on the static plan: zero export, SoC within bounds (observed on the Marstek's own SoC sensor — ADR-0008: this integration reads none) — covered by Task 14's 48 h bench soak (owner, 2026-08-11)
+- [ ] Power off the battery → `healthy` goes off at the next state transition (ADR-0008: no per-tick SoC read, so detection rides the 3-strike driver policy on transition writes, typically within a few hours) — unblocked; the last open bench drill (validation checklist Phase 2)
 
 **Dependencies:** Task 8
 **Files:** `sensor.py`, `binary_sensor.py`, `executor.py`
@@ -286,13 +286,20 @@ entity; the full day vector and TAR period ride in the attributes.
 **Tracking:** the full owner-side path from bench to this checkpoint
 is `docs/validation-checklist.md` (working document, tick as you go).
 
-**The battery arrived and was bench-tested (2026-08-07).** Blocked now
-only on Tasks 7/9 manual verifications plus Task 14's control rework —
-the bench tests produced an architecture change (ADR-0006: discharge via
-the firmware's anti-feed mode, not force-discharge), so the executor must
-be reworked to the three-state machine in spec §8 **before** the 2-week
-static soak starts; soaking the old force-discharge path would validate
-behaviour we already know is wrong.
+**The battery arrived and was bench-tested (2026-08-07).** The bench
+tests produced an architecture change (ADR-0006: discharge via the
+firmware's anti-feed mode, not force-discharge), so the executor was
+reworked to the three-state machine in spec §8 before any soak —
+soaking the old force-discharge path would have validated behaviour we
+already knew was wrong.
+
+**Status 2026-08-11:** the full spec §8 on-device checklist is done
+(results register in `docs/findings.md`; headline: **no firmware
+watchdog** — the 42011 charge-to-SoC backstop is the load-bearing
+charge stop, so `charge_to_soc` is effectively required in active
+mode), and the Task 15 drills plus the 48 h bench soak passed
+(validation checklist Phases 1–2). Only the Task 9 power-off drill
+remains before the 2-week static soak starts.
 
 **Pre-soak fix (2026-08-07): virtual day-chaining.** Found while
 investigating a plan-sensor question: a floor-seeded summer static day
@@ -503,10 +510,13 @@ Options. The plan/healthy sensors say "hold" where they used to say
 "idle".*
 
 **Verification:**
-- [ ] Full on-device checklist from spec §8 executed and results recorded
-      in `docs/findings.md` (incl. the watchdog kill-test, item 1)
-- [ ] 48 h bench soak across all three states with zero export on the
-      meter
+- [x] Full on-device checklist from spec §8 executed and results recorded
+      in `docs/findings.md` (incl. the watchdog kill-test, item 1) —
+      completed 2026-08-11. Headline finding: **no watchdog** on this
+      firmware, so the 42011 charge-to-SoC backstop is the load-bearing
+      stop for a dead integration mid-charge
+- [x] 48 h bench soak across all three states with zero export on the
+      meter (owner, 2026-08-11)
 
 **Dependencies:** Task 9, ADR-0006; blocks Checkpoint C
 **Files:** `driver.py`, `executor.py`, `coordinator.py`
@@ -559,11 +569,11 @@ sequence (the battery may have been manually driven anywhere in the
 meantime). Defaults on, restored across restarts.*
 
 **Verification:**
-- [ ] Bench: charge window with a deliberately induced load spike
+- [x] Bench: charge window with a deliberately induced load spike
       (kettle/AC) — total import never exceeds 4400 W on the meter,
-      setpoint recovers after the spike
-- [ ] Bench: sensor made unavailable mid-charge → 2000 W fallback
-      observed, no unhealthy flap
+      setpoint recovers after the spike (owner, 2026-08-11)
+- [x] Bench: sensor made unavailable mid-charge → 2000 W fallback
+      observed, no unhealthy flap (owner, 2026-08-11)
 
 **Dependencies:** Task 14 (state machine), ADR-0007
 **Files:** `executor.py`, `driver.py`, new `charge_loop.py`,

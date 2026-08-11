@@ -326,3 +326,42 @@ no `max(0, price)`. The property-test generator must draw from roughly −50 to
 +300 €/MWh, not 0 to 300. The parser should reject values outside the SDAC
 harmonised clearing limits (~−500 to +4000 €/MWh) as parse errors rather than
 trusting them.
+
+---
+
+## Phase 1 on-device verification (spec §8) — results register (2026-08-11)
+
+All seven items answered on the unit's current firmware. These are
+undocumented firmware behaviours: **re-run the whole block after every
+OTA** before trusting a single transition.
+
+| # | Item | Result |
+|---|---|---|
+| 1 | Watchdog kill-test | **No watchdog.** Network cable pulled during an RS485-controlled force-charge: charging continued for over 2 min; the community-reported ~15–30 s self-stop never fired. Treated as: this firmware has no force-mode watchdog |
+| 2 | 43000 semantics | Writable directly; entering force mode flips it to `manual` (as reported). Releasing external control *appeared* to restore anti-feed — contrary to the community report — but nothing is assumed: the executor re-asserts 43000 = anti-feed on every transition into DISCHARGE |
+| 3 | 42011 backstop | Works alongside force-charge; the charge stops at the target |
+| 4 | 44001 write | Not exposed by `marstek_venus_modbus` for the V3 (upstream register map: MISSING) — the expected clean absence. Cutoff config fields stay empty; the device's internal minimum is the run-time floor (ADR-0008) |
+| 5 | DISCHARGE → HOLD | Anti-feed disengages cleanly when external control takes over |
+| 6 | Meter-pairing loss during anti-feed | Discharge stops dead: no CT/meter data means no output. Safe |
+| 7 | Polling keepalive | Moot — there is no watchdog to suppress (item 1) |
+
+### Consequences of item 1 (no watchdog)
+
+- The spec §8 failure semantics change: integration dead during
+  CHARGE is **not** self-limiting. The charge runs on until the 42011
+  charge-to-SoC backstop target (+ margin) — the backstop, verified in
+  item 3, is **load-bearing**, not belt-and-braces. `charge_to_soc`
+  is effectively required for unattended active mode.
+- Integration dead during HOLD: the battery stays in the commanded
+  external-control stop (nothing clears it, nothing needs to). Dead
+  during DISCHARGE: anti-feed keeps serving the house with zero
+  export. Both remain safe.
+- The keepalive constraint on the Modbus scan interval disappears;
+  polling cadence is a data-freshness concern only.
+- **Open decision (owner):** `async_unload_entry` performs no safety
+  write today. A force-stop on unload would cover *graceful* deaths
+  (HA restart, options-flow reload) at the cost of briefly
+  interrupting an in-progress charge window on every reload — the
+  next tick re-enters CHARGE within 15 min either way. Ungraceful
+  deaths are covered by the backstop regardless. Not implemented
+  pending the owner's call.

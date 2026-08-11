@@ -72,3 +72,22 @@ All transitions go through `marstek_venus_modbus` entities — ADR-0004
 - New dependency on paired-meter health during DISCHARGE; V3 units have
   community-reported pairing instabilities. Guarded if the Modbus
   integration exposes an observable; otherwise on-device checklist.
+
+## Amendment (2026-08-11): the kill-test found no watchdog
+
+The spec §8 item 1 kill-test (network cable pulled during an
+RS485-controlled force-charge) found **no watchdog at all**: charging
+continued for over 2 min after all Modbus traffic stopped. Two
+consequences paragraphs above are revised by measurement:
+
+- The keepalive analysis is moot — there is no watchdog period for the
+  poll interval to stay below. HOLD persists simply because nothing
+  clears external control.
+- Integration death during CHARGE is **not** stopped by any watchdog;
+  the 42011 charge-to-SoC backstop (verified working, item 3) is the
+  load-bearing stop, so `charge_to_soc` is effectively required in
+  active mode. Death during HOLD leaves the commanded stop in place —
+  still safe, by inertia rather than by watchdog.
+
+Undocumented firmware behaviour either way: re-verify after every OTA
+(spec §8). Full results register in `docs/findings.md`.

@@ -9,12 +9,15 @@ the config flow, never hardcoded.
 
 Three battery states (ADR-0006, spec §8), each a different mechanism:
 
-- CHARGE — external control: force-charge plus a power setpoint.
-- HOLD — external control: force-mode standby. Persists because normal
-  polling is the watchdog keepalive (bench finding, 2026-08).
+- CHARGE — external control: force-charge plus a power setpoint. The
+  charge-to-SoC backstop written on entry is the load-bearing stop if
+  this integration dies mid-window: the kill-test found no firmware
+  watchdog (bench finding, 2026-08-11).
+- HOLD — external control: force-mode standby. Persists because
+  nothing clears external control (no watchdog).
 - DISCHARGE — the firmware's anti-feed mode: external control is
   released and the work mode asserted, every time — entering force
-  mode is reported to flip the work mode back to manual.
+  mode flips the work mode back to manual (confirmed on-device).
 
 Discharge is NEVER a power setpoint: force-discharge exports whenever
 house load drops below the setpoint. The firmware's anti-feed tracking
