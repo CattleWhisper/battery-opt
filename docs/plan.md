@@ -420,9 +420,20 @@ production question of battery flows polluting the load forecast.*
 *Partially delivered early (planning-only mode, 2026-08-05): the advisory capped-greedy plan and `sensor.battery_opt_vs_static` already run as a permanent dry-run. What remains is exactly the actuation swap — executor running the greedy with static fallback — gated on Checkpoint C.*
 
 **Acceptance criteria:**
-- [ ] `sensor.battery_opt_vs_static` publishes the daily forecast gain
-- [ ] If the greedy fails or produces an invalid plan, fall back to static
-- [ ] `dry_run` mode that computes and publishes but does not actuate
+- [x] `sensor.battery_opt_vs_static` publishes the daily forecast gain (delivered with planning-only mode, 2026-08-05)
+- [x] If the greedy fails or produces an invalid plan, fall back to static (2026-08-13: coordinator fail-closed — `executor_plan` is only published after validation — plus executor-side demotion as belt-and-braces)
+- [x] `dry_run` mode that computes and publishes but does not actuate (2026-08-13: config option, **default ON**)
+
+*Code delivered 2026-08-13, shipped disabled: the coordinator publishes
+its validated greedy as `DynamicDayPlan` (plan + params + the
+load/solar vectors it was built with, so the executor's per-tick
+re-validation uses the same inputs); with `dry_run` off the executor
+adopts it, falling back to the chained static whenever no trustworthy
+greedy exists for today — a fallback day upgrades on the first tick
+after the greedy appears (the 00:00 tick precedes the 00:00:30
+refresh). The plan sensor's `executor_plan_source` attribute reports
+`static` / `greedy` / `static-fallback`. Flipping the toggle is gated
+on Checkpoint C.*
 
 **Verification:**
 - [ ] 1 week in `dry_run`, comparing the planned schedule against what would have been optimal

@@ -54,6 +54,17 @@ the reserve floor is the battery's to manage (ADR-0008). Everything
 is editable later through the options flow; the entry reloads on
 save.
 
+**Dynamic actuation (Task 12).** The capped-greedy plan always runs
+as an advisory dry-run (`sensor.battery_opt_plan`'s `schedule`,
+`sensor.battery_opt_vs_static`). Whether the executor *actuates* it
+is the **Dry-run** config option: ON (the default) keeps actuation on
+the static seasonal schedule; OFF actuates the greedy, falling back
+to the static schedule whenever prices are missing or a plan fails
+validation. The plan sensor's `executor_plan_source` attribute shows
+which plan is actually driving the battery (`static` / `greedy` /
+`static-fallback`). Leave dry-run on until the Checkpoint C review
+passes.
+
 **Optional entities**, each degrading gracefully when unset:
 
 | Config field | Enables |
@@ -70,7 +81,7 @@ All grouped under one **Battery Opt** service device.
 
 | Entity | What it shows |
 |---|---|
-| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — plus the static-fallback flag and the charge-loop setpoint/fallback |
+| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — plus the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |

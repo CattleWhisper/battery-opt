@@ -107,8 +107,11 @@ in `docs/findings.md`.
       forecast-vs-real overlay daily — the day-chaining fix is what
       makes summer coverage possible at all)
 - [ ] **Human review of the soak results** — the Checkpoint C gate.
-      Only after it: Task 12 (dynamic actuation swap), then 1 week
-      of dry-run comparison before going live
+      Only after it: review 1 week of dry-run comparison
+      (`vs_static`, the advisory `schedule` vs what actually ran),
+      then flip **Dry-run** off in Configure — the Task 12 swap
+      shipped 2026-08-13, default on, so going dynamic is a config
+      toggle, not a code change
 
 ## Ongoing / calendar-driven
 

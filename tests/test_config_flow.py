@@ -136,7 +136,8 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Battery Opt"
-    assert result["data"] == VALID_INPUT
+    # Task 12: the schema defaults dry_run ON — greedy stays advisory.
+    assert result["data"] == {**VALID_INPUT, "dry_run": True}
 
 
 async def test_flow_errors_when_omie_not_set_up(hass: HomeAssistant) -> None:
@@ -710,6 +711,65 @@ async def test_charge_loop_wires_and_clamps_against_measured_import(
     spike_write = number_calls[-1].data
     assert spike_write["value"] == 1800.0  # 4400 - 2600, import capped
     assert loop.fallback is False
+
+
+async def test_dry_run_off_actuates_the_coordinator_greedy(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Task 12: dry_run False adopts the coordinator's validated greedy.
+
+    With core OMIE stubbed the coordinator publishes `executor_plan`;
+    the executor tick adopts it and the plan sensor reports the source.
+    """
+    freezer.move_to("2026-01-15T20:00:00+00:00")  # 12:00 Pacific (hass tz)
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data={**VALID_INPUT, "dry_run": False})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    assert runtime.executor is not None
+    assert runtime.executor.dynamic_enabled is True
+    assert runtime.coordinator.executor_plan is not None
+
+    async_mock_service(hass, "select", "select_option")
+    async_mock_service(hass, "switch", "turn_on")
+    async_mock_service(hass, "switch", "turn_off")
+    async_mock_service(hass, "number", "set_value")
+    await runtime.executor.tick(datetime(2026, 1, 15, 12, 0))
+    await hass.async_block_till_done()
+    assert runtime.executor.plan_source == "greedy"
+    plan_state = hass.states.get("sensor.battery_opt_plan")
+    assert plan_state is not None
+    assert plan_state.attributes["executor_plan_source"] == "greedy"
+
+
+async def test_dry_run_defaults_on_and_keeps_static_actuation(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Without the option set, the executor stays on the static plan."""
+    freezer.move_to("2026-01-15T20:00:00+00:00")
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    assert runtime.executor is not None
+    assert runtime.executor.dynamic_enabled is False
+    # The greedy is still computed and published (the advisory dry-run)
+    assert runtime.coordinator.executor_plan is not None
+
+    async_mock_service(hass, "select", "select_option")
+    async_mock_service(hass, "switch", "turn_on")
+    async_mock_service(hass, "switch", "turn_off")
+    async_mock_service(hass, "number", "set_value")
+    await runtime.executor.tick(datetime(2026, 1, 15, 12, 0))
+    await hass.async_block_till_done()
+    assert runtime.executor.plan_source == "static"
 
 
 async def test_actuation_switches_gate_writes_without_stopping_loops(

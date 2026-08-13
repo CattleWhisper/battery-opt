@@ -12,10 +12,11 @@ static end, so the published SoC trajectory matches the battery's
 real morning state under Phase 1 actuation. No SoC is read anywhere
 (owner decision 2026-08-07 — the floor is the battery's to manage).
 With the Marstek entities
-configured, the executor (separate) additionally actuates the static
-plan per Phase 1; the advisory plan is still computed — it is the
-dry-run the spec's Task 12 wants before dynamic actuation is ever
-enabled.
+configured, the executor (separate) additionally actuates: the static
+plan while `dry_run` is on (the default — the advisory greedy is then
+exactly the Task 12 dry-run), or, with `dry_run` off, the validated
+greedy this coordinator publishes as `executor_plan` (static whenever
+that is None).
 
 The greedy over 96 intervals is milliseconds — safe inline on the
 event loop (ADR-0002); nothing here blocks.
@@ -59,6 +60,7 @@ from .core.plan import (
     validate_plan,
 )
 from .core.static_schedule import chained_start_soc, static_plan
+from .executor import DynamicDayPlan
 from .load_history import LOOKBACK_DAYS, async_load_samples
 from .prices_source import day_series_from_service
 
@@ -105,6 +107,10 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.entry = entry
         self.driver = driver
+        # Task 12: the day's validated greedy, published for the
+        # executor (None while prices are missing or the solve is
+        # untrustworthy — the executor then runs the chained static).
+        self.executor_plan: DynamicDayPlan | None = None
         self._load_mae_w: float | None = None
         self._mae_store: Store[dict[str, Any]] = Store(
             hass, _MAE_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_load_mae"
@@ -291,6 +297,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             params, soc_start_kwh=chained_start_soc(today, load, solar, params)
         )
         if prices is None:
+            self.executor_plan = None
             return self._static_fallback(today, load, solar, plan_params)
         solve_params = dataclasses.replace(
             plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
@@ -299,7 +306,19 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if validate_plan(result.plan, load, solar, plan_params):
             # Cannot happen by construction; fail closed (decision 6:
             # any untrustworthy dynamic plan falls back to static).
+            self.executor_plan = None
             return self._static_fallback(today, load, solar, plan_params)
+        # Task 12: publish the validated greedy for the executor,
+        # together with the exact inputs it was built with — the
+        # executor re-validates each tick with these, never with its
+        # own flat load vector.
+        self.executor_plan = DynamicDayPlan(
+            day=today,
+            plan=result.plan,
+            params=plan_params,
+            load_w=tuple(load),
+            solar_w=tuple(solar),
+        )
         static = static_plan(today, load, solar, plan_params)
         greedy_saving = saving_vs_no_cycling(result.plan, prices, plan_params)
         static_saving = saving_vs_no_cycling(static, prices, plan_params)

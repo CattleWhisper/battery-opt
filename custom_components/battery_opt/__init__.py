@@ -19,11 +19,13 @@ from .const import (
     CONF_CHARGE_POWER_NUMBER,
     CONF_CHARGE_TO_SOC_NUMBER,
     CONF_DISCHARGE_CUTOFF_NUMBER,
+    CONF_DRY_RUN,
     CONF_GRID_POWER_SENSOR,
     CONF_MODE_SELECT,
     CONF_RESERVE_FLOOR_PCT,
     CONF_RS485_SWITCH,
     CONF_WORK_MODE_SELECT,
+    DEFAULT_DRY_RUN,
     DEFAULT_RESERVE_FLOOR_PCT,
 )
 
@@ -136,6 +138,10 @@ def _wire_actuation(
         notify=_notify,
         get_charge_entry_w=_charge_entry_w,
         on_charge_entry=_charge_entry_written,
+        # Task 12: dry-run (the default) keeps actuation on the static
+        # plan; off actuates the coordinator's validated greedy.
+        get_dynamic_plan=lambda: coordinator.executor_plan,
+        dynamic_enabled=not merged.get(CONF_DRY_RUN, DEFAULT_DRY_RUN),
     )
 
     grid_power_id = merged.get(CONF_GRID_POWER_SENSOR)

@@ -34,6 +34,7 @@ from .const import (
     CONF_CHARGE_POWER_NUMBER,
     CONF_CHARGE_TO_SOC_NUMBER,
     CONF_DISCHARGE_CUTOFF_NUMBER,
+    CONF_DRY_RUN,
     CONF_GRID_ENERGY_SENSOR,
     CONF_GRID_POWER_SENSOR,
     CONF_LOAD_SENSOR,
@@ -44,6 +45,7 @@ from .const import (
     CONF_WEAR_COST,
     CONF_WORK_MODE_SELECT,
     DEFAULT_CAPACITY_KWH,
+    DEFAULT_DRY_RUN,
     DEFAULT_PLAN_WEAR,
     DEFAULT_RESERVE_FLOOR_PCT,
     DEFAULT_WEAR_COST,
@@ -93,6 +95,13 @@ def _parameter_schema(defaults: dict[str, Any]) -> dict[vol.Marker, Any]:
             CONF_PLAN_WEAR,
             default=defaults.get(CONF_PLAN_WEAR, DEFAULT_PLAN_WEAR),
         ): _number(0.0, 0.30, 0.001, "EUR/kWh"),
+        # Task 12: ON (default) = executor actuates the static plan,
+        # greedy stays advisory; OFF = greedy actuation with static
+        # fallback. Flip only after the Checkpoint C review.
+        vol.Required(
+            CONF_DRY_RUN,
+            default=defaults.get(CONF_DRY_RUN, DEFAULT_DRY_RUN),
+        ): selector.BooleanSelector(),
     }
 
 

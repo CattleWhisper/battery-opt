@@ -170,6 +170,10 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
         if self._executor is not None:
             attributes["executor_status"] = self._executor.status
             attributes["executor_plan_date"] = str(self._executor.plan_day or "")
+            # Task 12: what the executor is actuating — "static"
+            # (dry-run), "greedy" (dynamic live) or "static-fallback"
+            # (dynamic enabled, no trustworthy greedy for today).
+            attributes["executor_plan_source"] = self._executor.plan_source
         if self._charge_loop is not None:
             # ADR-0007 / Task 15 criterion 5: fallback is flagged here.
             attributes["charge_loop_setpoint_w"] = self._charge_loop.last_setpoint_w

@@ -42,6 +42,13 @@ CONF_GRID_ENERGY_SENSOR = "grid_energy_sensor"  # grid-import energy kWh
 CONF_GRID_POWER_SENSOR = "grid_power_sensor"  # total grid import, W
 CONF_BATTERY_POWER_SENSOR = "battery_power_sensor"  # battery power, W
 
+# Task 12 (shipped 2026-08-13): dry-run ON (the default) keeps the
+# executor on the static seasonal plan while the greedy stays
+# advisory; OFF actuates the greedy with static as fallback. Flip
+# only after the Checkpoint C review (docs/plan.md).
+CONF_DRY_RUN = "dry_run"
+DEFAULT_DRY_RUN = True
+
 # Venus E 3.0 device charge limit (owner, 2026-08-07, ADR-0007):
 # production planning C-3 uses this; the run-time margin against the
 # contracted ceiling is the charge-power loop's job. The backtest

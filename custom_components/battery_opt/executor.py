@@ -1,10 +1,17 @@
 """
 15-minute executor: applies the current interval's battery state.
 
-Phase 1 runs the static seasonal plan; Task 12 swaps in the greedy
-with static as fallback. Every tick re-validates the whole plan
-against C-1..C-7 before touching the battery (spec §11) — an invalid
-plan means no actuation at all.
+Phase 1 runs the static seasonal plan. Task 12 (shipped 2026-08-13,
+dry-run default ON): with `dynamic_enabled`, the executor instead
+adopts the coordinator's validated capped-greedy plan for the day
+(`DynamicDayPlan` — the plan together with the params and load/solar
+vectors it was built with, so re-validation cannot produce false
+violations), falling back to the chained static whenever no dynamic
+plan exists yet; a fallback day upgrades to the greedy on the first
+tick after the coordinator publishes it. An invalid dynamic plan is
+demoted to static, never actuated (decision 6 fail-closed). Every
+tick re-validates the whole plan against C-1..C-7 before touching the
+battery (spec §11) — an invalid plan means no actuation at all.
 
 ADR-0006 state machine, ADR-0007 states-only plan: each interval maps
 to CHARGE, HOLD or DISCHARGE — the plan's power vectors are pure
@@ -71,6 +78,29 @@ BACKSTOP_MARGIN_PCT = 2.0
 
 Action = Literal["charge", "discharge", "hold", "unknown"]
 
+# What the executor is actuating: the fixed seasonal schedule
+# (dry-run / Phase 1), the coordinator's greedy (Task 12 live), or
+# static because no trustworthy greedy exists for today.
+PlanSource = Literal["static", "greedy", "static-fallback"]
+
+
+@dataclasses.dataclass(frozen=True)
+class DynamicDayPlan:
+    """
+    A day's validated greedy plan with the inputs it was built with.
+
+    The coordinator publishes this (Task 12); the executor validates
+    against the SAME params and load/solar vectors — validating a
+    greedy plan against the executor's own flat load would produce
+    false C-1 violations wherever the forecast exceeds it.
+    """
+
+    day: date
+    plan: Plan
+    params: BatteryParams
+    load_w: tuple[float, ...]
+    solar_w: tuple[float, ...]
+
 
 class BatteryOptExecutor:
     """Applies the day's plan interval by interval through the driver."""
@@ -85,6 +115,9 @@ class BatteryOptExecutor:
         notify: Callable[[str], None] | None = None,
         get_charge_entry_w: Callable[[], float] | None = None,
         on_charge_entry: Callable[[float], None] | None = None,
+        get_dynamic_plan: Callable[[], DynamicDayPlan | None] | None = None,
+        *,
+        dynamic_enabled: bool = False,
     ) -> None:
         """
         Wire the driver and the coordinator-backed data sources.
@@ -94,6 +127,10 @@ class BatteryOptExecutor:
         loop's current value when the loop is wired, the conservative
         static fallback otherwise; `on_charge_entry` tells the loop what
         was written so its deadband baseline matches reality.
+
+        Task 12: `dynamic_enabled` (config `dry_run` inverted; dry-run
+        is the default) makes the executor actuate the coordinator's
+        greedy plan from `get_dynamic_plan`, with static as fallback.
         """
         self._driver = driver
         self._get_params = get_params
@@ -101,15 +138,27 @@ class BatteryOptExecutor:
         self._notify = notify or (lambda _message: None)
         self._get_charge_entry_w = get_charge_entry_w or (lambda: CHARGE_FALLBACK_W)
         self._on_charge_entry = on_charge_entry or (lambda _watts: None)
+        self._get_dynamic_plan = get_dynamic_plan or (lambda: None)
+        self.dynamic_enabled = dynamic_enabled
         self._listeners: list[Callable[[], None]] = []
         self.healthy = False
         self.status = "no tick yet"
         self.last_action: Action = "unknown"
         self.plan: Plan | None = None
         self.plan_day: date | None = None
+        self.plan_source: PlanSource = "static"
         self._plan_params: BatteryParams | None = None
         self._load_w = [BASE_LOAD_W] * INTERVALS_PER_DAY
         self._solar_w = [0.0] * INTERVALS_PER_DAY
+        # The vectors the CURRENT plan was built with — validation must
+        # use these, not self._load_w (a dynamic plan carries its own).
+        self._plan_load_w: list[float] = list(self._load_w)
+        self._plan_solar_w: list[float] = list(self._solar_w)
+        # A dynamic plan demoted by tick-time validation; the identity
+        # check stops re-adopting the same object every tick while the
+        # coordinator's next refresh (a new object) retries cleanly.
+        self._rejected_dynamic: Plan | None = None
+        self._demote_notified_day: date | None = None
         # Last state the driver confirmed; None forces a full apply.
         self._commanded_state: BatteryState | None = None
         # Manual override (switch.battery_opt_executor_actuation):
@@ -140,12 +189,36 @@ class BatteryOptExecutor:
                 listener()
 
     def _ensure_plan(self, now: datetime) -> tuple[Plan, BatteryParams]:
-        if (
+        today = now.date()
+        cached = (
             self.plan is not None
             and self._plan_params is not None
-            and self.plan_day == now.date()
-        ):
+            and self.plan_day == today
+        )
+        if cached and (not self.dynamic_enabled or self.plan_source == "greedy"):
             return self.plan, self._plan_params
+        if self.dynamic_enabled:
+            dynamic = self._get_dynamic_plan()
+            if (
+                dynamic is not None
+                and dynamic.day == today
+                and dynamic.plan is not self._rejected_dynamic
+            ):
+                self.plan = dynamic.plan
+                self.plan_day = today
+                self._plan_params = dynamic.params
+                self._plan_load_w = list(dynamic.load_w)
+                self._plan_solar_w = list(dynamic.solar_w)
+                self.plan_source = "greedy"
+                return dynamic.plan, dynamic.params
+            if cached:
+                # Keep today's static fallback; the greedy is adopted
+                # on the first tick after the coordinator publishes it
+                # (e.g. the 00:00 tick precedes the 00:00:30 refresh).
+                return self.plan, self._plan_params
+        return self._build_static(today)
+
+    def _build_static(self, today: date) -> tuple[Plan, BatteryParams]:
         # Virtual day-chaining: seed today from the previous weekday's
         # PLANNED end SoC — the summer schedule can only discharge in
         # its morning ponta if yesterday's midday charge carries over
@@ -157,13 +230,14 @@ class BatteryOptExecutor:
         base = self._get_params()
         params = dataclasses.replace(
             base,
-            soc_start_kwh=chained_start_soc(
-                now.date(), self._load_w, self._solar_w, base
-            ),
+            soc_start_kwh=chained_start_soc(today, self._load_w, self._solar_w, base),
         )
-        self.plan = self._plan_factory(now.date(), self._load_w, self._solar_w, params)
-        self.plan_day = now.date()
+        self.plan = self._plan_factory(today, self._load_w, self._solar_w, params)
+        self.plan_day = today
         self._plan_params = params
+        self._plan_load_w = list(self._load_w)
+        self._plan_solar_w = list(self._solar_w)
+        self.plan_source = "static-fallback" if self.dynamic_enabled else "static"
         return self.plan, params
 
     def planned_soc_trajectory(self) -> list[float] | None:
@@ -204,7 +278,26 @@ class BatteryOptExecutor:
     async def tick(self, now: datetime) -> None:
         """Validate, then apply the current interval's battery state."""
         plan, plan_params = self._ensure_plan(now)
-        violations = validate_plan(plan, self._load_w, self._solar_w, plan_params)
+        violations = validate_plan(
+            plan, self._plan_load_w, self._plan_solar_w, plan_params
+        )
+        if violations and self.plan_source == "greedy":
+            # Task 12 fail-closed (decision 6): an invalid dynamic plan
+            # is demoted to the chained static, never actuated. Cannot
+            # happen by construction — the coordinator only publishes
+            # validated plans — so it is belt-and-braces; notify at
+            # most once a day to avoid a chatty pathological loop.
+            self._rejected_dynamic = plan
+            if self._demote_notified_day != now.date():
+                self._demote_notified_day = now.date()
+                self._notify(
+                    f"battery_opt: dynamic plan invalid ({violations[0]}); "
+                    "falling back to the static schedule"
+                )
+            plan, plan_params = self._build_static(now.date())
+            violations = validate_plan(
+                plan, self._plan_load_w, self._plan_solar_w, plan_params
+            )
         if violations:
             self._set_health(healthy=False, status=f"invalid plan: {violations[0]}")
             return

@@ -211,6 +211,24 @@ state selectors: `> 0` or not. Both run-time magnitudes are closed
 loops — discharge against the meter (firmware anti-feed), charge
 against the contracted-power ceiling (the loop below).
 
+**Executor plan source (Task 12, shipped 2026-08-13; `dry_run`
+default ON):** with `dry_run` on, the executor actuates the chained
+static schedule and the coordinator's greedy stays advisory — the
+permanent dry-run. With it off, the executor adopts the coordinator's
+validated greedy for the day, published as `DynamicDayPlan` — the
+plan together with the params and load/solar vectors it was built
+with, so the executor's per-tick re-validation uses the same inputs
+(validating against the executor's own flat load would produce false
+C-1 violations). It falls back to the chained static whenever no
+trustworthy greedy exists (prices missing, failed solve), and a
+fallback day upgrades on the first tick after the greedy appears. An
+invalid dynamic plan is demoted to static, never actuated (decision
+6), notified at most once a day. The plan sensor's
+`executor_plan_source` attribute reports `static` / `greedy` /
+`static-fallback`. Flip `dry_run` only after the Checkpoint C review,
+having first compared a week of the advisory schedule against actual
+behaviour (plan Task 12 verification).
+
 **Transitions** (entity operations; underlying registers noted for
 cross-checking against community sources):
 

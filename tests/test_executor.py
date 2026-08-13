@@ -15,7 +15,7 @@ reserve floor is the battery's to manage.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -25,9 +25,32 @@ from custom_components.battery_opt.driver import (
     DriverUnavailableError,
     FakeDriver,
 )
-from custom_components.battery_opt.executor import BatteryOptExecutor
+from custom_components.battery_opt.executor import BatteryOptExecutor, DynamicDayPlan
 
 PARAMS = BatteryParams()
+
+
+def _dynamic_payload(day: date) -> DynamicDayPlan:
+    """
+    Build a valid greedy-like plan that visibly differs from the static.
+
+    Charges 00:00-01:00, discharges 13:00-13:30 — winter 13:00 is HOLD
+    on the static schedule, so a discharge command proves adoption.
+    """
+    n = 96
+    charge = [0.0] * n
+    discharge = [0.0] * n
+    for i in range(4):
+        charge[i] = 2000.0
+    discharge[52] = 500.0
+    discharge[53] = 500.0
+    return DynamicDayPlan(
+        day=day,
+        plan=Plan(charge_w=tuple(charge), discharge_w=tuple(discharge)),
+        params=BatteryParams(),
+        load_w=(1040.0,) * n,
+        solar_w=(0.0,) * n,
+    )
 
 
 class FlakyDriver(FakeDriver):
@@ -316,3 +339,100 @@ def test_day_chaining_soc_trajectory_starts_at_the_chained_seed() -> None:
     trajectory = executor.planned_soc_trajectory()
     assert trajectory is not None
     assert trajectory[0] == pytest.approx(PARAMS.cap_usable_kwh)  # full
+
+
+def test_dynamic_plan_adopted_and_actuated() -> None:
+    """
+    Task 12: with dynamic enabled, the executor actuates the greedy.
+
+    Winter 13:00 is HOLD on the static schedule; the dynamic payload
+    discharges there, so a discharge command proves adoption.
+    """
+    day = date(2026, 1, 15)
+    driver = FakeDriver()
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        get_dynamic_plan=lambda: _dynamic_payload(day),
+        dynamic_enabled=True,
+    )
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.plan_source == "greedy"
+    assert driver.calls == [("set_state", ("discharge", None, None))]
+    assert executor.healthy is True
+
+
+def test_dry_run_ignores_the_dynamic_plan() -> None:
+    """Task 12 dry-run (the default): greedy advisory, static actuates."""
+    day = date(2026, 1, 15)
+    driver = FakeDriver()
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        get_dynamic_plan=lambda: _dynamic_payload(day),
+        # dynamic_enabled stays at its default: False (dry-run).
+    )
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.plan_source == "static"
+    assert driver.calls == [("set_state", ("hold", None, None))]
+
+
+def test_dynamic_missing_falls_back_then_upgrades_same_day() -> None:
+    """
+    No greedy yet: the chained static actuates, marked as fallback.
+
+    The first tick after the coordinator publishes the greedy adopts
+    it — e.g. the 00:00 tick precedes the 00:00:30 refresh.
+    """
+    holder: list[DynamicDayPlan | None] = [None]
+    driver = FakeDriver()
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        get_dynamic_plan=lambda: holder[0],
+        dynamic_enabled=True,
+    )
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.plan_source == "static-fallback"
+    assert executor.last_action == "hold"  # winter 13:00 static
+    holder[0] = _dynamic_payload(date(2026, 1, 15))
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 15)))
+    assert executor.plan_source == "greedy"
+    assert executor.last_action == "discharge"  # 13:15 in the payload
+
+
+def test_invalid_dynamic_plan_demotes_to_static() -> None:
+    """
+    Task 12 fail-closed (decision 6): an invalid greedy never actuates.
+
+    The executor demotes to the chained static, stays healthy, notifies
+    once, and never re-adopts the same rejected object.
+    """
+    n = 96
+    bad = DynamicDayPlan(
+        day=date(2026, 1, 15),
+        plan=Plan(charge_w=(0.0,) * n, discharge_w=(5000.0,) * n),  # C-1
+        params=BatteryParams(),
+        load_w=(1040.0,) * n,
+        solar_w=(0.0,) * n,
+    )
+    notifications: list[str] = []
+    driver = FakeDriver()
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        notify=notifications.append,
+        get_dynamic_plan=lambda: bad,
+        dynamic_enabled=True,
+    )
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.healthy is True
+    assert executor.plan_source == "static-fallback"
+    assert executor.last_action == "hold"  # the static schedule's 13:00
+    assert len(notifications) == 1
+    assert "dynamic plan invalid" in notifications[0]
+    # The same rejected object is not re-adopted: no notification spam,
+    # and the static keeps actuating.
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 15)))
+    assert executor.plan_source == "static-fallback"
+    assert len(notifications) == 1
