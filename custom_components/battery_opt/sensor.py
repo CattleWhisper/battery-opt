@@ -392,11 +392,10 @@ class SocForecastSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
         # greedy, and plan_soc_kwh already IS the static trajectory.
         # Once tomorrow's preview builds, both extend to the full 48 h
         # (193 boundary values; the duplicated midnight boundary is
-        # dropped). Under dry-run the greedy line may STEP at midnight:
-        # today's greedy ends at the floor while tomorrow's preview
-        # reseeds from the static chain — two per-day counterfactuals,
-        # honest, not a bug. Under dynamic actuation both days seed at
-        # the floor and the line is continuous.
+        # dropped). Both lines are continuous across midnight: the
+        # static chains its own end, and tomorrow's greedy is seeded
+        # from TODAY'S greedy end (owner 2026-08-13) — never a per-day
+        # counterfactual that resets at the static chain's seed.
         greedy_kwh = data.get("plan_soc_kwh") if data.get("fallback") is None else None
         tomorrow_greedy = data.get("tomorrow_plan_soc_kwh")
         if greedy_kwh and tomorrow_greedy:

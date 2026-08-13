@@ -400,3 +400,13 @@ floor, not a guarantee. Two changes:
    negative-price days (delivered price below wear all day) the real
    end can sit above the floor — the battery then holds more than
    modelled, the safe direction, corrected within a day.
+
+3. **Tomorrow's greedy preview chains from TODAY'S greedy end** (same
+   day, follow-up): the preview originally reseeded from the regime
+   seed, which under dry-run made the greedy SoC line "reset" to the
+   static chain's 100% at midnight after a full sell-down. The greedy
+   is one continuous trajectory now — today's planned end (exact,
+   covers the negative-price caveat too) seeds tomorrow's solve, which
+   then shows the overnight charge it would actually plan. The static
+   preview keeps the regime seed: its own chain already makes today's
+   end tomorrow's start.

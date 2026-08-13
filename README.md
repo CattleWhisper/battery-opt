@@ -255,11 +255,12 @@ configured). It also carries both plans separately —
 `greedy_trajectory_pct` and `static_trajectory_pct` — and once
 tomorrow's preview builds (~13:30) those two span the full 48 h (193
 boundary values), so the overlay covers the same window as the plan
-card. The plan sensor's `executor_plan_source` says which of the two
-is actually driving the battery. One quirk while Dry-run is on: the
-greedy line may step at midnight — today's greedy ends at the floor,
-tomorrow's preview reseeds from the static chain (two per-day
-counterfactuals). This is the comparison Checkpoint C watches:
+card. Both lines are continuous across midnight: the static chains
+its own end, and tomorrow's greedy is seeded from today's greedy end
+— so after a full sell-down the preview shows the overnight charge
+the greedy would plan from that low start. The plan sensor's
+`executor_plan_source` says which of the two is actually driving the
+battery. This is the comparison Checkpoint C watches:
 
 ```yaml
 type: custom:apexcharts-card

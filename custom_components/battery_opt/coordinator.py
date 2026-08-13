@@ -199,13 +199,15 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Decision 4: archive every successful full-day build; the
             # same path is overwritten once a padded tail resolves.
             await async_archive_day(self.hass, today, series)
-        data.update(await self._tomorrow_preview(today, params))
+        greedy_end = data["plan_soc_kwh"][-1] if data["fallback"] is None else None
+        data.update(await self._tomorrow_preview(today, params, greedy_end))
         return data
 
     async def _tomorrow_preview(
         self,
         today: date,
         params: BatteryParams,
+        today_greedy_end_kwh: float | None,
     ) -> dict[str, Any]:
         """
         D+1 preview (decision 9): published only when D+1 itself builds.
@@ -213,10 +215,18 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Tomorrow's own Lisbon day needs market dates D+1 and D+2; D+2
         is never published this far ahead, so tomorrow structurally
         always relies on the same tail-padding tolerance
-        `_prices_for_day` already applies for today. Seeded at the
-        reserve floor rather than chained from today's plan, since
-        today has not finished executing yet — this is a speculative
-        preview, not a committed plan.
+        `_prices_for_day` already applies for today.
+
+        Seeds (owner 2026-08-13): the static baseline uses the regime
+        seed (`_day_start_soc` — its own chain, so today's static end
+        IS tomorrow's static start). Tomorrow's GREEDY chains from
+        TODAY'S greedy planned end instead: the greedy line is one
+        continuous trajectory, never a per-day counterfactual that
+        "resets" at midnight — under dry-run today's greedy ends at
+        the floor while the static chain would reseed tomorrow full,
+        and the preview must show the overnight charge the greedy
+        would actually plan from that low start. When today built no
+        greedy (static fallback), the regime seed stands.
         """
         empty: dict[str, Any] = {
             "tomorrow_prices_eur_kwh": None,
@@ -235,23 +245,26 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         prices = list(series.delivered_eur_kwh)
         load = await self._forecast_load_vector(tomorrow, len(prices))
         solar = [0.0] * len(load)
-        # Seeded like today's plan (regime-aware, _day_start_soc; still
-        # never chained from today's LIVE execution — under dry-run the
-        # seed is the static model's deterministic previous-weekday
-        # end, so the preview stays speculative but the 48 h schedule
-        # reads coherently across midnight).
-        plan_params = dataclasses.replace(
+        static_params = dataclasses.replace(
             params,
             soc_start_kwh=self._day_start_soc(tomorrow, load, solar, params),
         )
         # The static baseline needs no prices — published alongside the
         # greedy preview for the plan-comparison dashboard.
-        static = static_plan(tomorrow, load, solar, plan_params)
+        static = static_plan(tomorrow, load, solar, static_params)
+        greedy_params = dataclasses.replace(
+            params,
+            soc_start_kwh=(
+                today_greedy_end_kwh
+                if today_greedy_end_kwh is not None
+                else self._day_start_soc(tomorrow, load, solar, params)
+            ),
+        )
         solve_params = dataclasses.replace(
-            plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
+            greedy_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
         )
         result = solve(prices, load, solar, solve_params)
-        if validate_plan(result.plan, load, solar, plan_params):
+        if validate_plan(result.plan, load, solar, greedy_params):
             # Fail closed like today's plan (decision 6's spirit): a
             # speculative preview that fails validation just doesn't
             # publish a plan, but the prices are still worth showing.
@@ -262,7 +275,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "tomorrow_static_charge_w": list(static.charge_w),
                 "tomorrow_static_discharge_w": list(static.discharge_w),
                 "tomorrow_static_soc_kwh": [
-                    round(v, 3) for v in soc_trajectory(static, plan_params)
+                    round(v, 3) for v in soc_trajectory(static, static_params)
                 ],
             }
         return {
@@ -273,10 +286,10 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "tomorrow_static_charge_w": list(static.charge_w),
             "tomorrow_static_discharge_w": list(static.discharge_w),
             "tomorrow_plan_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(result.plan, plan_params)
+                round(v, 3) for v in soc_trajectory(result.plan, greedy_params)
             ],
             "tomorrow_static_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(static, plan_params)
+                round(v, 3) for v in soc_trajectory(static, static_params)
             ],
         }
 

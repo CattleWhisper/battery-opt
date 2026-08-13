@@ -354,8 +354,16 @@ async def test_advisory_trajectory_is_day_chained_in_summer(
     assert max(trajectory) <= 5.0 + 1e-9  # C-5 holds under the full seed
     # Both plans' trajectories ride alongside for the comparison
     # overlay — chained, so each also starts full in summer.
-    assert soc_forecast.attributes["greedy_trajectory_pct"][0] == pytest.approx(100.0)
+    greedy_pct = soc_forecast.attributes["greedy_trajectory_pct"]
+    assert greedy_pct[0] == pytest.approx(100.0)
     assert soc_forecast.attributes["static_trajectory_pct"][0] == pytest.approx(100.0)
+    # The greedy line is CONTINUOUS across midnight (owner 2026-08-13):
+    # tomorrow's preview seeds from today's greedy end, not the static
+    # chain — after a full sell-down (~floor) tomorrow starts low and
+    # charges overnight, instead of "resetting" to 100%.
+    assert len(greedy_pct) == 193  # tomorrow's preview joined
+    assert greedy_pct[97] < 60.0  # not the static chain's full reseed
+    assert abs(greedy_pct[97] - greedy_pct[96]) < 15.0  # one quarter's step
     # The seeded greedy discharges the morning ponta (09:15-12:15) —
     # flat stub OMIE means the TAR alone makes it profitable.
     plan_state = hass.states.get("sensor.battery_opt_plan")
