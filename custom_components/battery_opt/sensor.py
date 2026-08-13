@@ -378,15 +378,20 @@ class SocForecastSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """The day trajectory and where it came from."""
+        data = self.coordinator.data or {}
         trajectory = self._executor_trajectory()
         if trajectory is not None:
             source = "executor"
             plan_date = str(self._executor.plan_day or "")
         else:
-            data = self.coordinator.data or {}
             trajectory = data.get("plan_soc_kwh")
             source = "advisory" if trajectory else None
             plan_date = str(data.get("plan_date") or "")
+        # Both plans' trajectories for the comparison overlay (the
+        # Task 12 dry-run view): in the static fallback there is no
+        # greedy, and plan_soc_kwh already IS the static trajectory.
+        greedy_kwh = data.get("plan_soc_kwh") if data.get("fallback") is None else None
+        static_kwh = data.get("static_soc_kwh")
         return {
             "source": source,
             "plan_date": plan_date,
@@ -395,6 +400,12 @@ class SocForecastSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
             ),
             "trajectory_pct": (
                 [self._to_pct(v) for v in trajectory] if trajectory else None
+            ),
+            "greedy_trajectory_pct": (
+                [self._to_pct(v) for v in greedy_kwh] if greedy_kwh else None
+            ),
+            "static_trajectory_pct": (
+                [self._to_pct(v) for v in static_kwh] if static_kwh else None
             ),
         }
 

@@ -122,8 +122,13 @@ async def test_advisory_plan_input_reflects_the_forecast(hass: HomeAssistant) ->
     # (zero-export) — still the forecast's cap, never BASE_LOAD_W's.
     assert coordinator.data["fallback"] == "static"
     assert max(coordinator.data["plan_discharge_w"]) <= 1.0
-    # In the fallback the published plan IS the static baseline.
+    # In the fallback the published plan IS the static baseline, and
+    # there is no greedy to overlay.
     assert coordinator.data["static_charge_w"] == coordinator.data["plan_charge_w"]
+    assert coordinator.data["static_soc_kwh"] == coordinator.data["plan_soc_kwh"]
+    soc_forecast = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert soc_forecast.attributes["greedy_trajectory_pct"] is None
+    assert soc_forecast.attributes["static_trajectory_pct"] is not None
 
 
 async def test_day_close_without_meter_is_a_no_op(hass: HomeAssistant) -> None:

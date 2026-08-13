@@ -83,7 +83,7 @@ All grouped under one **Battery Opt** service device.
 |---|---|
 | `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
-| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes |
+| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
 | `sensor.battery_opt_cost_today` | Grid-import cost today incl. the daily fixed terms, excl. VAT (needs the grid energy sensor) |
@@ -294,15 +294,20 @@ alone — but any *line* drawn from a segment attribute does.)
 the planned SoC for the current quarter (%, same unit as the Marstek
 SoC sensor) and the whole planned day in its `trajectory_pct` /
 `trajectory_kwh` attributes (97 boundary values; index i = start of
-quarter i). Overlaying it on the real SoC shows at a glance whether
-the battery is following the plan — the comparison Checkpoint C
-watches:
+quarter i — the ACTUATED plan's trajectory when a battery is
+configured). It also carries both plans separately —
+`greedy_trajectory_pct` and `static_trajectory_pct` — so the overlay
+can show the real SoC against what each plan would do; the plan
+sensor's `executor_plan_source` says which of the two is actually
+driving the battery. This is the comparison Checkpoint C watches:
 
 ```yaml
 type: custom:apexcharts-card
 header:
   show: true
   title: Battery Opt — SoC forecast vs real
+  show_states: true
+  colorize_states: true
 graph_span: 24h
 span:
   start: day
@@ -310,21 +315,43 @@ now:
   show: true
   label: now
 series:
-  - entity: sensor.battery_opt_soc_forecast
-    name: Forecast (%)
-    type: line
-    extend_to: false
-    data_generator: |
-      const t = entity.attributes.trajectory_pct || [];
-      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
-      return t.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, v]);
   - entity: sensor.marstek_battery_state_of_charge
     name: Real (%)
     type: line
     extend_to: now
+    show:
+      legend_value: false
+      in_header: before_now
+  - entity: sensor.battery_opt_soc_forecast
+    name: Static (%)
+    type: line
+    extend_to: false
+    show:
+      legend_value: false
+      in_header: before_now
+    data_generator: |
+      const t = entity.attributes.static_trajectory_pct || [];
+      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
+      return t.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, v]);
+  - entity: sensor.battery_opt_soc_forecast
+    name: Greedy (%)
+    type: line
+    extend_to: false
+    show:
+      legend_value: false
+      in_header: before_now
+    data_generator: |
+      const t = entity.attributes.greedy_trajectory_pct || [];
+      const dayStart = new Date(entity.attributes.plan_date + "T00:00:00");
+      return t.map((v, i) => [dayStart.getTime() + i * 15 * 60 * 1000, v]);
+yaxis:
+  - min: 0
+    max: 100
 ```
 
-(Point the second series at your Marstek SoC entity id.)
+(Point the first series at your Marstek SoC entity id. While Dry-run
+is on, the real SoC should track the *static* line; after the flip,
+the *greedy* one.)
 
 **Energy dashboard:** `sensor.battery_opt_current_price` is declared
 exactly like core OMIE's own price sensor (EUR/kWh, `state_class`
