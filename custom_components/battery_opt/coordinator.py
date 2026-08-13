@@ -225,6 +225,8 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "tomorrow_discharge_w": None,
             "tomorrow_static_charge_w": None,
             "tomorrow_static_discharge_w": None,
+            "tomorrow_plan_soc_kwh": None,
+            "tomorrow_static_soc_kwh": None,
         }
         tomorrow = today + timedelta(days=1)
         series = await self._prices_for_day(tomorrow)
@@ -259,6 +261,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "tomorrow_prices_padded": series.padded,
                 "tomorrow_static_charge_w": list(static.charge_w),
                 "tomorrow_static_discharge_w": list(static.discharge_w),
+                "tomorrow_static_soc_kwh": [
+                    round(v, 3) for v in soc_trajectory(static, plan_params)
+                ],
             }
         return {
             "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices],
@@ -267,6 +272,12 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "tomorrow_discharge_w": list(result.plan.discharge_w),
             "tomorrow_static_charge_w": list(static.charge_w),
             "tomorrow_static_discharge_w": list(static.discharge_w),
+            "tomorrow_plan_soc_kwh": [
+                round(v, 3) for v in soc_trajectory(result.plan, plan_params)
+            ],
+            "tomorrow_static_soc_kwh": [
+                round(v, 3) for v in soc_trajectory(static, plan_params)
+            ],
         }
 
     async def _forecast_load_vector(self, today: date, n: int) -> list[float]:

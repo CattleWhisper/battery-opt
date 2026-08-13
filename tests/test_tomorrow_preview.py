@@ -144,6 +144,11 @@ async def test_tomorrow_preview_published_when_d_plus_1_is_available(
     assert any(
         str(s["start"]).startswith(tomorrow.isoformat()) for s in static_schedule
     )
+    # Both SoC trajectories extend across the 48 h as well: today's 97
+    # boundaries plus tomorrow's 96 (the midnight boundary deduped).
+    soc_state = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert len(soc_state.attributes["greedy_trajectory_pct"]) == 193
+    assert len(soc_state.attributes["static_trajectory_pct"]) == 193
 
 
 async def test_tomorrow_preview_absent_when_d_plus_1_not_yet_published(
@@ -170,6 +175,10 @@ async def test_tomorrow_preview_absent_when_d_plus_1_not_yet_published(
         for s in price_state.attributes["prices"]
     )
     assert price_state.attributes["tomorrow_prices_padded"] is None
+    # Without the preview the SoC trajectories stay today-only.
+    soc_state = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert len(soc_state.attributes["greedy_trajectory_pct"]) == 97
+    assert len(soc_state.attributes["static_trajectory_pct"]) == 97
 
 
 async def test_tomorrow_preview_absent_without_omie(hass: HomeAssistant) -> None:

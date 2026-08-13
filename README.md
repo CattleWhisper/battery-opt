@@ -93,7 +93,7 @@ All grouped under one **Battery Opt** service device.
 |---|---|
 | `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
-| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay |
+| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay — spanning 48 h once tomorrow's preview builds |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
 | `sensor.battery_opt_cost_today` | Grid-import cost today incl. the daily fixed terms, excl. VAT (needs the grid energy sensor) |
@@ -252,10 +252,14 @@ SoC sensor) and the whole planned day in its `trajectory_pct` /
 `trajectory_kwh` attributes (97 boundary values; index i = start of
 quarter i — the ACTUATED plan's trajectory when a battery is
 configured). It also carries both plans separately —
-`greedy_trajectory_pct` and `static_trajectory_pct` — so the overlay
-can show the real SoC against what each plan would do; the plan
-sensor's `executor_plan_source` says which of the two is actually
-driving the battery. This is the comparison Checkpoint C watches:
+`greedy_trajectory_pct` and `static_trajectory_pct` — and once
+tomorrow's preview builds (~13:30) those two span the full 48 h (193
+boundary values), so the overlay covers the same window as the plan
+card. The plan sensor's `executor_plan_source` says which of the two
+is actually driving the battery. One quirk while Dry-run is on: the
+greedy line may step at midnight — today's greedy ends at the floor,
+tomorrow's preview reseeds from the static chain (two per-day
+counterfactuals). This is the comparison Checkpoint C watches:
 
 ```yaml
 type: custom:apexcharts-card
@@ -264,7 +268,7 @@ header:
   title: Battery Opt — SoC forecast vs real
   show_states: true
   colorize_states: true
-graph_span: 24h
+graph_span: 48h
 span:
   start: day
 now:
