@@ -98,17 +98,28 @@ All grouped under one **Battery Opt** service device.
 ## Dashboards
 
 `sensor.battery_opt_current_price` carries the delivered prices in
-its `prices` attribute and `sensor.battery_opt_plan` carries the plan
-in `schedule`. Both are flat lists of segments — `{start, end, …}`
-with full ISO timestamps — covering today and, once OMIE publishes
-D+1 (~13:30 CET), tomorrow as well: price segments carry
-`price_eur_kwh` + `tar_period` (split at every TAR boundary, so each
-value is directly checkable against the tariff table), schedule
+its `prices` attribute and `sensor.battery_opt_plan` carries both
+plans: the advisory greedy in `schedule` and the fixed seasonal
+baseline in `static_schedule`. All three are flat lists of segments —
+`{start, end, …}` with full ISO timestamps — covering today and, once
+OMIE publishes D+1 (~13:30 CET), tomorrow as well: price segments
+carry `price_eur_kwh` + `tar_period` (split at every TAR boundary, so
+each value is directly checkable against the tariff table), schedule
 segments carry `direction` + `power_w` (hold windows are simply
-absent). An
+absent). One
 [ApexCharts card](https://github.com/RomRider/apexcharts-card) (HACS)
-can graph both against each other — set `graph_span: 48h` to see
-tomorrow once it arrives:
+graphs all of it: the price, and each plan as ONE signed series —
+charge positive, discharge negative, holds as explicit zeros. This is
+the Task 12 dry-run comparison: while **Dry-run** is on, the *static*
+line is what the executor actuates and the *greedy* columns are what
+dynamic mode would do instead; after Checkpoint C the roles swap.
+
+Both plan generators walk the span at 15-min steps from midnight of
+`plan_date` to the end of the last day any segment covers, emitting 0
+wherever no window covers the instant. The zeros matter twice: a line
+series bridges gaps straight across otherwise, and the header's
+`before_now` value would linger on the previous window instead of
+showing 0 during a hold.
 
 ```yaml
 type: custom:apexcharts-card
@@ -150,116 +161,15 @@ series:
       });
       return pts;
   - entity: sensor.battery_opt_plan
-    name: Charge (W)
-    type: column
-    yaxis_id: power
-    extend_to: false
-    show:
-      legend_value: false
-      in_header: before_now
-    data_generator: |
-      const pts = [];
-      (entity.attributes.schedule || [])
-        .filter(s => s.direction === "charge")
-        .forEach(s => {
-          const end = new Date(s.end).getTime();
-          for (let t = new Date(s.start).getTime(); t < end; t += 900000)
-            pts.push([t, s.power_w]);
-        });
-      return pts;
-  - entity: sensor.battery_opt_plan
-    name: Discharge (W)
-    type: column
-    yaxis_id: power
-    extend_to: false
-    show:
-      legend_value: false
-      in_header: before_now
-    data_generator: |
-      const pts = [];
-      (entity.attributes.schedule || [])
-        .filter(s => s.direction === "discharge")
-        .forEach(s => {
-          const end = new Date(s.end).getTime();
-          for (let t = new Date(s.start).getTime(); t < end; t += 900000)
-            pts.push([t, -s.power_w]);
-        });
-      return pts;
-yaxis:
-  - id: price
-    # Soft zero: the axis always starts at 0 but still extends below
-    # for negative OMIE prices — never assume prices >= 0.
-    min: ~0
-    decimals: 3
-    apex_config:
-      title:
-        text: EUR/kWh
-  - id: power
-    min: -2500
-    max: 2500
-    opposite: true
-    apex_config:
-      title:
-        text: W
-```
-
-**Greedy vs static:** `sensor.battery_opt_plan` also carries
-`static_schedule` — the fixed seasonal baseline in the same segment
-format — so a second card can overlay the two plans. This is the
-Task 12 dry-run comparison: while **Dry-run** is on, the *static*
-series is what the executor actuates and the *greedy* columns are
-what dynamic mode would do instead; after Checkpoint C the roles
-swap. Charge is drawn positive, discharge negative, for both:
-
-```yaml
-type: custom:apexcharts-card
-header:
-  show: true
-  title: Battery Opt — greedy vs static
-  # Values at the now-marker in the header; the legend value would
-  # show each series' LAST datapoint instead, so it is disabled.
-  show_states: true
-  colorize_states: true
-graph_span: 48h
-span:
-  start: day
-now:
-  show: true
-  label: now
-series:
-  - entity: sensor.battery_opt_plan
     name: Greedy (W)
     type: column
+    yaxis_id: power
     extend_to: false
     show:
       legend_value: false
       in_header: before_now
     data_generator: |
-      const pts = [];
-      (entity.attributes.schedule || []).forEach(s => {
-        const sign = s.direction === "charge" ? 1 : -1;
-        const end = new Date(s.end).getTime();
-        for (let t = new Date(s.start).getTime(); t < end; t += 900000)
-          pts.push([t, sign * s.power_w]);
-      });
-      return pts;
-  - entity: sensor.battery_opt_plan
-    name: Static (W)
-    type: line
-    curve: stepline
-    stroke_width: 2
-    extend_to: false
-    show:
-      legend_value: false
-      in_header: before_now
-    # A line series connects consecutive points, so the hold gaps
-    # between windows MUST be emitted as explicit zeros — otherwise
-    # Apex bridges the last window's value straight to the next one.
-    # This generator walks from midnight of plan_date to the end of
-    # the last day any segment covers, at 15-min steps, filling 0
-    # wherever no segment covers the instant.
-    data_generator: |
-      const segs = entity.attributes.static_schedule || [];
+      const segs = entity.attributes.schedule || [];
       if (!segs.length) return [];
       const spans = segs.map(s => [
         new Date(s.start).getTime(),
@@ -279,16 +189,52 @@ series:
         pts.push([t, hit ? hit[2] : 0]);
       }
       return pts;
+  - entity: sensor.battery_opt_plan
+    name: Static (W)
+    type: line
+    curve: stepline
+    stroke_width: 2
+    yaxis_id: power
+    extend_to: false
+    show:
+      legend_value: false
+      in_header: before_now
+    data_generator: |
+      const segs = entity.attributes.static_schedule || [];
+      if (!segs.length) return [];
+      const spans = segs.map(s => [
+        new Date(s.start).getTime(),
+        new Date(s.end).getTime(),
+        (s.direction === "charge" ? 1 : -1) * s.power_w,
+      ]);
+      const t0 = new Date(entity.attributes.plan_date + "T00:00:00").getTime();
+      const last = new Date(Math.max(...spans.map(s => s[1])) - 1);
+      const tEnd = new Date(
+        last.getFullYear(), last.getMonth(), last.getDate() + 1
+      ).getTime();
+      const pts = [];
+      for (let t = t0; t < tEnd; t += 900000) {
+        const hit = spans.find(s => t >= s[0] && t < s[1]);
+        pts.push([t, hit ? hit[2] : 0]);
+      }
+      return pts;
 yaxis:
-  - min: -2500
+  - id: price
+    # Soft zero: the axis always starts at 0 but still extends below
+    # for negative OMIE prices — never assume prices >= 0.
+    min: ~0
+    decimals: 3
+    apex_config:
+      title:
+        text: EUR/kWh
+  - id: power
+    min: -2500
     max: 2500
+    opposite: true
     apex_config:
       title:
         text: W
 ```
-
-(The greedy column series needs no zero-filling — each bar stands
-alone — but any *line* drawn from a segment attribute does.)
 
 **SoC — forecast vs real:** `sensor.battery_opt_soc_forecast` carries
 the planned SoC for the current quarter (%, same unit as the Marstek
