@@ -227,11 +227,18 @@ class BatteryOptExecutor:
         # plan's own model forward, no SoC readback (ADR-0008). The
         # seeded params are kept so validation and the published SoC
         # trajectory use the same start the plan was built with.
+        # Under DYNAMIC actuation (Task 12 follow-up, owner 2026-08-13)
+        # the fallback seeds at the floor instead: the greedy that
+        # actuated yesterday ends its day at the floor by construction,
+        # so the static chain's "full" seed would model energy the
+        # battery does not have.
         base = self._get_params()
-        params = dataclasses.replace(
-            base,
-            soc_start_kwh=chained_start_soc(today, self._load_w, self._solar_w, base),
+        start = (
+            base.cap_min_kwh
+            if self.dynamic_enabled
+            else chained_start_soc(today, self._load_w, self._solar_w, base)
         )
+        params = dataclasses.replace(base, soc_start_kwh=start)
         self.plan = self._plan_factory(today, self._load_w, self._solar_w, params)
         self.plan_day = today
         self._plan_params = params

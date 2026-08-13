@@ -38,11 +38,13 @@ from .archive import async_archive_day, async_archive_load_day
 from .const import (
     BASE_LOAD_W,
     CONF_CAPACITY_KWH,
+    CONF_DRY_RUN,
     CONF_LOAD_SENSOR,
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_WEAR_COST,
     DEFAULT_CAPACITY_KWH,
+    DEFAULT_DRY_RUN,
     DEFAULT_PLAN_WEAR,
     DEFAULT_RESERVE_FLOOR_PCT,
     DEFAULT_WEAR_COST,
@@ -148,6 +150,38 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         merged = {**self.entry.data, **self.entry.options}
         return float(merged.get(CONF_PLAN_WEAR, DEFAULT_PLAN_WEAR))
 
+    @property
+    def dry_run(self) -> bool:
+        """Task 12 regime: True = the executor actuates the static plan."""
+        merged = {**self.entry.data, **self.entry.options}
+        return bool(merged.get(CONF_DRY_RUN, DEFAULT_DRY_RUN))
+
+    def _day_start_soc(
+        self,
+        day: date,
+        load: list[float],
+        solar: list[float],
+        params: BatteryParams,
+    ) -> float:
+        """
+        Seed per the ACTUATED regime (Task 12 follow-up, owner 2026-08-13).
+
+        Under dry-run the STATIC plan actuates, so every day starts at
+        the previous weekday's planned static end (virtual
+        day-chaining). With dry_run off the GREEDY actuates — and a
+        greedy day ends at the reserve floor by construction (the
+        single-day model values no stored energy: everything above the
+        floor is sold wherever price beats wear) — so the seed is the
+        floor, and the solve buys the night's cheap quarters before
+        the morning ponta instead of assuming a full battery it will
+        not have. (On extreme negative-price days the real end can sit
+        above the floor; the battery then simply holds more than
+        modelled — the safe direction, corrected within a day.)
+        """
+        if self.dry_run:
+            return chained_start_soc(day, load, solar, params)
+        return params.cap_min_kwh
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Compute the advisory plan and archive the day's prices."""
         params = self.battery_params
@@ -199,12 +233,14 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         prices = list(series.delivered_eur_kwh)
         load = await self._forecast_load_vector(tomorrow, len(prices))
         solar = [0.0] * len(load)
-        # Day-chained like today's plan (still not chained from today's
-        # LIVE execution — the seed is the static model's deterministic
-        # previous-weekday end, so the preview stays speculative but
-        # the 48 h schedule reads coherently across midnight).
+        # Seeded like today's plan (regime-aware, _day_start_soc; still
+        # never chained from today's LIVE execution — under dry-run the
+        # seed is the static model's deterministic previous-weekday
+        # end, so the preview stays speculative but the 48 h schedule
+        # reads coherently across midnight).
         plan_params = dataclasses.replace(
-            params, soc_start_kwh=chained_start_soc(tomorrow, load, solar, params)
+            params,
+            soc_start_kwh=self._day_start_soc(tomorrow, load, solar, params),
         )
         # The static baseline needs no prices — published alongside the
         # greedy preview for the plan-comparison dashboard.
@@ -294,16 +330,17 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
         solar = [0.0] * len(load)
-        # Virtual battery, day-chained (spec §8): the day starts at the
-        # previous weekday's planned static end — under Phase 1 static
-        # actuation that IS the expected real morning SoC, so the
-        # advisory trajectory (and the SoC forecast sensor) lines up
-        # with the battery instead of resetting to the floor. Daily
-        # savings keep the backtest's chaining convention: charge cost
-        # books on the day it is bought, discharge revenue on the day
-        # it is sold.
+        # Virtual battery, seeded per the actuated regime (spec §8,
+        # _day_start_soc): dry-run chains the static plan's end — under
+        # static actuation that IS the expected real morning SoC, so
+        # the advisory trajectory (and the SoC forecast sensor) lines
+        # up with the battery instead of resetting to the floor; with
+        # dry_run off the greedy actuates and days start at the floor.
+        # Daily savings keep the backtest's chaining convention: charge
+        # cost books on the day it is bought, discharge revenue on the
+        # day it is sold.
         plan_params = dataclasses.replace(
-            params, soc_start_kwh=chained_start_soc(today, load, solar, params)
+            params, soc_start_kwh=self._day_start_soc(today, load, solar, params)
         )
         if prices is None:
             self.executor_plan = None

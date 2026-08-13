@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from .calendar import CALENDARS, Calendars, period
-from .plan import BatteryParams, Plan, soc_trajectory
+from .plan import ARMED_CHARGE_KWH, BatteryParams, Plan, soc_trajectory
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -64,6 +64,7 @@ def static_plan(
 
     charge_overnight = day.month in VAZIO_CHARGE_MONTHS
     soc = params.start_soc_kwh
+    window: list[int] = []
     for i in range(n):
         hour = i * dt
         # Naive = Portugal legal time, the calendar API contract.
@@ -87,6 +88,7 @@ def static_plan(
             else MIDDAY_CHARGE_START_H <= hour < MIDDAY_CHARGE_END_H
         )
         if in_window:
+            window.append(i)
             headroom_kwh = max(0.0, params.cap_usable_kwh - soc) / eta
             charge[i] = min(
                 params.p_charge_max_w,
@@ -95,7 +97,56 @@ def static_plan(
             )
             soc += charge[i] * dt / 1000 * eta
 
+    _arm_window_tail(charge, window, load_w, params)
     return Plan(charge_w=tuple(charge), discharge_w=tuple(discharge))
+
+
+def _arm_window_tail(
+    charge: list[float],
+    window: list[int],
+    load_w: Sequence[float],
+    params: BatteryParams,
+) -> None:
+    """
+    Hold the CHARGE state through the whole seasonal window.
+
+    Owner decision 2026-08-13 (spec §8): quarters the model leaves
+    empty once it reaches capacity are armed at a marginal power — a
+    state selector (ADR-0007), never an energy claim — shaved off the
+    filled quarters so totals, the end SoC and the day-chaining seed
+    are unchanged. At run time the charge loop drives full power and
+    the firmware percent-target stops at ACTUAL full, so real-world
+    shortfalls (anti-feed discharged a deeper-than-forecast load; the
+    loop was throttled under house load) recover in the remaining
+    window time instead of persisting into the next ponta.
+    """
+    dt = params.interval_hours
+    armed_w = ARMED_CHARGE_KWH / dt * 1000
+    empty = [
+        i
+        for i in window
+        if charge[i] <= 0.0
+        and min(params.p_charge_max_w, params.p_usable_w - load_w[i]) >= 1.0
+    ]
+    donors = [i for i in window if charge[i] > 0.0]
+    if not empty or not donors:
+        return
+    # Donors always precede the empties (the sequential fill above is
+    # front-loaded), so the shave only moves energy LATER — the
+    # modelled trajectory can only drop toward the ceiling, never rise.
+    available = sum(max(0.0, charge[d] - armed_w) for d in donors)
+    armed = empty[: int(available / armed_w)]
+    need = armed_w * len(armed)
+    for i in armed:
+        charge[i] = armed_w
+    for d in reversed(donors):
+        take = min(charge[d] - armed_w, need)
+        if take <= 0.0:
+            continue
+        charge[d] -= take
+        need -= take
+        if need <= 0.0:
+            break
 
 
 def chained_start_soc(

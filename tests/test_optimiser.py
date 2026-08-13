@@ -59,6 +59,31 @@ def test_tracer_single_pair() -> None:
     )
 
 
+def test_charge_state_armed_through_profitable_quarters() -> None:
+    """
+    Owner decision 2026-08-13: the CHARGE state stays armed past the run.
+
+    Quarters between a charge run and the discharges it feeds carry a
+    marginal state-selector power while the C-8 condition holds against
+    the cheapest discharge still ahead; nothing arms past the last
+    discharge. Energy and the modelled saving are conserved exactly
+    (the armed energy is shaved off the run itself).
+    """
+    prices = [0.08] * 40 + [0.35] * 8 + [0.08] * 48
+    load = [1000.0] * N
+    solar = [0.0] * N
+    result = solve(prices, load, solar, PARAMS)
+    charge = result.plan.charge_w
+    armed = [i for i in range(N) if 0 < charge[i] < 1.0]
+    assert armed  # the run extends toward the discharge block
+    assert max(armed) < 40  # never into or past the discharges
+    assert not any(charge[i] > 0 for i in range(48, N))  # none after the last
+    assert validate_plan(result.plan, load, solar, PARAMS) == []
+    assert result.forecast_saving_eur == pytest.approx(
+        saving_vs_no_cycling(result.plan, prices, PARAMS)
+    )
+
+
 def test_flat_prices_no_cycling() -> None:
     """Degenerate case: no spread, no cycling (efficiency eats any pair)."""
     result = solve([0.20] * N, [1040.0] * N, [0.0] * N, PARAMS)

@@ -65,6 +65,16 @@ which plan is actually driving the battery (`static` / `greedy` /
 `static-fallback`). Leave dry-run on until the Checkpoint C review
 passes.
 
+Both plans keep the CHARGE state **armed through the whole cheap
+window** even after their model reaches capacity (real load runs
+above forecast and the charge loop throttles under house load, so the
+planned energy is a floor, not a guarantee): the charge loop drives
+full power and the battery's own firmware target stops at actual
+full. Armed quarters appear in `schedule` / `static_schedule` as ~0 W
+charge segments — by design. Under dynamic actuation, days start at
+the reserve floor (the greedy sells everything by day end), so the
+greedy plans the night's cheap charge before each morning ponta.
+
 **Optional entities**, each degrading gracefully when unset:
 
 | Config field | Enables |

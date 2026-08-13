@@ -435,6 +435,16 @@ refresh). The plan sensor's `executor_plan_source` attribute reports
 `static` / `greedy` / `static-fallback`. Flipping the toggle is gated
 on Checkpoint C.*
 
+*Follow-up (owner, 2026-08-13, `docs/findings.md` §Charge-window
+arming): both planners keep the CHARGE state armed through every
+still-profitable window quarter (the modelled charge energy is a
+floor, not a guarantee — real load runs above forecast and the
+ADR-0007 loop throttles), delegating the stop to the loop + firmware
+percent-target; and the day seed follows the actuated regime — the
+static chain under dry-run, the reserve floor under dynamic (a greedy
+day ends at the floor by construction, so it plans the night charge
+before the morning ponta instead of assuming a full battery).*
+
 **Verification:**
 - [ ] 1 week in `dry_run`, comparing the planned schedule against what would have been optimal
 - [ ] 3 months in production: realised saving > static

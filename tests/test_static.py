@@ -50,6 +50,34 @@ def test_winter_weekday_charges_overnight_discharges_in_ponta() -> None:
     assert sum(plan.discharge_w) > 0
 
 
+def test_charge_window_stays_armed_after_model_full() -> None:
+    """
+    Owner decision 2026-08-13: the CHARGE state spans the WHOLE window.
+
+    The model fills to capacity in the first ~2 h; the remaining
+    window quarters carry a marginal state-selector power (ADR-0007)
+    shaved off the filled ones — totals, the end SoC and therefore the
+    day-chaining seed are conserved. At run time the charge loop and
+    the firmware full-target own the stop, so real shortfalls recover
+    in the armed time.
+    """
+    winter = static_plan(date(2026, 1, 15), FLAT_LOAD, NO_SOLAR, PARAMS)
+    # Every quarter of the 00:00-07:00 window is a charge quarter...
+    assert all(winter.charge_w[i] > 0 for i in range(28))
+    # ...but the armed tail is marginal, not an energy claim.
+    assert winter.charge_w[27] < 1.0
+    # Energy conserved: the trajectory still ends exactly at the floor.
+    assert soc_trajectory(winter, PARAMS)[-1] == pytest.approx(PARAMS.cap_min_kwh)
+    assert validate_plan(winter, FLAT_LOAD, NO_SOLAR, PARAMS) == []
+
+    seed = chained_start_soc(date(2026, 7, 15), FLAT_LOAD, NO_SOLAR, PARAMS)
+    params = dataclasses.replace(PARAMS, soc_start_kwh=seed)
+    summer = static_plan(date(2026, 7, 15), FLAT_LOAD, NO_SOLAR, params)
+    assert all(summer.charge_w[i] > 0 for i in range(52, 68))  # 13:00-17:00
+    assert summer.charge_w[67] < 1.0
+    assert validate_plan(summer, FLAT_LOAD, NO_SOLAR, params) == []
+
+
 def test_summer_weekday_charges_at_midday() -> None:
     """
     Wed 15 Jul 2026: the charging window moves to 13:00-17:00.

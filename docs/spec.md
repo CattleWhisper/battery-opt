@@ -143,6 +143,24 @@ Summer = last Sunday of March → last Sunday of October.
 
 **Implementation note (Checkpoint A):** `core/optimiser.py` guarantees C-1..C-7 **by construction** (causality plus ceiling-checked pair sizing) rather than step 3's validate-and-repair; step 3 survives as the executor's independent validation of every plan before actuation (spec §11).
 
+**Charge-window arming (owner decision 2026-08-13, both planners):**
+after the solve/window fill, every quarter that could still profitably
+feed a remaining discharge stays a CHARGE quarter at a marginal
+`ARMED_CHARGE_KWH` (0.04 W state selector, ADR-0007 — not an energy
+claim), shaved off the run's own allocation so totals, the trajectory
+and the day-chaining seed are conserved. The greedy arms forward past
+each run while the C-8 condition holds against the cheapest discharge
+still ahead (never past the last discharge); the static plan arms its
+whole seasonal window. Rationale: the modelled charge energy is a
+floor, not a guarantee — anti-feed discharges track REAL load (often
+deeper than forecast) and the ADR-0007 loop throttles under house
+load — so the run-time pair (loop at full power + the firmware
+percent-target, which self-corrects any start-SoC error) owns the
+stop, and shortfalls recover in the armed time instead of persisting
+into the next ponta. Cost: the plan may model a few 1e-4 EUR of
+insurance; the armed tail appears in `schedule` as ~0 W charge
+segments.
+
 ---
 
 ## 8. Interfaces
@@ -157,9 +175,11 @@ Summer = last Sunday of March → last Sunday of October.
 | Solar forecast | `forecast_solar` | 0 |
 
 The SoC is deliberately NOT an input (ADR-0008, owner 2026-08-07):
-no SoC is read anywhere. Every plan — the executor's static plan, the
-static fallback, the advisory greedy and tomorrow's preview — seeds
-its day at the previous weekday's PLANNED static end SoC (virtual
+no SoC is read anywhere. The day seed follows the ACTUATED regime
+(revised 2026-08-13 with Task 12). **Under dry-run (static
+actuation):** every plan — the executor's static plan, the static
+fallback, the advisory greedy and tomorrow's preview — seeds its day
+at the previous weekday's PLANNED static end SoC (virtual
 day-chaining, `core.static_schedule.chained_start_soc`, 2026-08-07/08):
 the summer schedule charges at midday AFTER the morning ponta, so a
 floor-seeded summer day can never discharge — the battery would sit
@@ -170,9 +190,17 @@ model rolled forward (exact: every weekday's charge window fills to
 capacity from any start, so its end is start-independent; weekends
 are no-ops that pass SoC through), never a readback — ADR-0008
 stands. In winter the previous weekday ends drained, so the chained
-seed IS the floor. Daily savings keep the backtest's convention:
-charge cost books on the day it is bought, discharge revenue on the
-day it is sold.
+seed IS the floor. **With dry_run off (greedy actuation):** every day
+seeds at the reserve floor instead — a greedy day ends AT the floor
+by construction (the single-day model values no stored energy:
+everything above the floor is sold wherever price beats wear), so the
+static chain's "full" seed would model energy the battery does not
+have; floor-seeded, the solve buys the night's cheap quarters before
+the morning ponta. (Extreme negative-price days can leave the real
+end above the floor — the battery then holds more than modelled, the
+safe direction, corrected within a day.) Daily savings keep the
+backtest's convention: charge cost books on the day it is bought,
+discharge revenue on the day it is sold.
 
 ### Outputs (entities)
 

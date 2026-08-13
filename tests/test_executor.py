@@ -341,6 +341,47 @@ def test_day_chaining_soc_trajectory_starts_at_the_chained_seed() -> None:
     assert trajectory[0] == pytest.approx(PARAMS.cap_usable_kwh)  # full
 
 
+def test_charge_state_holds_through_the_armed_window_tail() -> None:
+    """
+    Winter 05:00 — hours past model-full — still commands CHARGE.
+
+    Owner decision 2026-08-13: the window stays armed at a marginal
+    state-selector power, so the run-time pair (charge loop at full
+    power + the firmware percent-target) owns the stop. Real
+    shortfalls (deeper-than-forecast discharge, a throttled loop)
+    recover in the remaining window time.
+    """
+    driver = FakeDriver()
+    executor = _executor(driver)
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 0)))
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 5, 0)))
+    assert executor.last_action == "charge"
+    assert len(driver.calls) == 1  # unchanged state: no rewrite
+
+
+def test_dynamic_static_fallback_seeds_at_the_floor() -> None:
+    """
+    Dry-run off: the fallback must not model the static chain's seed.
+
+    Under dynamic actuation yesterday's greedy ended the day at the
+    floor, so a summer morning ponta genuinely has nothing to serve it
+    — the fallback plan holds instead of claiming a discharge the
+    battery cannot deliver.
+    """
+    driver = FakeDriver()
+    executor = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        dynamic_enabled=True,
+    )
+    asyncio.run(executor.tick(datetime(2026, 8, 10, 10, 0)))  # summer ponta
+    assert executor.plan_source == "static-fallback"
+    assert executor.last_action == "hold"
+    trajectory = executor.planned_soc_trajectory()
+    assert trajectory is not None
+    assert trajectory[0] == pytest.approx(PARAMS.cap_min_kwh)
+
+
 def test_dynamic_plan_adopted_and_actuated() -> None:
     """
     Task 12: with dynamic enabled, the executor actuates the greedy.

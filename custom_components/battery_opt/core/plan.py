@@ -34,6 +34,19 @@ if TYPE_CHECKING:
 # quantities in W or kWh, far below any physically meaningful amount.
 _EPS = 1e-6
 
+# Charge-window arming (owner decision 2026-08-13): quarters the model
+# leaves empty inside a still-profitable charge window carry this
+# marginal energy — a state selector per ADR-0007, not an energy claim.
+# The run-time pair (charge-power loop at full power + the firmware's
+# percent full-target) then recovers any real shortfall: anti-feed
+# discharges track REAL load (often deeper than forecast) and the loop
+# throttles under house load, so the modelled charge energy is a floor,
+# not a guarantee. The armed energy is shaved off already-allocated
+# quarters, conserving totals, the end SoC and the day-chaining seed.
+# 1e-5 kWh = 0.04 W over a quarter-hour: above the validator's _EPS,
+# far below anything physical.
+ARMED_CHARGE_KWH = 1e-5
+
 
 @dataclass(frozen=True)
 class BatteryParams:

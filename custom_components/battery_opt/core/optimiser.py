@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .plan import BatteryParams, Plan
+from .plan import ARMED_CHARGE_KWH, BatteryParams, Plan
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -171,6 +171,88 @@ def _pair_intervals(state: _DayState) -> None:
             dead.add(d)
 
 
+def _arm_charge_extensions(state: _DayState) -> None:
+    """
+    Step 2: hold the CHARGE state past each run while it stays useful.
+
+    Owner decision 2026-08-13 (spec §7): every quarter after a charge
+    run that could still profitably feed a remaining discharge (the
+    C-8 condition against the cheapest discharge still ahead) is armed
+    at ARMED_CHARGE_KWH — a state selector (ADR-0007), not an energy
+    claim — shaved off the run's own allocation, latest quarters
+    first, so totals and the modelled trajectory are conserved (the
+    energy only moves later; C-5 can never be pushed up). Real
+    shortfalls (anti-feed discharged a deeper-than-forecast load; the
+    charge loop was throttled) then recover in the armed time: the
+    loop charges at full power and the firmware percent-target stops
+    at ACTUAL full. `state.saving` is adjusted by the exact modelled
+    cost delta so it still matches the evaluator; the plan may
+    therefore model up to a few 1e-4 EUR of insurance cost.
+    """
+    params = state.params
+    eta_rt = params.eta_roundtrip
+    wear = params.wear_cost_eur_kwh
+    n = len(state.prices)
+    # Cheapest discharge price strictly after each index; None means
+    # no discharge remains ahead, which blocks arming there. Prices
+    # can be negative (never assume >= 0), so None is the sentinel.
+    min_d_after: list[float | None] = [None] * n
+    running: float | None = None
+    for i in range(n - 1, -1, -1):
+        min_d_after[i] = running
+        if state.discharge_e[i] > _EPS_KWH:
+            running = (
+                state.prices[i] if running is None else min(running, state.prices[i])
+            )
+    i = 0
+    while i < n:
+        if state.charge_e[i] <= _EPS_KWH:
+            i += 1
+            continue
+        run_start = i
+        while i < n and state.charge_e[i] > _EPS_KWH:
+            i += 1
+        run_end = i  # exclusive
+        candidates: list[int] = []
+        q = run_end
+        while (
+            q < n
+            and state.discharge_e[q] <= _EPS_KWH
+            and state.charge_e[q] <= _EPS_KWH
+            and state.charge_cap[q] > ARMED_CHARGE_KWH
+            and (ahead := min_d_after[q]) is not None
+            and ahead > state.prices[q] / eta_rt + wear
+        ):
+            candidates.append(q)
+            q += 1
+        i = max(i, q)  # never re-walk freshly armed quarters as a run
+        if not candidates:
+            continue
+        # How many candidates the run can afford (donors keep at least
+        # the armed quantum so they stay charge quarters themselves).
+        available = sum(
+            max(0.0, state.charge_e[d] - ARMED_CHARGE_KWH)
+            for d in range(run_start, run_end)
+        )
+        candidates = candidates[: int(available / ARMED_CHARGE_KWH)]
+        need = ARMED_CHARGE_KWH * len(candidates)
+        for c in candidates:
+            state.charge_e[c] = ARMED_CHARGE_KWH
+            state.charge_cap[c] -= ARMED_CHARGE_KWH
+            state.charged.add(c)
+            state.saving -= state.prices[c] * ARMED_CHARGE_KWH
+        for d in range(run_end - 1, run_start - 1, -1):
+            take = min(state.charge_e[d] - ARMED_CHARGE_KWH, need)
+            if take <= 0.0:
+                continue
+            state.charge_e[d] -= take
+            state.charge_cap[d] += take
+            state.saving += state.prices[d] * take
+            need -= take
+            if need <= 0.0:
+                break
+
+
 def solve(
     prices: Sequence[float],
     load_w: Sequence[float],
@@ -185,6 +267,7 @@ def solve(
     state = _initial_state(prices, load_w, solar_w, params)
     _discharge_free_energy(state)
     _pair_intervals(state)
+    _arm_charge_extensions(state)
     dt = params.interval_hours
     plan = Plan(
         charge_w=tuple(e / dt * 1000 for e in state.charge_e),

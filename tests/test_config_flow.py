@@ -758,6 +758,41 @@ async def test_dry_run_off_actuates_the_coordinator_greedy(
     assert plan_state.attributes["executor_plan_source"] == "greedy"
 
 
+async def test_dry_run_off_seeds_days_at_the_floor(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Task 12 follow-up (owner 2026-08-13): dynamic days start at the floor.
+
+    A greedy day ends at the reserve floor by construction (stored
+    energy is unvalued), so under dynamic actuation the next day must
+    NOT be seeded from the static chain's full end — instead it starts
+    at the floor and the solve buys the night's cheap quarters before
+    the morning ponta.
+    """
+    freezer.move_to("2026-07-15T08:00:00+00:00")  # summer Wednesday
+    _register_core_omie_service(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data={**VALID_INPUT, "dry_run": False})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    soc_forecast = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert soc_forecast.attributes["greedy_trajectory_pct"][0] == pytest.approx(27.0)
+    # The floor-seeded greedy charges BEFORE the morning ponta instead
+    # of discharging energy it does not have.
+    plan_state = hass.states.get("sensor.battery_opt_plan")
+    early_charge = [
+        s
+        for s in plan_state.attributes["schedule"]
+        if s["direction"] == "charge"
+        and s["start"].startswith("2026-07-15")
+        and datetime.fromisoformat(s["start"]).hour < 9
+    ]
+    assert early_charge
+
+
 async def test_dry_run_defaults_on_and_keeps_static_actuation(
     hass: HomeAssistant,
     freezer: FrozenDateTimeFactory,

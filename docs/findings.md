@@ -365,3 +365,38 @@ OTA** before trusting a single transition.
   next tick re-enters CHARGE within 15 min either way. Ungraceful
   deaths are covered by the backstop regardless. Not implemented
   pending the owner's call.
+
+---
+
+## Charge-window arming + regime seeding (owner decision, 2026-08-13)
+
+Observed in supervised production (first days of executor actuation):
+the battery exited the midday charge window BELOW full — anti-feed had
+discharged the real morning load (above the flat forecast), and the
+charge loop had throttled under house load — so the next morning's
+ponta would have been undersupplied. The modelled charge energy is a
+floor, not a guarantee. Two changes:
+
+1. **Charge-window arming (both planners, in core).** Quarters the
+   model leaves empty inside a still-profitable window stay CHARGE
+   quarters at `ARMED_CHARGE_KWH` (0.04 W — a state selector per
+   ADR-0007, shaved off the run so totals/trajectory/chaining seed are
+   conserved; Checkpoint B backtest figures unchanged beyond ~1e-5 kWh
+   noise). The static plan arms its whole seasonal window; the greedy
+   arms forward past each run while C-8 holds against the cheapest
+   discharge still ahead — never past the last discharge. The run-time
+   stop is the loop + the firmware percent-target (verified item 3),
+   which self-corrects start-SoC errors given window TIME — which is
+   exactly what arming provides. The plan may model a few 1e-4 EUR of
+   insurance cost; armed quarters show as ~0 W charge segments.
+
+2. **Day seeds follow the actuated regime.** Dry-run on (static
+   actuates): virtual day-chaining as before. Dry-run off (greedy
+   actuates): days seed at the reserve floor — a greedy day ends at
+   the floor by construction (single-day model, stored energy
+   unvalued), so the static chain's "full" seed would plan the morning
+   ponta from energy the battery no longer has; floor-seeded, the
+   solve buys the night's cheap quarters first. Caveat: on extreme
+   negative-price days (delivered price below wear all day) the real
+   end can sit above the floor — the battery then holds more than
+   modelled, the safe direction, corrected within a day.
