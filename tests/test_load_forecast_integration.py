@@ -122,6 +122,8 @@ async def test_advisory_plan_input_reflects_the_forecast(hass: HomeAssistant) ->
     # (zero-export) — still the forecast's cap, never BASE_LOAD_W's.
     assert coordinator.data["fallback"] == "static"
     assert max(coordinator.data["plan_discharge_w"]) <= 1.0
+    # In the fallback the published plan IS the static baseline.
+    assert coordinator.data["static_charge_w"] == coordinator.data["plan_charge_w"]
 
 
 async def test_day_close_without_meter_is_a_no_op(hass: HomeAssistant) -> None:

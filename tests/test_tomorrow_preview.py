@@ -138,6 +138,12 @@ async def test_tomorrow_preview_published_when_d_plus_1_is_available(
     plan_state = hass.states.get("sensor.battery_opt_plan")
     schedule = plan_state.attributes["schedule"]
     assert any(str(s["start"]).startswith(tomorrow.isoformat()) for s in schedule)
+    # The static baseline spans tomorrow too (winter static charges the
+    # vazio night), so the comparison graph covers the full 48 h.
+    static_schedule = plan_state.attributes["static_schedule"]
+    assert any(
+        str(s["start"]).startswith(tomorrow.isoformat()) for s in static_schedule
+    )
 
 
 async def test_tomorrow_preview_absent_when_d_plus_1_not_yet_published(

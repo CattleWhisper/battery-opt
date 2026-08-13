@@ -158,7 +158,24 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
         attributes: dict[str, Any] = {
             "mode": "active" if self._executor is not None else "planning_only",
             "plan_date": str(data.get("plan_date") or ""),
-            "schedule": self._schedule(data),
+            "schedule": self._segments(
+                data,
+                "plan_charge_w",
+                "plan_discharge_w",
+                tomorrow_keys=("tomorrow_charge_w", "tomorrow_discharge_w"),
+            ),
+            # The static baseline as the same segment format — graph it
+            # against `schedule` to compare the two plans (the
+            # Checkpoint C / Task 12 dry-run comparison view).
+            "static_schedule": self._segments(
+                data,
+                "static_charge_w",
+                "static_discharge_w",
+                tomorrow_keys=(
+                    "tomorrow_static_charge_w",
+                    "tomorrow_static_discharge_w",
+                ),
+            ),
             "prices_ok": data.get("prices_ok"),
             "prices_padded": data.get("prices_padded"),
             # Decision 6: set to "static" whenever no trustworthy
@@ -181,24 +198,30 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
         return attributes
 
     @staticmethod
-    def _schedule(data: dict[str, Any]) -> list[dict[str, Any]]:
+    def _segments(
+        data: dict[str, Any],
+        charge_key: str,
+        discharge_key: str,
+        tomorrow_keys: tuple[str, str],
+    ) -> list[dict[str, Any]]:
         """
-        Merge the advisory plan into multi-day charge/discharge windows.
+        Merge a plan's vectors into multi-day charge/discharge windows.
 
         Today's segments, extended with tomorrow's the moment the D+1
         preview builds (decision 9) — the ISO timestamps carry the
-        date, so one flat list spans both days.
+        date, so one flat list spans both days. Shared by the advisory
+        `schedule` and the `static_schedule` baseline.
         """
         plan_date = data.get("plan_date")
         if plan_date is None:
             return []
         segments: list[dict[str, Any]] = []
-        charge = data.get("plan_charge_w")
-        discharge = data.get("plan_discharge_w")
+        charge = data.get(charge_key)
+        discharge = data.get(discharge_key)
         if charge and discharge:
             segments += schedule_segments(plan_date, charge, discharge)
-        tomorrow_charge = data.get("tomorrow_charge_w")
-        tomorrow_discharge = data.get("tomorrow_discharge_w")
+        tomorrow_charge = data.get(tomorrow_keys[0])
+        tomorrow_discharge = data.get(tomorrow_keys[1])
         if tomorrow_charge and tomorrow_discharge:
             segments += schedule_segments(
                 plan_date + timedelta(days=1), tomorrow_charge, tomorrow_discharge

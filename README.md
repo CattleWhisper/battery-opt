@@ -81,7 +81,7 @@ All grouped under one **Battery Opt** service device.
 
 | Entity | What it shows |
 |---|---|
-| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — plus the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
+| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
@@ -184,6 +184,66 @@ yaxis:
       title:
         text: W
 ```
+
+**Greedy vs static:** `sensor.battery_opt_plan` also carries
+`static_schedule` — the fixed seasonal baseline in the same segment
+format — so a second card can overlay the two plans. This is the
+Task 12 dry-run comparison: while **Dry-run** is on, the *static*
+series is what the executor actuates and the *greedy* columns are
+what dynamic mode would do instead; after Checkpoint C the roles
+swap. Charge is drawn positive, discharge negative, for both:
+
+```yaml
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Battery Opt — greedy vs static
+graph_span: 48h
+span:
+  start: day
+now:
+  show: true
+  label: now
+series:
+  - entity: sensor.battery_opt_plan
+    name: Greedy (W)
+    type: column
+    extend_to: false
+    data_generator: |
+      const pts = [];
+      (entity.attributes.schedule || []).forEach(s => {
+        const sign = s.direction === "charge" ? 1 : -1;
+        const end = new Date(s.end).getTime();
+        for (let t = new Date(s.start).getTime(); t < end; t += 900000)
+          pts.push([t, sign * s.power_w]);
+      });
+      return pts;
+  - entity: sensor.battery_opt_plan
+    name: Static (W)
+    type: line
+    curve: stepline
+    stroke_width: 2
+    extend_to: false
+    data_generator: |
+      const pts = [];
+      (entity.attributes.static_schedule || []).forEach(s => {
+        const sign = s.direction === "charge" ? 1 : -1;
+        const end = new Date(s.end).getTime();
+        for (let t = new Date(s.start).getTime(); t < end; t += 900000)
+          pts.push([t, sign * s.power_w]);
+      });
+      return pts;
+yaxis:
+  - min: -2500
+    max: 2500
+    apex_config:
+      title:
+        text: W
+```
+
+(The stepline drops to gaps between windows rather than drawing a
+zero baseline — hold periods are simply absent from both series, as
+in the `schedule` attribute itself.)
 
 **SoC — forecast vs real:** `sensor.battery_opt_soc_forecast` carries
 the planned SoC for the current quarter (%, same unit as the Marstek

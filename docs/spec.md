@@ -178,7 +178,7 @@ day it is sold.
 
 | Entity | Description |
 |---|---|
-| `sensor.battery_opt_plan` | Current action; attributes carry `schedule` — the advisory plan as merged charge/discharge windows `{start, end, direction, power_w}` (ISO timestamps with offset, hold windows omitted), one flat list spanning today and, once D+1's own price series builds, tomorrow (seeded at the reserve floor, not chained from today — decision 9) |
+| `sensor.battery_opt_plan` | Current action; attributes carry `schedule` — the advisory plan as merged charge/discharge windows `{start, end, direction, power_w}` (ISO timestamps with offset, hold windows omitted), one flat list spanning today and, once D+1's own price series builds, tomorrow (seeded at the reserve floor, not chained from today — decision 9) — and `static_schedule`, the static baseline in the same format over the same span, for the greedy-vs-static comparison graph (the Task 12 dry-run view) |
 | `sensor.battery_opt_forecast_savings` | Forecast saving vs. not cycling |
 | `sensor.battery_opt_vs_static` | **Forecast gain vs. the fixed schedule — the metric that justifies the project** |
 | `sensor.battery_opt_realised_savings` | Ex-post realised saving today from MEASURED battery flows (Task 13): power-sensor slices valued at the delivered price of their instant, wear at TRUE wear per discharged kWh (no SoC — ADR-0008); month-to-date realised/forecast and their deviation in attributes; unavailable without `CONF_BATTERY_POWER_SENSOR` |

@@ -189,6 +189,8 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "tomorrow_prices_padded": None,
             "tomorrow_charge_w": None,
             "tomorrow_discharge_w": None,
+            "tomorrow_static_charge_w": None,
+            "tomorrow_static_discharge_w": None,
         }
         tomorrow = today + timedelta(days=1)
         series = await self._prices_for_day(tomorrow)
@@ -204,6 +206,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         plan_params = dataclasses.replace(
             params, soc_start_kwh=chained_start_soc(tomorrow, load, solar, params)
         )
+        # The static baseline needs no prices — published alongside the
+        # greedy preview for the plan-comparison dashboard.
+        static = static_plan(tomorrow, load, solar, plan_params)
         solve_params = dataclasses.replace(
             plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
         )
@@ -216,12 +221,16 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 **empty,
                 "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices],
                 "tomorrow_prices_padded": series.padded,
+                "tomorrow_static_charge_w": list(static.charge_w),
+                "tomorrow_static_discharge_w": list(static.discharge_w),
             }
         return {
             "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices],
             "tomorrow_prices_padded": series.padded,
             "tomorrow_charge_w": list(result.plan.charge_w),
             "tomorrow_discharge_w": list(result.plan.discharge_w),
+            "tomorrow_static_charge_w": list(static.charge_w),
+            "tomorrow_static_discharge_w": list(static.discharge_w),
         }
 
     async def _forecast_load_vector(self, today: date, n: int) -> list[float]:
@@ -330,6 +339,11 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plan_soc_kwh": [
                 round(v, 3) for v in soc_trajectory(result.plan, plan_params)
             ],
+            # The static baseline the vs_static delta is measured
+            # against — published so dashboards can graph both plans
+            # side by side (the Checkpoint C comparison view).
+            "static_charge_w": list(static.charge_w),
+            "static_discharge_w": list(static.discharge_w),
             "forecast_saving_eur": round(greedy_saving, 4),
             "vs_static_eur": round(greedy_saving - static_saving, 4),
             "fallback": None,
@@ -362,6 +376,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plan_soc_kwh": [
                 round(v, 3) for v in soc_trajectory(fallback_plan, plan_params)
             ],
+            # The published plan IS the static baseline here.
+            "static_charge_w": list(fallback_plan.charge_w),
+            "static_discharge_w": list(fallback_plan.discharge_w),
             "forecast_saving_eur": None,
             "vs_static_eur": None,
             "fallback": "static",

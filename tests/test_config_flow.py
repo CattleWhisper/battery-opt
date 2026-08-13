@@ -363,6 +363,14 @@ async def test_advisory_trajectory_is_day_chained_in_summer(
         and datetime.fromisoformat(s["start"]).hour < 13
     ]
     assert morning_discharge
+    # The static baseline rides alongside in the same segment format
+    # (the plan-comparison graph): summer static charges 13:00-17:00.
+    static_charge = [
+        s
+        for s in plan_state.attributes["static_schedule"]
+        if s["direction"] == "charge" and s["start"].startswith("2026-07-15T13:00")
+    ]
+    assert static_charge
 
 
 async def test_current_price_sensor_tracks_the_edp_formula(
