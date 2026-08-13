@@ -224,14 +224,32 @@ series:
     curve: stepline
     stroke_width: 2
     extend_to: false
+    # A line series connects consecutive points, so the hold gaps
+    # between windows MUST be emitted as explicit zeros — otherwise
+    # Apex bridges the last window's value straight to the next one.
+    # This generator walks from midnight of plan_date to the end of
+    # the last day any segment covers, at 15-min steps, filling 0
+    # wherever no segment covers the instant.
     data_generator: |
+      const segs = entity.attributes.static_schedule || [];
+      if (!segs.length) return [];
+      const spans = segs.map(s => [
+        new Date(s.start).getTime(),
+        new Date(s.end).getTime(),
+        (s.direction === "charge" ? 1 : -1) * s.power_w,
+      ]);
+      const t0 = new Date(entity.attributes.plan_date + "T00:00:00").getTime();
+      // Midnight after the last covered day (-1 ms so an
+      // exactly-midnight end does not add a whole day of zeros).
+      const last = new Date(Math.max(...spans.map(s => s[1])) - 1);
+      const tEnd = new Date(
+        last.getFullYear(), last.getMonth(), last.getDate() + 1
+      ).getTime();
       const pts = [];
-      (entity.attributes.static_schedule || []).forEach(s => {
-        const sign = s.direction === "charge" ? 1 : -1;
-        const end = new Date(s.end).getTime();
-        for (let t = new Date(s.start).getTime(); t < end; t += 900000)
-          pts.push([t, sign * s.power_w]);
-      });
+      for (let t = t0; t < tEnd; t += 900000) {
+        const hit = spans.find(s => t >= s[0] && t < s[1]);
+        pts.push([t, hit ? hit[2] : 0]);
+      }
       return pts;
 yaxis:
   - min: -2500
@@ -241,9 +259,8 @@ yaxis:
         text: W
 ```
 
-(The stepline drops to gaps between windows rather than drawing a
-zero baseline — hold periods are simply absent from both series, as
-in the `schedule` attribute itself.)
+(The greedy column series needs no zero-filling — each bar stands
+alone — but any *line* drawn from a segment attribute does.)
 
 **SoC — forecast vs real:** `sensor.battery_opt_soc_forecast` carries
 the planned SoC for the current quarter (%, same unit as the Marstek
