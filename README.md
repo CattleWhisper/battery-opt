@@ -115,6 +115,12 @@ type: custom:apexcharts-card
 header:
   show: true
   title: Battery Opt — plan
+  # Header states show the value AT the now-marker (in_header:
+  # before_now per series). The legend value cannot do that — it is
+  # always the series' LAST datapoint (end of tomorrow), so it is
+  # turned off per series below.
+  show_states: true
+  colorize_states: true
 graph_span: 48h
 span:
   start: day
@@ -129,6 +135,12 @@ series:
     # Without this the card's default (extend_to: end) drags the last
     # value flat to the edge of graph_span once the data runs out.
     extend_to: false
+    # Header/tooltip decimals (the card's default of 1 rounds
+    # 0.276 -> "0.3"); matches the price axis's 3 decimals.
+    float_precision: 3
+    show:
+      legend_value: false
+      in_header: before_now
     data_generator: |
       const pts = [];
       (entity.attributes.prices || []).forEach(s => {
@@ -142,6 +154,9 @@ series:
     type: column
     yaxis_id: power
     extend_to: false
+    show:
+      legend_value: false
+      in_header: before_now
     data_generator: |
       const pts = [];
       (entity.attributes.schedule || [])
@@ -157,6 +172,9 @@ series:
     type: column
     yaxis_id: power
     extend_to: false
+    show:
+      legend_value: false
+      in_header: before_now
     data_generator: |
       const pts = [];
       (entity.attributes.schedule || [])
@@ -198,6 +216,10 @@ type: custom:apexcharts-card
 header:
   show: true
   title: Battery Opt — greedy vs static
+  # Values at the now-marker in the header; the legend value would
+  # show each series' LAST datapoint instead, so it is disabled.
+  show_states: true
+  colorize_states: true
 graph_span: 48h
 span:
   start: day
@@ -209,6 +231,9 @@ series:
     name: Greedy (W)
     type: column
     extend_to: false
+    show:
+      legend_value: false
+      in_header: before_now
     data_generator: |
       const pts = [];
       (entity.attributes.schedule || []).forEach(s => {
@@ -224,6 +249,9 @@ series:
     curve: stepline
     stroke_width: 2
     extend_to: false
+    show:
+      legend_value: false
+      in_header: before_now
     # A line series connects consecutive points, so the hold gaps
     # between windows MUST be emitted as explicit zeros — otherwise
     # Apex bridges the last window's value straight to the next one.
