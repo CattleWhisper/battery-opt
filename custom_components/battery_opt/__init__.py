@@ -220,6 +220,7 @@ async def async_setup_entry(
         await driver.write_soc_cutoffs(floor_pct, 100.0)
     coordinator = BatteryOptCoordinator(hass, entry, driver)
     await coordinator.async_restore_load_mae()
+    await coordinator.async_restore_greedy_end()
     await coordinator.async_config_entry_first_refresh()
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 

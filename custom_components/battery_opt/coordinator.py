@@ -5,12 +5,14 @@ Each refresh pulls the day series from core OMIE's
 get_prices_for_date service, computes the advisory plan with the
 capped greedy (plans at the plan-wear from the Checkpoint B decision,
 books savings at the true wear), and publishes plan + forecast saving
-+ the vs-static delta. The virtual battery day-chains like the
-executor (spec §8): each day — advisory greedy, static fallback and
-tomorrow's preview alike — seeds at the previous weekday's planned
-static end, so the published SoC trajectory matches the battery's
-real morning state under Phase 1 actuation. No SoC is read anywhere
-(owner decision 2026-08-07 — the floor is the battery's to manage).
++ the vs-static delta. Two virtual batteries, both chained (spec §8):
+the STATIC baseline seeds per the actuated regime (the static chain
+under dry-run — the battery's real morning state under Phase 1 — the
+floor under dynamic), while the GREEDY chains ITS OWN persisted end
+across days (today starts where yesterday's greedy ended; the regime
+seed applies only when no yesterday record exists). No SoC is read
+anywhere (owner decision 2026-08-07 — the floor is the battery's to
+manage).
 With the Marstek entities
 configured, the executor (separate) additionally actuates: the static
 plan while `dry_run` is on (the default — the advisory greedy is then
@@ -78,6 +80,10 @@ OMIE_SERVICE_GET_PRICES = "get_prices_for_date"
 # Plan Task 11, decision 7: MAE persists across restarts.
 _MAE_STORE_VERSION = 1
 
+# Owner 2026-08-13: the greedy chains its own end across days; the
+# recorded end survives restarts so today can seed from yesterday.
+_GREEDY_END_STORE_VERSION = 1
+
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -117,12 +123,55 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mae_store: Store[dict[str, Any]] = Store(
             hass, _MAE_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_load_mae"
         )
+        # The most recent day a greedy was built: its date, the start
+        # seed it was built FROM (stable across the day's refreshes)
+        # and its planned end (tomorrow's seed). Persisted so the
+        # greedy chain survives restarts.
+        self._greedy_day: dict[str, Any] | None = None
+        self._greedy_end_store: Store[dict[str, Any]] = Store(
+            hass, _GREEDY_END_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_greedy_end"
+        )
 
     async def async_restore_load_mae(self) -> None:
         """Restore the persisted load-forecast MAE (decision 7), if any."""
         stored = await self._mae_store.async_load()
         if stored is not None:
             self._load_mae_w = stored.get("mae_w")
+
+    async def async_restore_greedy_end(self) -> None:
+        """Restore the persisted greedy chain record, if any."""
+        stored = await self._greedy_end_store.async_load()
+        if stored is not None and stored.get("date"):
+            self._greedy_day = stored
+
+    def _record_greedy_day(self, day: date, start: float, end: float) -> None:
+        record = {
+            "date": day.isoformat(),
+            "start_soc_kwh": round(start, 3),
+            "end_soc_kwh": round(end, 3),
+        }
+        if record == self._greedy_day:
+            return
+        self._greedy_day = record
+        self.hass.async_create_task(self._greedy_end_store.async_save(record))
+
+    def _greedy_chain_seed(self, today: date) -> float | None:
+        """
+        Return the greedy's chained start for `today`, None if unchained.
+
+        Yesterday's record chains its END forward; today's own record
+        pins the START already used, so intraday refreshes never flip
+        the seed. Anything older (first run, HA off yesterday,
+        yesterday a static fallback) returns None — the regime default
+        then applies.
+        """
+        if self._greedy_day is None:
+            return None
+        if self._greedy_day["date"] == today.isoformat():
+            return float(self._greedy_day["start_soc_kwh"])
+        if self._greedy_day["date"] == (today - timedelta(days=1)).isoformat():
+            return float(self._greedy_day["end_soc_kwh"])
+        return None
 
     @property
     def planning_only(self) -> bool:
@@ -354,30 +403,43 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
         solar = [0.0] * len(load)
-        # Virtual battery, seeded per the actuated regime (spec §8,
-        # _day_start_soc): dry-run chains the static plan's end — under
-        # static actuation that IS the expected real morning SoC, so
-        # the advisory trajectory (and the SoC forecast sensor) lines
-        # up with the battery instead of resetting to the floor; with
-        # dry_run off the greedy actuates and days start at the floor.
-        # Daily savings keep the backtest's chaining convention: charge
-        # cost books on the day it is bought, discharge revenue on the
-        # day it is sold.
-        plan_params = dataclasses.replace(
+        # Two virtual batteries (owner 2026-08-13). The STATIC baseline
+        # seeds per the actuated regime (_day_start_soc): dry-run
+        # chains the static plan's own end — under static actuation
+        # that IS the expected real morning SoC — and the dynamic
+        # regime starts at the floor. The GREEDY chains ITS OWN end:
+        # today starts at yesterday's recorded greedy end, falling back
+        # to the regime seed only when no yesterday value exists (first
+        # run, HA off yesterday, yesterday was a static fallback). One
+        # continuous greedy trajectory, day after day — the same
+        # convention the backtest chains both strategies under. Daily
+        # savings keep that convention too: charge cost books on the
+        # day it is bought, discharge revenue on the day it is sold
+        # (energy carried in from yesterday is sunk-cost free energy).
+        static_params = dataclasses.replace(
             params, soc_start_kwh=self._day_start_soc(today, load, solar, params)
         )
         if prices is None:
             self.executor_plan = None
-            return self._static_fallback(today, load, solar, plan_params)
+            return self._static_fallback(today, load, solar, static_params)
+        greedy_start = self._greedy_chain_seed(today)
+        greedy_params = dataclasses.replace(
+            params,
+            soc_start_kwh=(
+                greedy_start
+                if greedy_start is not None
+                else self._day_start_soc(today, load, solar, params)
+            ),
+        )
         solve_params = dataclasses.replace(
-            plan_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
+            greedy_params, wear_cost_eur_kwh=self.plan_wear_eur_kwh
         )
         result = solve(prices, load, solar, solve_params)
-        if validate_plan(result.plan, load, solar, plan_params):
+        if validate_plan(result.plan, load, solar, greedy_params):
             # Cannot happen by construction; fail closed (decision 6:
             # any untrustworthy dynamic plan falls back to static).
             self.executor_plan = None
-            return self._static_fallback(today, load, solar, plan_params)
+            return self._static_fallback(today, load, solar, static_params)
         # Task 12: publish the validated greedy for the executor,
         # together with the exact inputs it was built with — the
         # executor re-validates each tick with these, never with its
@@ -385,28 +447,28 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.executor_plan = DynamicDayPlan(
             day=today,
             plan=result.plan,
-            params=plan_params,
+            params=greedy_params,
             load_w=tuple(load),
             solar_w=tuple(solar),
         )
-        static = static_plan(today, load, solar, plan_params)
-        greedy_saving = saving_vs_no_cycling(result.plan, prices, plan_params)
-        static_saving = saving_vs_no_cycling(static, prices, plan_params)
+        greedy_soc = soc_trajectory(result.plan, greedy_params)
+        self._record_greedy_day(today, greedy_params.start_soc_kwh, greedy_soc[-1])
+        static = static_plan(today, load, solar, static_params)
+        greedy_saving = saving_vs_no_cycling(result.plan, prices, greedy_params)
+        static_saving = saving_vs_no_cycling(static, prices, static_params)
         return {
             "prices_ok": True,
             "plan_date": today,
             "plan_charge_w": list(result.plan.charge_w),
             "plan_discharge_w": list(result.plan.discharge_w),
-            "plan_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(result.plan, plan_params)
-            ],
+            "plan_soc_kwh": [round(v, 3) for v in greedy_soc],
             # The static baseline the vs_static delta is measured
             # against — published so dashboards can graph both plans
             # side by side (the Checkpoint C comparison view).
             "static_charge_w": list(static.charge_w),
             "static_discharge_w": list(static.discharge_w),
             "static_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(static, plan_params)
+                round(v, 3) for v in soc_trajectory(static, static_params)
             ],
             "forecast_saving_eur": round(greedy_saving, 4),
             "vs_static_eur": round(greedy_saving - static_saving, 4),

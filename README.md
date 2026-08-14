@@ -71,9 +71,12 @@ above forecast and the charge loop throttles under house load, so the
 planned energy is a floor, not a guarantee): the charge loop drives
 full power and the battery's own firmware target stops at actual
 full. Armed quarters appear in `schedule` / `static_schedule` as ~0 W
-charge segments — by design. Under dynamic actuation, days start at
-the reserve floor (the greedy sells everything by day end), so the
-greedy plans the night's cheap charge before each morning ponta.
+charge segments — by design. The greedy **chains its own end across
+days** (persisted, restart-proof): today starts where yesterday's
+greedy ended — after a sell-down that means low, so it plans the
+night's cheap charge before each morning ponta — and the regime
+default (static chain under dry-run, reserve floor under dynamic)
+applies only when no yesterday record exists.
 
 **Optional entities**, each degrading gracefully when unset:
 

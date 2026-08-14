@@ -385,6 +385,47 @@ async def test_advisory_trajectory_is_day_chained_in_summer(
     assert static_charge
 
 
+async def test_greedy_chains_its_own_end_into_the_next_day(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """
+    Owner 2026-08-13: today's greedy seeds from yesterday's greedy end.
+
+    Day 1 (summer Wednesday, no prior record) starts at the regime
+    default — the static chain's 100% — and sells down to the floor.
+    Day 2 must start where day 1 ended, not reset to 100%; and a
+    reload mid-day keeps the seed via the persisted record.
+    """
+    freezer.move_to("2026-07-15T08:00:00+00:00")
+    _register_core_omie_service(hass, days_available=3)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data.coordinator
+    day1 = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert day1.attributes["greedy_trajectory_pct"][0] == pytest.approx(100.0)
+    day1_end_pct = coordinator.data["plan_soc_kwh"][-1] / 5.0 * 100.0
+
+    freezer.move_to("2026-07-16T08:00:00+00:00")  # Thursday
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    day2 = hass.states.get("sensor.battery_opt_soc_forecast")
+    start_pct = day2.attributes["greedy_trajectory_pct"][0]
+    assert start_pct == pytest.approx(day1_end_pct, abs=0.1)
+    assert start_pct == pytest.approx(27.0, abs=1.0)  # the sell-down floor
+
+    # Restart mid-day: the persisted record keeps the chain (and the
+    # day's own pinned start, so refreshes never flip the seed).
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    reloaded = hass.states.get("sensor.battery_opt_soc_forecast")
+    assert reloaded.attributes["greedy_trajectory_pct"][0] == pytest.approx(
+        start_pct, abs=0.1
+    )
+
+
 async def test_current_price_sensor_tracks_the_edp_formula(
     hass: HomeAssistant,
     freezer: FrozenDateTimeFactory,

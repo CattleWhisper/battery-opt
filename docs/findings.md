@@ -410,3 +410,20 @@ floor, not a guarantee. Two changes:
    then shows the overnight charge it would actually plan. The static
    preview keeps the regime seed: its own chain already makes today's
    end tomorrow's start.
+
+4. **Today's greedy chains from YESTERDAY'S greedy end** (same day,
+   generalisation of 3 — the owner's rule: the regime default applies
+   ONLY when no yesterday value exists). The coordinator persists each
+   greedy day's record (date, start seed used, planned end) in a
+   Store: today seeds from yesterday's end; intraday refreshes reuse
+   today's pinned start (never flip-flopping between chain and
+   default); restarts restore the record. This supersedes the "seed at
+   the floor" simplification of decision 2 whenever a chain exists —
+   the floor/static-chain default remains the fallback for first runs,
+   HA-off days and static-fallback yesterdays. Under dry-run,
+   `vs_static` thereby becomes a chained-regime vs chained-regime
+   comparison — the same definition the backtest measures. Transition
+   caveat: on the first dynamic day after a static-actuated day, the
+   chain models yesterday's greedy end while the battery really ended
+   full under static actuation — the battery holds MORE than modelled
+   (safe direction), and the chain is exact from day two.

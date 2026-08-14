@@ -190,17 +190,22 @@ model rolled forward (exact: every weekday's charge window fills to
 capacity from any start, so its end is start-independent; weekends
 are no-ops that pass SoC through), never a readback — ADR-0008
 stands. In winter the previous weekday ends drained, so the chained
-seed IS the floor. **With dry_run off (greedy actuation):** every day
-seeds at the reserve floor instead — a greedy day ends AT the floor
-by construction (the single-day model values no stored energy:
-everything above the floor is sold wherever price beats wear), so the
-static chain's "full" seed would model energy the battery does not
-have; floor-seeded, the solve buys the night's cheap quarters before
-the morning ponta. (Extreme negative-price days can leave the real
-end above the floor — the battery then holds more than modelled, the
-safe direction, corrected within a day.) Daily savings keep the
-backtest's convention: charge cost books on the day it is bought,
-discharge revenue on the day it is sold.
+seed IS the floor. **The GREEDY chains its own end (owner
+2026-08-13):** today's greedy starts where yesterday's greedy ended —
+the coordinator persists each day's record (date, the start seed
+used, the planned end) in a Store, so the chain survives restarts and
+intraday refreshes keep a pinned, stable seed. The regime default
+applies ONLY when no yesterday record exists (first run, HA off
+yesterday, yesterday a static fallback): the static chain under
+dry-run, the reserve floor with dry_run off. After a full sell-down
+the next greedy day therefore starts low and buys the night's cheap
+quarters before the morning ponta — one continuous greedy trajectory,
+the same convention the backtest chains both strategies under.
+(Extreme negative-price days leave the end above the floor; the chain
+carries it exactly.) Daily savings keep the backtest's convention:
+charge cost books on the day it is bought, discharge revenue on the
+day it is sold — energy carried in from yesterday is sunk-cost free
+energy.
 
 ### Outputs (entities)
 
