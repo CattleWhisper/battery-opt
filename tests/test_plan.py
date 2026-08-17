@@ -210,3 +210,29 @@ def test_price_segments_flat_day_splits_only_on_tar_boundaries() -> None:
         naive_start = datetime.fromisoformat(str(segment["start"])).replace(tzinfo=None)
         assert segment["tar_period"] == period(naive_start)
     assert len(segments) >= 3  # a summer weekday has ponta, cheias, vazio
+
+
+def test_soc_trajectory_self_discharge_drains_each_interval() -> None:
+    """Owner 2026-08-17: ~19 W standby drain, 4.75 Wh per quarter."""
+    params = BatteryParams(soc_start_kwh=4.0, self_discharge_w=19.0)
+    hold = Plan(charge_w=(0.0,) * 96, discharge_w=(0.0,) * 96)
+    soc = soc_trajectory(hold, params, include_self_discharge=True)
+    per_quarter = 19.0 * 0.25 / 1000
+    assert soc[1] == pytest.approx(4.0 - per_quarter)
+    assert soc[-1] == pytest.approx(4.0 - 96 * per_quarter)
+
+
+def test_self_discharge_trajectory_clamps_at_the_reserve_floor() -> None:
+    """The drained trajectory models the battery defending its floor."""
+    params = BatteryParams(soc_start_kwh=1.40, self_discharge_w=19.0)
+    hold = Plan(charge_w=(0.0,) * 96, discharge_w=(0.0,) * 96)
+    soc = soc_trajectory(hold, params, include_self_discharge=True)
+    assert min(soc) >= params.cap_min_kwh - 1e-9
+    assert soc[-1] == pytest.approx(params.cap_min_kwh)
+
+
+def test_soc_trajectory_defaults_to_flow_only() -> None:
+    """Validator and optimiser semantics unchanged: drain is opt-in."""
+    params = BatteryParams(soc_start_kwh=4.0, self_discharge_w=19.0)
+    hold = Plan(charge_w=(0.0,) * 96, discharge_w=(0.0,) * 96)
+    assert soc_trajectory(hold, params) == [4.0] * 97

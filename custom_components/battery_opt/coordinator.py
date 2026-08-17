@@ -44,11 +44,13 @@ from .const import (
     CONF_LOAD_SENSOR,
     CONF_PLAN_WEAR,
     CONF_RESERVE_FLOOR_PCT,
+    CONF_SELF_DISCHARGE_W,
     CONF_WEAR_COST,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_DRY_RUN,
     DEFAULT_PLAN_WEAR,
     DEFAULT_RESERVE_FLOOR_PCT,
+    DEFAULT_SELF_DISCHARGE_W,
     DEFAULT_WEAR_COST,
     DEVICE_MAX_CHARGE_W,
     DOMAIN,
@@ -191,6 +193,11 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # ADR-0007: planning C-3 capacity is the device limit; the
             # run-time contracted-power margin is the charge loop's.
             p_charge_max_w=DEVICE_MAX_CHARGE_W,
+            # Owner 2026-08-17: measured standby drain; acts only on
+            # the published trajectories and the chaining seeds.
+            self_discharge_w=float(
+                merged.get(CONF_SELF_DISCHARGE_W, DEFAULT_SELF_DISCHARGE_W)
+            ),
         )
 
     @property
@@ -324,7 +331,10 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "tomorrow_static_charge_w": list(static.charge_w),
                 "tomorrow_static_discharge_w": list(static.discharge_w),
                 "tomorrow_static_soc_kwh": [
-                    round(v, 3) for v in soc_trajectory(static, static_params)
+                    round(v, 3)
+                    for v in soc_trajectory(
+                        static, static_params, include_self_discharge=True
+                    )
                 ],
             }
         return {
@@ -335,10 +345,16 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "tomorrow_static_charge_w": list(static.charge_w),
             "tomorrow_static_discharge_w": list(static.discharge_w),
             "tomorrow_plan_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(result.plan, greedy_params)
+                round(v, 3)
+                for v in soc_trajectory(
+                    result.plan, greedy_params, include_self_discharge=True
+                )
             ],
             "tomorrow_static_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(static, static_params)
+                round(v, 3)
+                for v in soc_trajectory(
+                    static, static_params, include_self_discharge=True
+                )
             ],
         }
 
@@ -451,7 +467,11 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             load_w=tuple(load),
             solar_w=tuple(solar),
         )
-        greedy_soc = soc_trajectory(result.plan, greedy_params)
+        # Published (and chained) trajectories carry the measured
+        # standby drain; the validation above stayed flow-only.
+        greedy_soc = soc_trajectory(
+            result.plan, greedy_params, include_self_discharge=True
+        )
         self._record_greedy_day(today, greedy_params.start_soc_kwh, greedy_soc[-1])
         static = static_plan(today, load, solar, static_params)
         greedy_saving = saving_vs_no_cycling(result.plan, prices, greedy_params)
@@ -468,7 +488,10 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "static_charge_w": list(static.charge_w),
             "static_discharge_w": list(static.discharge_w),
             "static_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(static, static_params)
+                round(v, 3)
+                for v in soc_trajectory(
+                    static, static_params, include_self_discharge=True
+                )
             ],
             "forecast_saving_eur": round(greedy_saving, 4),
             "vs_static_eur": round(greedy_saving - static_saving, 4),
@@ -494,20 +517,22 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the executor: the summer static plan only discharges if the
         # previous weekday's midday charge carries over.
         fallback_plan = static_plan(today, load, solar, plan_params)
+        fallback_soc = [
+            round(v, 3)
+            for v in soc_trajectory(
+                fallback_plan, plan_params, include_self_discharge=True
+            )
+        ]
         return {
             "prices_ok": False,
             "plan_date": today,
             "plan_charge_w": list(fallback_plan.charge_w),
             "plan_discharge_w": list(fallback_plan.discharge_w),
-            "plan_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(fallback_plan, plan_params)
-            ],
+            "plan_soc_kwh": fallback_soc,
             # The published plan IS the static baseline here.
             "static_charge_w": list(fallback_plan.charge_w),
             "static_discharge_w": list(fallback_plan.discharge_w),
-            "static_soc_kwh": [
-                round(v, 3) for v in soc_trajectory(fallback_plan, plan_params)
-            ],
+            "static_soc_kwh": fallback_soc,
             "forecast_saving_eur": None,
             "vs_static_eur": None,
             "fallback": "static",

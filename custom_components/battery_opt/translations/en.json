@@ -20,6 +20,7 @@
           "reserve_floor_pct": "Reserve floor (%)",
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
           "plan_wear_eur_kwh": "Planning wear — cycle cap (EUR/kWh)",
+          "self_discharge_w": "Standby self-discharge (W) — measured average drain; shapes the SoC forecast and day-chaining, never the optimiser",
           "dry_run": "Dry-run (Task 12): keep actuating the static plan; the greedy stays advisory. Disable only after Checkpoint C"
         }
       }
@@ -50,6 +51,7 @@
           "reserve_floor_pct": "Reserve floor (%)",
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
           "plan_wear_eur_kwh": "Planning wear — cycle cap (EUR/kWh)",
+          "self_discharge_w": "Standby self-discharge (W) — measured average drain; shapes the SoC forecast and day-chaining, never the optimiser",
           "dry_run": "Dry-run (Task 12): keep actuating the static plan; the greedy stays advisory. Disable only after Checkpoint C"
         },
         "description": "Entities and parameters can be changed here at any time; the integration reloads on save. Add the four Marstek control entities when the battery arrives."

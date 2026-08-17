@@ -202,3 +202,30 @@ def test_chained_summer_day_discharges_its_morning_ponta() -> None:
     # Still a valid plan under the seeded start.
     seeded = dataclasses.replace(PARAMS, soc_start_kwh=start)
     assert validate_plan(chained, FLAT_LOAD, NO_SOLAR, seeded) == []
+
+
+def test_chained_start_subtracts_weekend_drain() -> None:
+    """
+    A summer Monday starts two no-op days of drain below Friday's end.
+
+    Weekends pass the FLOWS through, but the standby drain keeps
+    running (owner 2026-08-17): 2 x 24 h x 19 W ~ 0.91 kWh. Winter
+    would hide this (its weekday ends at the floor, where the drain
+    clamps), so the test uses summer, whose weekday ends nearly full.
+    """
+    params = dataclasses.replace(PARAMS, self_discharge_w=19.0)
+    floor_seeded = dataclasses.replace(params, soc_start_kwh=None)
+    friday = static_plan(date(2026, 7, 10), FLAT_LOAD, NO_SOLAR, floor_seeded)
+    friday_end = soc_trajectory(friday, floor_seeded, include_self_discharge=True)[-1]
+    assert friday_end > 4.0  # nearly full: the gap subtraction is visible
+    monday = chained_start_soc(date(2026, 7, 13), FLAT_LOAD, NO_SOLAR, params)
+    assert monday == pytest.approx(
+        max(params.cap_min_kwh, friday_end - 2 * 24 * 19.0 / 1000)
+    )
+    # Tuesday has no gap: exactly Monday's drained end.
+    monday_plan = static_plan(date(2026, 7, 13), FLAT_LOAD, NO_SOLAR, floor_seeded)
+    monday_end = soc_trajectory(monday_plan, floor_seeded, include_self_discharge=True)[
+        -1
+    ]
+    tuesday = chained_start_soc(date(2026, 7, 14), FLAT_LOAD, NO_SOLAR, params)
+    assert tuesday == pytest.approx(monday_end)

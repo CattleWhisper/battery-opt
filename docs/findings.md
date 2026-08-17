@@ -427,3 +427,36 @@ floor, not a guarantee. Two changes:
    chain models yesterday's greedy end while the battery really ended
    full under static actuation — the battery holds MORE than modelled
    (safe direction), and the chain is exact from day two.
+
+## Battery standby self-discharge (owner measurement, 2026-08-17)
+
+**Measured:** the battery drains on standby. A 24 h spot check read
+91.6% → 86.3% (~0.27 kWh/day ≈ 11 W); the owner's longer-running
+average is **~19 W** (~0.46 kWh/day), which is the figure adopted —
+`SELF_DISCHARGE` in CONTEXT.md, config option `self_discharge_w`
+(default 19, per-entry adjustable as better data accumulates).
+
+**Decision — scope (owner 2026-08-17):**
+
+1. **Trajectories and chaining only.** The published SoC forecasts
+   (both plans, today + tomorrow, executor display) subtract the
+   drain per quarter, clamped at the reserve floor — the drained line
+   models the battery defending its own floor (ADR-0008), so a
+   drain-starved discharge never shows below the floor either. The
+   day-chaining seeds inherit it: the static chain's weekday
+   simulation drains, intervening no-op weekend days drain through
+   (a Monday starts ~0.9 kWh below Friday's end), and the greedy's
+   persisted end is recorded from the drained trajectory.
+2. **The optimiser, `validate_plan` and the backtest stay
+   flow-only.** Draining the validator while the solve stays
+   flow-only would false-fail every plan that holds energy (C-4);
+   a drain-aware solve is not worth ~€0.02/day of mispriced holds.
+   The intraday gap is hours-held × 19 W in the safe direction (the
+   battery holds slightly less than modelled; the firmware floor and
+   anti-feed absorb it) — the same philosophy as charge-window
+   arming's "modelled energy is a floor".
+3. **The firmware charge-to-SoC backstop target stays flow-only** —
+   lowering the 42011 ceiling by the drain would under-charge.
+4. Checkpoint B figures are untouched: `BatteryParams` defaults the
+   drain to 0; only the production coordinator passes the measured
+   value.

@@ -10,7 +10,7 @@ home-assistant/core sources.
 
 import itertools
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 from custom_components.battery_opt.const import (
+    BASE_LOAD_W,
     CONF_CAPACITY_KWH,
     CONF_CHARGE_POWER_NUMBER,
     CONF_GRID_ENERGY_SENSOR,
@@ -45,6 +46,7 @@ from custom_components.battery_opt.const import (
     DOMAIN,
 )
 from custom_components.battery_opt.core.prices import price
+from custom_components.battery_opt.core.static_schedule import chained_start_soc
 
 BATTERY_ENTITIES = {
     CONF_MODE_SELECT: "select.marstek_force_mode",
@@ -137,7 +139,8 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Battery Opt"
     # Task 12: the schema defaults dry_run ON — greedy stays advisory.
-    assert result["data"] == {**VALID_INPUT, "dry_run": True}
+    # The measured standby drain (owner 2026-08-17) defaults to 19 W.
+    assert result["data"] == {**VALID_INPUT, "dry_run": True, "self_discharge_w": 19.0}
 
 
 async def test_flow_errors_when_omie_not_set_up(hass: HomeAssistant) -> None:
@@ -205,6 +208,7 @@ async def test_setup_entry_with_battery_loads(
     assert not coordinator.planning_only
     assert entry.runtime_data.executor is not None
     assert coordinator.battery_params.cap_min_kwh == pytest.approx(1.35)
+    assert coordinator.battery_params.self_discharge_w == pytest.approx(19.0)
     assert coordinator.plan_wear_eur_kwh == pytest.approx(0.0467)
 
 
@@ -331,14 +335,16 @@ async def test_advisory_trajectory_is_day_chained_in_summer(
     freezer: FrozenDateTimeFactory,
 ) -> None:
     """
-    Summer advisory SoC starts FULL, not at the floor.
+    Summer advisory SoC starts nearly full, not at the floor.
 
     The previous weekday's static plan ends full in summer (midday
     charge after the morning ponta), so the chained advisory
-    trajectory begins at 100% — matching the real battery under
-    static actuation, which is the whole point of the SoC forecast
-    sensor's forecast-vs-real overlay. The seeded greedy can then
-    plan a morning-ponta discharge the floor seed made impossible.
+    trajectory begins just below 100% — full minus the measured
+    standby drain since the fill (owner 2026-08-17) — matching the
+    real battery under static actuation, which is the whole point of
+    the SoC forecast sensor's forecast-vs-real overlay. The seeded
+    greedy can then plan a morning-ponta discharge the floor seed
+    made impossible.
     """
     freezer.move_to("2026-07-15T08:00:00+00:00")  # Wednesday, summer
     _register_core_omie_service(hass)
@@ -348,15 +354,27 @@ async def test_advisory_trajectory_is_day_chained_in_summer(
     await hass.async_block_till_done()
 
     soc_forecast = hass.states.get("sensor.battery_opt_soc_forecast")
+    coordinator = entry.runtime_data.coordinator
+    # Tuesday's charge carried over, minus the standby drain since.
+    seed = chained_start_soc(
+        date(2026, 7, 15),
+        [BASE_LOAD_W] * 96,
+        [0.0] * 96,
+        coordinator.battery_params,
+    )
+    assert 4.5 < seed < 5.0
+    seed_pct = round(seed / 5.0 * 100.0, 1)
     trajectory = soc_forecast.attributes["trajectory_kwh"]
-    assert trajectory[0] == pytest.approx(5.0)  # Tuesday's charge carried
-    assert soc_forecast.attributes["trajectory_pct"][0] == pytest.approx(100.0)
+    assert trajectory[0] == pytest.approx(seed, abs=1e-3)
+    assert soc_forecast.attributes["trajectory_pct"][0] == pytest.approx(seed_pct)
     assert max(trajectory) <= 5.0 + 1e-9  # C-5 holds under the full seed
     # Both plans' trajectories ride alongside for the comparison
-    # overlay — chained, so each also starts full in summer.
+    # overlay — chained, so each also starts nearly full in summer.
     greedy_pct = soc_forecast.attributes["greedy_trajectory_pct"]
-    assert greedy_pct[0] == pytest.approx(100.0)
-    assert soc_forecast.attributes["static_trajectory_pct"][0] == pytest.approx(100.0)
+    assert greedy_pct[0] == pytest.approx(seed_pct)
+    assert soc_forecast.attributes["static_trajectory_pct"][0] == pytest.approx(
+        seed_pct
+    )
     # The greedy line is CONTINUOUS across midnight (owner 2026-08-13):
     # tomorrow's preview seeds from today's greedy end, not the static
     # chain — after a full sell-down (~floor) tomorrow starts low and
@@ -405,7 +423,8 @@ async def test_greedy_chains_its_own_end_into_the_next_day(
     await hass.async_block_till_done()
     coordinator = entry.runtime_data.coordinator
     day1 = hass.states.get("sensor.battery_opt_soc_forecast")
-    assert day1.attributes["greedy_trajectory_pct"][0] == pytest.approx(100.0)
+    # Regime default: the static chain's near-full seed (minus drain).
+    assert day1.attributes["greedy_trajectory_pct"][0] > 90.0
     day1_end_pct = coordinator.data["plan_soc_kwh"][-1] / 5.0 * 100.0
 
     freezer.move_to("2026-07-16T08:00:00+00:00")  # Thursday

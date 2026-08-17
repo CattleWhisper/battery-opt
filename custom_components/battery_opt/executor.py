@@ -248,10 +248,17 @@ class BatteryOptExecutor:
         return self.plan, params
 
     def planned_soc_trajectory(self) -> list[float] | None:
-        """Planned SoC in kWh at interval boundaries (97 values)."""
+        """
+        Planned SoC in kWh at interval boundaries (97 values).
+
+        Display only (the SoC forecast sensor): includes the measured
+        standby drain so the line tracks the real battery. The
+        firmware backstop target below stays flow-only — lowering the
+        charge-to-SoC ceiling by the drain would under-charge.
+        """
         if self.plan is None or self._plan_params is None:
             return None
-        return soc_trajectory(self.plan, self._plan_params)
+        return soc_trajectory(self.plan, self._plan_params, include_self_discharge=True)
 
     def current_action(self, now: datetime) -> Action:
         """Return what the plan does in the interval containing `now`."""

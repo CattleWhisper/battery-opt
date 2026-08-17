@@ -56,6 +56,13 @@ class BatteryParams:
     `cap_usable_kwh` is deliberately a parameter, never a constant in
     strategy code — Checkpoint B evaluates the second unit by doubling
     it. `soc_start_kwh=None` means the day starts at the reserve floor.
+
+    `self_discharge_w` is the measured standby drain (owner
+    2026-08-17: ~19 W). It only acts where a caller opts in
+    (`soc_trajectory(include_self_discharge=True)` — published
+    trajectories and day-chaining seeds); the validator, the optimiser
+    and the backtest stay flow-only, so the default keeps every
+    Checkpoint B figure and pinned test identical.
     """
 
     cap_usable_kwh: float = 5.0
@@ -67,6 +74,7 @@ class BatteryParams:
     wear_cost_eur_kwh: float = 0.020
     soc_start_kwh: float | None = None
     interval_hours: float = 0.25
+    self_discharge_w: float = 0.0
 
     @property
     def eta_one_way(self) -> float:
@@ -97,18 +105,40 @@ class Plan:
         return len(self.charge_w)
 
 
-def soc_trajectory(plan: Plan, params: BatteryParams) -> list[float]:
+def soc_trajectory(
+    plan: Plan,
+    params: BatteryParams,
+    *,
+    include_self_discharge: bool = False,
+) -> list[float]:
     """
     SoC in kWh at interval boundaries; element 0 is the start SoC.
 
     C-6: SoC[i+1] = SoC[i] + charge_e*eta_c - discharge_e/eta_d.
+
+    With `include_self_discharge` the measured standby drain
+    (`params.self_discharge_w`) is additionally subtracted each
+    interval, and every boundary clamps at the reserve floor: the
+    drained trajectory models the battery DEFENDING its floor
+    (firmware cutoff, ADR-0008) — neither the drain itself nor a
+    discharge the drain has starved shows below `cap_min_kwh`.
+    Opt-in by design (owner 2026-08-17): published trajectories and
+    day-chaining seeds enable it; the validator and the optimiser stay
+    flow-only (raw physics, C-4 violations visible), keeping
+    validation consistent with the solve — the intraday error is
+    bounded by hours-held x 19 W and points in the safe direction
+    (the plan holds slightly less than modelled).
     """
     eta = params.eta_one_way
     dt = params.interval_hours
+    drain_kwh = params.self_discharge_w * dt / 1000 if include_self_discharge else 0.0
     soc = [params.start_soc_kwh]
     for charge, discharge in zip(plan.charge_w, plan.discharge_w, strict=True):
         delta = charge * dt / 1000 * eta - discharge * dt / 1000 / eta
-        soc.append(soc[-1] + delta)
+        after_flows = soc[-1] + delta
+        if include_self_discharge:
+            after_flows = max(params.cap_min_kwh, after_flows - drain_kwh)
+        soc.append(after_flows)
     return soc
 
 

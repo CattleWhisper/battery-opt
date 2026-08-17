@@ -60,6 +60,13 @@ DEFAULT_RESERVE_FLOOR_PCT = 27.0
 DEFAULT_WEAR_COST = 0.020
 DEFAULT_PLAN_WEAR = 0.0467  # WEAR_COST_MAX; Checkpoint B cycle cap
 
+# Measured standby drain (owner 2026-08-17: ~19 W average; a 24 h spot
+# check read 91.6% -> 86.3%). Applied to published SoC trajectories
+# and the day-chaining seeds only — the optimiser, the validator and
+# the backtest stay flow-only (CONTEXT.md trap).
+CONF_SELF_DISCHARGE_W = "self_discharge_w"
+DEFAULT_SELF_DISCHARGE_W = 19.0
+
 UPDATE_INTERVAL_MINUTES = 15
 
 # Best-periods advisory (the get_best_periods service and the

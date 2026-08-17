@@ -207,6 +207,16 @@ charge cost books on the day it is bought, discharge revenue on the
 day it is sold — energy carried in from yesterday is sunk-cost free
 energy.
 
+**Standby self-discharge (owner 2026-08-17):** the measured ~19 W
+drain (`self_discharge_w`, CONTEXT.md) is subtracted from every
+published SoC trajectory and from the chaining seeds — the static
+chain's weekday simulation drains, intervening no-op weekend days
+drain through, and the greedy records its drained end — always
+clamped at the reserve floor (the drained line models the battery
+defending its own floor). The optimiser, `validate_plan`, the
+firmware backstop target and the backtest stay flow-only
+(docs/findings.md holds the rationale; CONTEXT.md the trap).
+
 ### Outputs (entities)
 
 | Entity | Description |
@@ -216,7 +226,7 @@ energy.
 | `sensor.battery_opt_vs_static` | **Forecast gain vs. the fixed schedule — the metric that justifies the project** |
 | `sensor.battery_opt_realised_savings` | Ex-post realised saving today from MEASURED battery flows (Task 13): power-sensor slices valued at the delivered price of their instant, wear at TRUE wear per discharged kWh (no SoC — ADR-0008); month-to-date realised/forecast and their deviation in attributes; unavailable without `CONF_BATTERY_POWER_SENSOR` |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; attributes carry `prices` — merged segments `{start, end, price_eur_kwh, tar_period}` (split at every TAR boundary so each value is checkable against the tariff table), spanning today and, once D+1's own price series builds, tomorrow |
-| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter-hour (%, same unit as the battery's own SoC sensor, for direct forecast-vs-real comparison — the Checkpoint C soak metric); full day trajectory (97 boundary values, kWh and %) in attributes, sourced from the executor's actuated plan when a battery runs, the advisory plan otherwise — plus both plans separately as `greedy_trajectory_pct` (None in the static fallback) and `static_trajectory_pct`, extending to 48 h (193 boundary values) once tomorrow's preview builds, for the real-vs-greedy-vs-static overlay. Both lines are continuous across midnight: the static chains its own end, tomorrow's greedy seeds from TODAY'S greedy end (owner 2026-08-13) |
+| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter-hour (%, same unit as the battery's own SoC sensor, for direct forecast-vs-real comparison — the Checkpoint C soak metric); full day trajectory (97 boundary values, kWh and %) in attributes, sourced from the executor's actuated plan when a battery runs, the advisory plan otherwise — plus both plans separately as `greedy_trajectory_pct` (None in the static fallback) and `static_trajectory_pct`, extending to 48 h (193 boundary values) once tomorrow's preview builds, for the real-vs-greedy-vs-static overlay. Both lines are continuous across midnight: the static chains its own end, tomorrow's greedy seeds from TODAY'S greedy end (owner 2026-08-13). All published trajectories subtract the measured standby self-discharge (~19 W, owner 2026-08-17), clamped at the reserve floor |
 | `sensor.battery_opt_best_periods` | Start of the next not-yet-ended best appliance period (timestamp device class) across today and tomorrow, from the delivered-price vectors at the shared defaults (maximal cheap stretches at or below min + 20% of the day's range, ≥ 30 min, top 3); attributes carry both days' lists in time order (`periods` / `tomorrow_periods`, `{start, end, avg_price_eur_kwh}`), the mirrored expensive tier (`expensive_periods` / `tomorrow_expensive_periods` — maximal runs at or above max − 20% of the range, for the traffic-light day strip) plus each day's cheap cutoff and average price — the dashboard face of the `get_best_periods` service, one detection, two faces |
 | `sensor.battery_opt_load_mae` | Mean absolute error (W) of yesterday's load forecast vs. observed, computed at day close; unavailable until a load meter is configured and one full day has closed (plan Task 11) |
 | `sensor.battery_opt_cost_today` | Grid-import cost today, EUR, excl. VAT (Task 13 pulled forward): variable = Σ(meter delta × delivered price at that instant, negative deltas from a meter reset counting as 0) + the daily fixed term (K3 + TAR potência); `state_class` TOTAL, `last_reset` at local midnight; attributes `variable_eur`, `fixed_eur`, `energy_today_kwh`; unavailable without a configured grid-import energy sensor |

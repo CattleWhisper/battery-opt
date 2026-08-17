@@ -163,14 +163,18 @@ def chained_start_soc(
     charge window is midday, after it), so production seeds each day
     from the PREVIOUS WEEKDAY'S planned end SoC — the plan's own model
     rolled forward, never a SoC readback (ADR-0008). Weekends are
-    no-op days that pass SoC through, so the most recent weekday's end
-    IS the day's start.
+    no-op days whose FLOWS pass SoC through — but the standby drain
+    keeps running (owner 2026-08-17), so each intervening no-op day
+    subtracts 24 h of `self_discharge_w`, clamped at the floor like
+    everywhere else. A Monday genuinely starts ~2 x 0.46 kWh below
+    Friday's end.
 
     One floor-seeded simulation of that weekday is exact, not an
     approximation: a weekday's end SoC is start-independent, because
     its charge window fills to usable capacity from any start (winter
     charges first, making the rest of the day deterministic; summer
-    charges last, ending full either way). Uses `day`'s own load
+    charges last, ending full either way — the drain does not break
+    this: it is deterministic given the plan). Uses `day`'s own load
     vector for the simulation — with the flat production load this is
     exact; with a per-day forecast it is the model's best stand-in
     for a day already past.
@@ -180,4 +184,7 @@ def chained_start_soc(
         previous -= timedelta(days=1)
     floor_seeded = dataclasses.replace(params, soc_start_kwh=None)
     plan = static_plan(previous, load_w, solar_w, floor_seeded, calendars)
-    return soc_trajectory(plan, floor_seeded)[-1]
+    end = soc_trajectory(plan, floor_seeded, include_self_discharge=True)[-1]
+    gap_days = (day - previous).days - 1
+    gap_drain_kwh = params.self_discharge_w * 24.0 / 1000.0 * gap_days
+    return max(params.cap_min_kwh, end - gap_drain_kwh)

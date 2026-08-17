@@ -76,6 +76,12 @@ P_DIS_MAX = 2500  # W
 ETA_RT = 0.90  # round-trip efficiency
 RATED_CYCLES = 6000
 PRICE_PAID = 1400  # EUR
+SELF_DISCHARGE = 19  # W - measured standby drain (owner 2026-08-17:
+#   ~19 W average; a 24 h spot check read 91.6% -> 86.3%). Default of
+#   the `self_discharge_w` config option. Scope is deliberate: shapes
+#   the published SoC trajectories and the day-chaining seeds ONLY -
+#   the optimiser, the validator and the backtest stay flow-only (see
+#   Known traps).
 
 # --- Installation ---
 CONTRACTED_VA = 4600  # VA
@@ -213,6 +219,7 @@ magnitudes.)
 - **There is no force-mode watchdog on this unit's firmware (measured 2026-08-11).** The community-reported ~15 s self-stop never fired in a network-cut test: a dead integration leaves force-charge running until the 42011 charge-to-SoC backstop target — the backstop is **load-bearing**, so `charge_to_soc` is effectively required in active mode. Undocumented firmware behaviour either way: re-run the on-device checklist (spec §8) after every firmware OTA before trusting a single transition.
 - **Entering force mode flips the work mode to manual** (confirmed on-device): anti-feed must be re-asserted on every transition into DISCHARGE. Releasing external control *appeared* to restore anti-feed on the current firmware — assume nothing; the re-assert stays. Integration death during HOLD leaves the battery in the commanded external-control stop (no watchdog clears it), so HOLD survives the integration dying.
 - **A floor-seeded summer static day can never discharge.** Summer ponta (09:15–12:15) precedes the midday charge window (13:00–17:00), so a single-day plan starting at the reserve floor has nothing to serve it with — the battery would charge once and sit full all summer, delivering 0% ponta coverage. Production seeds each day from the previous weekday's PLANNED end SoC (`chained_start_soc`, spec §8) — the model rolled forward, never a SoC readback (ADR-0008 stands). Winter is naturally immune: every winter weekday ends drained, so the chained seed equals the floor there. **The STATIC chain is a dry-run-regime fact (2026-08-13):** it models STATIC actuation. The GREEDY chains its own persisted end instead: today's greedy starts where yesterday's greedy ended (Store-backed, restart-proof, intraday-stable), so after a sell-down it buys the night before the morning ponta — the regime default (static chain under dry-run, floor under dynamic) applies only when no yesterday record exists. Chaining the greedy from the static end would plan discharges from energy the battery no longer has.
+- **The standby self-discharge (~19 W measured) lives in the trajectories, not the optimiser.** Published SoC lines and the day-chaining seeds subtract it (clamped at the reserve floor — the drained trajectory models the battery defending its own floor, so it also never dips below the floor when a drain-starved discharge runs); weekends drain through the static chain (a Monday starts ~0.9 kWh below Friday's end). The optimiser, `validate_plan` and the backtest stay flow-only — putting drain in the validator while the solve ignores it would fail every plan that holds energy (false C-4), and a drain-aware solve is not worth ~€0.02/day. The intraday error is hours-held × 19 W in the safe direction: the battery holds slightly less than modelled, and its firmware floor absorbs it (ADR-0008).
 - **The modelled charge energy is a floor, not a guarantee.** Anti-feed discharges track REAL house load (often deeper than the forecast) and the ADR-0007 loop throttles under house load, so the battery routinely exits a charge window below the model. Both planners therefore keep the CHARGE state armed through every still-profitable window quarter (`ARMED_CHARGE_KWH` ≈ 0.04 W state selector, owner 2026-08-13) and delegate the stop to the run-time pair: the loop charges at full power, the firmware percent-target (42011) stops at ACTUAL full and self-corrects any start-SoC error. Armed quarters appear as ~0 W charge segments in `schedule` — that is by design, not a bug.
 
 ---
