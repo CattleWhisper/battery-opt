@@ -16,6 +16,10 @@ Sensors for battery_opt (spec §8).
   now per the EDP Indexada formula (core.prices.price), EUR/kWh excl.
   fixed terms and VAT. Declared exactly like core OMIE's price sensor
   so the Energy dashboard accepts it as a grid price entity.
+- sensor.battery_opt_best_periods: start of the next best period to
+  run high-power appliances (timestamp), with both days' maximal
+  cheap windows in the attributes — the dashboard face of the
+  `battery_opt.get_best_periods` service, at the same defaults.
 - sensor.battery_opt_load_mae: mean absolute error (W) of yesterday's
   load forecast vs the observed load, computed at day close (plan
   Task 11, decision 7). Unknown until a load meter is configured and
@@ -33,17 +37,28 @@ Sensors for battery_opt (spec §8).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.const import CURRENCY_EURO, PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_BATTERY_POWER_SENSOR, CONF_GRID_ENERGY_SENSOR
+from .const import (
+    BEST_PERIODS_COUNT,
+    BEST_PERIODS_MIN_QUARTERS,
+    BEST_PERIODS_THRESHOLD_PCT,
+    CONF_BATTERY_POWER_SENSOR,
+    CONF_GRID_ENERGY_SENSOR,
+)
+from .core.appliance import cheap_periods, price_cutoff
 from .core.calendar import period
 from .core.plan import price_segments, schedule_segments
 from .cost import CostTracker
@@ -51,8 +66,6 @@ from .entity import device_info_for
 from .realised import RealisedTracker
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -80,6 +93,7 @@ async def async_setup_entry(
             ForecastSavingsSensor(runtime.coordinator, entry.entry_id),
             VsStaticSensor(runtime.coordinator, entry.entry_id),
             CurrentPriceSensor(runtime.coordinator, entry.entry_id),
+            BestPeriodsSensor(runtime.coordinator, entry.entry_id),
             SocForecastSensor(runtime.coordinator, runtime.executor, entry.entry_id),
             LoadMaeSensor(runtime.coordinator, entry.entry_id),
             CostTodaySensor(runtime.coordinator, entry.entry_id),
@@ -309,6 +323,95 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
         if tomorrow_prices:
             segments += price_segments(plan_date + timedelta(days=1), tomorrow_prices)
         return segments
+
+
+class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
+    """
+    Start of the next best period to run high-power appliances.
+
+    The dashboard face of the `get_best_periods` service, computed
+    with the same core semantics at the shared defaults: periods are
+    MAXIMAL contiguous cheap runs (at or below min + 20% of the day's
+    price range, at least 30 min long, top 3, in time order). The
+    state is the start of the next period that has not ended yet
+    (today's, else tomorrow's); the attributes carry both days' lists
+    — same shape as the service response, so one graph card covers
+    the 48 h view — plus each day's cheap cutoff for a threshold line.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Best periods"
+    _attr_suggested_object_id = "battery_opt_best_periods"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:washing-machine"
+
+    def __init__(self, coordinator: BatteryOptCoordinator, entry_id: str) -> None:
+        """Bind to the coordinator."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_best_periods"
+        self._attr_device_info = device_info_for(entry_id)
+
+    def _day_prices(self, offset_days: int) -> list[float] | None:
+        data = self.coordinator.data or {}
+        return data.get(
+            "prices_eur_kwh" if offset_days == 0 else "tomorrow_prices_eur_kwh"
+        )
+
+    def _day_periods(self, offset_days: int) -> list[dict[str, Any]]:
+        """Cheap periods for plan_date + offset; [] without prices."""
+        data = self.coordinator.data or {}
+        plan_date = data.get("plan_date")
+        prices = self._day_prices(offset_days)
+        if plan_date is None or not prices:
+            return []
+        return cheap_periods(
+            plan_date + timedelta(days=offset_days),
+            prices,
+            BEST_PERIODS_THRESHOLD_PCT / 100.0,
+            BEST_PERIODS_MIN_QUARTERS,
+            BEST_PERIODS_COUNT,
+        )
+
+    def _day_cutoff(self, offset_days: int) -> float | None:
+        prices = self._day_prices(offset_days)
+        if not prices:
+            return None
+        cutoff = price_cutoff(prices, BEST_PERIODS_THRESHOLD_PCT / 100.0)
+        return None if cutoff is None else round(cutoff, 5)
+
+    @staticmethod
+    def _day_avg(prices: list[float] | None) -> float | None:
+        return round(sum(prices) / len(prices), 5) if prices else None
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Start of the next (or current) best period across both days."""
+        now = dt_util.now()
+        upcoming = [
+            datetime.fromisoformat(str(p["start"]))
+            for p in self._day_periods(0) + self._day_periods(1)
+            if datetime.fromisoformat(str(p["end"])) > now
+        ]
+        return min(upcoming, default=None)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Both days' cheap periods (time order) for graphing."""
+        data = self.coordinator.data or {}
+        return {
+            "plan_date": str(data.get("plan_date") or ""),
+            "threshold_pct": BEST_PERIODS_THRESHOLD_PCT,
+            "min_duration_minutes": 15 * BEST_PERIODS_MIN_QUARTERS,
+            "count": BEST_PERIODS_COUNT,
+            "periods": self._day_periods(0),
+            "tomorrow_periods": self._day_periods(1),
+            "threshold_price_eur_kwh": self._day_cutoff(0),
+            "tomorrow_threshold_price_eur_kwh": self._day_cutoff(1),
+            "day_avg_price_eur_kwh": self._day_avg(data.get("prices_eur_kwh")),
+            "tomorrow_day_avg_price_eur_kwh": self._day_avg(
+                data.get("tomorrow_prices_eur_kwh")
+            ),
+        }
 
 
 class SocForecastSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.typing import ConfigType
 
     from .charge_loop import ChargePowerLoop
     from .coordinator import BatteryOptCoordinator
@@ -173,6 +174,21 @@ def _wire_actuation(
         async_track_state_change_event(hass, [grid_power_id], _on_power_update)
     )
     return executor, charge_loop
+
+
+async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
+    """
+    Register domain services once per HA run.
+
+    Registered here rather than per entry so the service survives
+    entry reloads and gives a real error (not "service not found")
+    when called while no entry is loaded. Import deferred like the
+    entry setup's: the package top level must stay HA-free.
+    """
+    from .services import async_setup_services  # noqa: PLC0415
+
+    async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(

@@ -62,4 +62,14 @@ DEFAULT_PLAN_WEAR = 0.0467  # WEAR_COST_MAX; Checkpoint B cycle cap
 
 UPDATE_INTERVAL_MINUTES = 15
 
+# Best-periods advisory (the get_best_periods service and the
+# best-periods sensor). Windows are MAXIMAL cheap runs (owner
+# 2026-08-17): a quarter is cheap at or below min + threshold% of the
+# day's price range, runs shorter than the minimum drop, and at most
+# COUNT periods surface (cheapest kept, listed in time order). The
+# service accepts overrides per call; the sensor always uses these.
+BEST_PERIODS_THRESHOLD_PCT = 20.0
+BEST_PERIODS_MIN_QUARTERS = 2  # 30 min
+BEST_PERIODS_COUNT = 3
+
 BASE_LOAD_W = 1040.0  # CONTEXT.md: flat 24/7 load; Task 11 adds forecasting

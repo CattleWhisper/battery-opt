@@ -60,5 +60,45 @@
       "battery_entities_all_or_none": "Provide all four battery entities (mode, charge power, external-control switch, work mode), or none of them (planning-only mode until the battery arrives).",
       "timezone_not_lisbon": "Home Assistant's timezone must be Europe/Lisbon: the tariff calendar, the OMIE market day and every trigger are Portugal-local. Change it under Settings > System > General."
     }
+  },
+  "services": {
+    "get_best_periods": {
+      "name": "Get best periods",
+      "description": "Returns the cheap periods of a day's delivered prices — the best times to run high-power appliances. Each period is a maximal stretch of consecutive cheap quarter-hours (at or below the day's minimum plus the threshold share of its price range), listed in time order with start, end and average delivered price, plus the day's average and the cheap cutoff used.",
+      "fields": {
+        "day": {
+          "name": "Day",
+          "description": "Which day to rank: today, or tomorrow once OMIE has published it (~13:30 CET)."
+        },
+        "min_duration": {
+          "name": "Minimum duration",
+          "description": "Cheap stretches shorter than this are dropped (rounded up to whole quarter-hours)."
+        },
+        "threshold": {
+          "name": "Threshold",
+          "description": "How far above the day's minimum still counts as cheap, as a percentage of the day's price range. 0 keeps only the very cheapest quarters; larger values widen the periods."
+        },
+        "count": {
+          "name": "Number of periods",
+          "description": "How many periods at most; the cheapest by average are kept, listed in time order."
+        },
+        "after": {
+          "name": "After",
+          "description": "Only consider periods starting at or after this time of day (cheapness is judged within these bounds)."
+        },
+        "before": {
+          "name": "Before",
+          "description": "Only consider periods ending at or before this time of day."
+        }
+      }
+    }
+  },
+  "selector": {
+    "get_best_periods_day": {
+      "options": {
+        "today": "Today",
+        "tomorrow": "Tomorrow"
+      }
+    }
   }
 }

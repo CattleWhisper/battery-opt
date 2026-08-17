@@ -97,6 +97,7 @@ All grouped under one **Battery Opt** service device.
 | `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay — spanning 48 h once tomorrow's preview builds |
+| `sensor.battery_opt_best_periods` | Start of the next best period to run high-power appliances (timestamp). Periods are **maximal** cheap stretches — every run of quarters at or below the day's minimum + 20% of its price range, at least 30 min long, top 3, in time order. Attributes carry `periods` / `tomorrow_periods` (`{start, end, avg_price_eur_kwh}`), each day's cheap cutoff and average price — same semantics as the `battery_opt.get_best_periods` service |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
 | `sensor.battery_opt_cost_today` | Grid-import cost today incl. the daily fixed terms, excl. VAT (needs the grid energy sensor) |
@@ -325,6 +326,92 @@ source — no template sensor needed. If a grid-import energy sensor is
 configured (`CONF_GRID_ENERGY_SENSOR`), `sensor.battery_opt_cost_today`
 can be added there too as a daily cost entity (`state_class` TOTAL,
 resets at local midnight).
+
+## Best periods for appliances
+
+The `battery_opt.get_best_periods` service finds the cheap periods of
+a day's delivered prices — where to run the dishwasher, washing
+machine or dryer. Each period is **maximal**: a whole contiguous
+stretch of cheap quarter-hours, never a fixed-duration clip out of
+its middle. On a day where a ponta block splits the morning dip from
+the afternoon valley, the response reads like *08:45–09:15 and
+12:15–16:00* — the full stretches, in time order.
+
+"Cheap" is relative to the day itself: a quarter qualifies at or
+below `min + threshold% × (max − min)`. The default threshold (20%)
+keeps the deep valleys and the dips just above them, and drops the
+merely-average night plateau; it scales with the day's own spread, so
+flat days honestly report "any time" and volatile days only their
+true valleys. Fields (all optional): `day` (`today` / `tomorrow` —
+tomorrow only after OMIE publishes, ~13:30 CET), `min_duration`
+(stretches shorter than this are dropped; default 30 min),
+`threshold` (percent of the day's price range; default 20), `count`
+(at most this many periods, cheapest kept; default 3) and `after` /
+`before` time-of-day bounds — cheapness is judged *within* the
+bounds, so "from 08:00 on" ranks against what is actually reachable.
+The response lists `periods` in time order
+(`start` / `end` / `avg_price_eur_kwh`) plus `day_avg_price_eur_kwh`
+and `threshold_price_eur_kwh` (the cutoff used). It is deliberately
+price-only: the delivered price is the correct marginal signal for
+the extra grid energy an appliance draws, whether the battery covers
+it or not.
+
+`sensor.battery_opt_best_periods` is the same detection as a sensor,
+at the defaults: state = start of the next period that has not ended
+yet, both days' lists (and cheap cutoffs) in the attributes. Add it
+to the plan card to see the periods on the price line — flat strokes
+at each period's average price:
+
+```yaml
+  - entity: sensor.battery_opt_best_periods
+    name: Best periods (EUR/kWh)
+    type: line
+    yaxis_id: price
+    stroke_width: 5
+    extend_to: false
+    show:
+      legend_value: false
+      in_header: false
+    data_generator: |
+      const ps = [
+        ...(entity.attributes.periods || []),
+        ...(entity.attributes.tomorrow_periods || []),
+      ].sort((a, b) => new Date(a.start) - new Date(b.start));
+      return ps.flatMap((p) => [
+        [new Date(p.start).getTime(), p.avg_price_eur_kwh],
+        [new Date(p.end).getTime(), p.avg_price_eur_kwh],
+        [new Date(p.end).getTime() + 1, null],
+      ]);
+```
+
+And the daily notification — a morning digest of today's periods you
+can still use (for a tomorrow-evening digest instead, trigger after
+~13:35 with `day: tomorrow` and no `after`):
+
+```yaml
+alias: Daily best appliance periods
+triggers:
+  - trigger: time
+    at: "08:00:00"
+actions:
+  - action: battery_opt.get_best_periods
+    data:
+      day: today
+      after: "08:00:00"
+    response_variable: best
+  - action: notify.mobile_app_your_phone
+    data:
+      title: Cheapest periods today
+      message: >-
+        {% for p in best.periods -%}
+        {{ as_timestamp(p.start) | timestamp_custom('%H:%M') }}–{{
+        as_timestamp(p.end) | timestamp_custom('%H:%M') }}:
+        {{ '%.3f' | format(p.avg_price_eur_kwh) }} €/kWh
+        {{ '\n' }}
+        {%- endfor %}
+        Day average {{ '%.3f' | format(best.day_avg_price_eur_kwh) }} €/kWh
+mode: single
+```
 
 ## Development
 

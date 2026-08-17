@@ -22,6 +22,7 @@ _CHECK = (
     "import custom_components.battery_opt.core.optimiser; "
     "import custom_components.battery_opt.core.static_schedule; "
     "import custom_components.battery_opt.core.forecast; "
+    "import custom_components.battery_opt.core.appliance; "
     "import custom_components.battery_opt.driver; "
     "import custom_components.battery_opt.executor; "
     "polluted = [n for n in sys.modules if n.startswith('homeassistant')]; "

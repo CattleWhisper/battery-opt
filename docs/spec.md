@@ -217,6 +217,7 @@ energy.
 | `sensor.battery_opt_realised_savings` | Ex-post realised saving today from MEASURED battery flows (Task 13): power-sensor slices valued at the delivered price of their instant, wear at TRUE wear per discharged kWh (no SoC — ADR-0008); month-to-date realised/forecast and their deviation in attributes; unavailable without `CONF_BATTERY_POWER_SENSOR` |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); declared like core OMIE's price sensor so the Energy dashboard accepts it as a grid price entity; attributes carry `prices` — merged segments `{start, end, price_eur_kwh, tar_period}` (split at every TAR boundary so each value is checkable against the tariff table), spanning today and, once D+1's own price series builds, tomorrow |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter-hour (%, same unit as the battery's own SoC sensor, for direct forecast-vs-real comparison — the Checkpoint C soak metric); full day trajectory (97 boundary values, kWh and %) in attributes, sourced from the executor's actuated plan when a battery runs, the advisory plan otherwise — plus both plans separately as `greedy_trajectory_pct` (None in the static fallback) and `static_trajectory_pct`, extending to 48 h (193 boundary values) once tomorrow's preview builds, for the real-vs-greedy-vs-static overlay. Both lines are continuous across midnight: the static chains its own end, tomorrow's greedy seeds from TODAY'S greedy end (owner 2026-08-13) |
+| `sensor.battery_opt_best_periods` | Start of the next not-yet-ended best appliance period (timestamp device class) across today and tomorrow, from the delivered-price vectors at the shared defaults (maximal cheap stretches at or below min + 20% of the day's range, ≥ 30 min, top 3); attributes carry both days' lists in time order (`periods` / `tomorrow_periods`, `{start, end, avg_price_eur_kwh}`) plus each day's cheap cutoff and average price — the dashboard face of the `get_best_periods` service, one detection, two faces |
 | `sensor.battery_opt_load_mae` | Mean absolute error (W) of yesterday's load forecast vs. observed, computed at day close; unavailable until a load meter is configured and one full day has closed (plan Task 11) |
 | `sensor.battery_opt_cost_today` | Grid-import cost today, EUR, excl. VAT (Task 13 pulled forward): variable = Σ(meter delta × delivered price at that instant, negative deltas from a meter reset counting as 0) + the daily fixed term (K3 + TAR potência); `state_class` TOTAL, `last_reset` at local midnight; attributes `variable_eur`, `fixed_eur`, `energy_today_kwh`; unavailable without a configured grid-import energy sensor |
 | `binary_sensor.battery_opt_healthy` | With a battery: the executor's safe-to-actuate latch — off on an invalid plan or a three-strike driver failure. Missing prices are NOT unhealthy there: the static fallback still actuates, marked `fallback: static` (SC-5). Planning-only: off when no price vector can be built, since plans are then impossible |
@@ -224,6 +225,35 @@ energy.
 | `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = keeps computing (fallback flag stays live), writes no setpoints. Exists only when the loop's sensors are configured |
 | `button.battery_opt_recalculate_plan` | Immediate full recomputation (direct refresh: refetch prices, rebuild the load forecast, re-solve today + tomorrow's preview); recomputes only, never actuates |
 | `button.battery_opt_apply_plan` | Runs a real executor tick now instead of at the quarter boundary — validation, the override gate and the health latch all apply; idempotent via the write-once tracking. Active mode only |
+
+### Outputs (services)
+
+`battery_opt.get_best_periods` (supports response, registered from
+`async_setup` so it survives entry reloads): finds the cheap periods
+of a day's delivered-price vector — the daily "run high-power
+appliances here" digest an automation turns into a notification.
+Periods are MAXIMAL (owner 2026-08-17): every contiguous run of
+quarters at or below the cheap cutoff is reported whole ("12:15–16:00"
+and the "08:45–09:15" dip before a spike, never a fixed-duration clip
+out of a valley). The cutoff is min + threshold × (max − min) over
+the bounded range — a fraction of the SPREAD, not of the price level,
+so it survives negative prices and collapses gracefully on a flat day
+(one all-day period: any time is fine). Fields: `day` (today /
+tomorrow, tomorrow only after OMIE publishes ~13:30 CET),
+`min_duration` (shorter runs drop; rounded up to whole quarter-hours,
+default 30 min), `threshold` (percent of the range, default 20),
+`count` (cheapest kept, default 3) and optional `after` / `before`
+time-of-day bounds — the cutoff is computed WITHIN the bounds, so
+"from 08:00 on" ranks against what is actually reachable. Response:
+`{day, prices_padded, day_avg_price_eur_kwh, threshold_price_eur_kwh,
+periods: [{start, end, avg_price_eur_kwh}, …]}`, in time order.
+Deliberately price-only: the plan is not consulted — the delivered
+price is the correct marginal signal for the extra grid energy an
+appliance draws, and battery coverage merely swaps it for vazio
+energy plus wear, which the plan already prices in. Core detection in
+`core/appliance.py` (HA-free; "window" there, never "period" — the
+TAR term stays unambiguous); shared with the best-periods sensor so
+both faces always agree.
 
 ### Actuation — control state machine (ADR-0006)
 

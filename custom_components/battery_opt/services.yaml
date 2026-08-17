@@ -1,0 +1,36 @@
+get_best_periods:
+  fields:
+    day:
+      default: today
+      selector:
+        select:
+          options:
+            - today
+            - tomorrow
+          translation_key: get_best_periods_day
+    min_duration:
+      default:
+        minutes: 30
+      selector:
+        duration:
+    threshold:
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 50
+          step: 1
+          unit_of_measurement: "%"
+    count:
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 12
+          mode: box
+    after:
+      selector:
+        time:
+    before:
+      selector:
+        time:

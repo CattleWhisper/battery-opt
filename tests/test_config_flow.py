@@ -642,9 +642,10 @@ async def test_all_entities_group_under_one_service_device(
 
     entity_registry = er.async_get(hass)
     grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
-    # plan, forecast savings, vs static, price, SoC forecast, load MAE,
-    # cost today, realised savings, healthy, recalculate button
-    assert len(grouped) == 10
+    # plan, forecast savings, vs static, price, best periods,
+    # SoC forecast, load MAE, cost today, realised savings, healthy,
+    # recalculate button
+    assert len(grouped) == 11
 
 
 async def test_recalculate_button_forces_plan_refresh(hass: HomeAssistant) -> None:
