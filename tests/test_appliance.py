@@ -14,6 +14,7 @@ import pytest
 
 from custom_components.battery_opt.core.appliance import (
     cheap_windows,
+    expensive_windows,
     price_cutoff,
 )
 
@@ -42,6 +43,23 @@ def test_short_dip_and_long_valley_both_surface_in_time_order() -> None:
     windows = cheap_windows(prices, threshold_fraction=0.2, min_quarters=2, count=3)
     assert [(w.start_index, w.end_index) for w in windows] == [(35, 37), (49, 64)]
     assert windows[0].avg_price_eur_kwh > windows[1].avg_price_eur_kwh
+
+
+def test_expensive_windows_mirror_the_top_of_the_range() -> None:
+    """
+    The traffic-light red tier: maximal runs near the day's maximum.
+
+    Same example day: cutoff = 0.397 - 0.2 x (0.397 - 0.19) ~ 0.356,
+    so only the ponta block qualifies — whole, in time order, with its
+    true (positive) average.
+    """
+    prices = [0.26] * 96
+    prices[35:37] = [0.21] * 2
+    prices[37:49] = [0.397] * 12  # 09:15-12:15 ponta
+    prices[49:64] = [0.19] * 15
+    windows = expensive_windows(prices, threshold_fraction=0.2, min_quarters=2, count=3)
+    assert [(w.start_index, w.end_index) for w in windows] == [(37, 49)]
+    assert windows[0].avg_price_eur_kwh == pytest.approx(0.397)
 
 
 def test_min_quarters_drops_too_short_runs() -> None:
@@ -101,6 +119,14 @@ def test_flat_day_is_one_all_day_window() -> None:
         [0.10] * 96, threshold_fraction=0.2, min_quarters=2, count=3
     )
     assert [(w.start_index, w.end_index) for w in windows] == [(0, 96)]
+
+
+def test_flat_day_has_no_expensive_tier() -> None:
+    """The mirror's deliberate asymmetry: nothing to avoid on a flat day."""
+    assert (
+        expensive_windows([0.10] * 96, threshold_fraction=0.2, min_quarters=2, count=3)
+        == []
+    )
 
 
 def test_empty_range_yields_nothing() -> None:

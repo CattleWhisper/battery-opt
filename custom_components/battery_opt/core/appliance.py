@@ -19,6 +19,13 @@ prices (nothing here assumes prices are positive) and collapses
 gracefully on a flat day, where everything is cheap and the whole
 span is one window.
 
+The EXPENSIVE mirror (`expensive_windows` / `expensive_periods`)
+applies the same detection at the top of the range — maximal runs at
+or above max - threshold x (max - min) — the "avoid these" tier of
+the dashboard's traffic-light day strip. Everything between the two
+tiers is the strip's middle band, computed by the card as the
+complement.
+
 Naming: these are appliance WINDOWS, never "periods" — `period` is
 the TAR term (ponta/cheias/vazio) throughout this codebase.
 """
@@ -128,6 +135,73 @@ def cheap_windows(  # noqa: PLR0913
     return windows
 
 
+def expensive_windows(  # noqa: PLR0913
+    prices_eur_kwh: Sequence[float],
+    threshold_fraction: float,
+    min_quarters: int,
+    count: int,
+    first_quarter: int = 0,
+    last_quarter: int | None = None,
+) -> list[ApplianceWindow]:
+    """
+    Return the maximal expensive runs, in time order.
+
+    The mirror of `cheap_windows`: runs at or above
+    max - threshold x (max - min), the priciest kept under `count`.
+    Implemented by negating the vector — one detection, both tiers.
+    One deliberate asymmetry: a flat (zero-spread) day has NO
+    expensive tier — the cheap detection honestly claims the whole
+    span there ("any time is fine"), and the mirror must not claim
+    it too.
+    """
+    lo, hi = _bounds(len(prices_eur_kwh), first_quarter, last_quarter)
+    segment = prices_eur_kwh[lo:hi]
+    if not segment or min(segment) == max(segment):
+        return []
+    mirrored = cheap_windows(
+        [-price for price in prices_eur_kwh],
+        threshold_fraction,
+        min_quarters,
+        count,
+        first_quarter=first_quarter,
+        last_quarter=last_quarter,
+    )
+    return [
+        ApplianceWindow(
+            start_index=window.start_index,
+            end_index=window.end_index,
+            avg_price_eur_kwh=-window.avg_price_eur_kwh,
+        )
+        for window in mirrored
+    ]
+
+
+def _as_periods(
+    day: date,
+    windows: Sequence[ApplianceWindow],
+    tz: tzinfo,
+    interval: timedelta,
+) -> list[dict[str, str | float]]:
+    """
+    Render windows as display periods: ISO times, mean price.
+
+    The one JSON shape the `get_best_periods` service response and the
+    best-periods sensor attributes carry — in time order. Timestamps
+    follow core.plan's segment convention (the vectors' own wall-clock
+    localised to `tz`), so lists built for consecutive days
+    concatenate into one multi-day list.
+    """
+    midnight = datetime(day.year, day.month, day.day, tzinfo=tz)
+    return [
+        {
+            "start": (midnight + window.start_index * interval).isoformat(),
+            "end": (midnight + window.end_index * interval).isoformat(),
+            "avg_price_eur_kwh": round(window.avg_price_eur_kwh, 5),
+        }
+        for window in windows
+    ]
+
+
 def cheap_periods(  # noqa: PLR0913
     day: date,
     prices_eur_kwh: Sequence[float],
@@ -139,28 +213,44 @@ def cheap_periods(  # noqa: PLR0913
     tz: tzinfo = TZ_PORTUGAL,
     interval: timedelta = timedelta(minutes=15),
 ) -> list[dict[str, str | float]]:
-    """
-    Return the cheap windows as display periods: ISO times, mean price.
-
-    The one JSON shape both the `get_best_periods` service response
-    and the best-periods sensor attributes carry — in time order.
-    Timestamps follow core.plan's segment convention (the vectors' own
-    wall-clock localised to `tz`), so lists built for consecutive days
-    concatenate into one multi-day list.
-    """
-    midnight = datetime(day.year, day.month, day.day, tzinfo=tz)
-    return [
-        {
-            "start": (midnight + window.start_index * interval).isoformat(),
-            "end": (midnight + window.end_index * interval).isoformat(),
-            "avg_price_eur_kwh": round(window.avg_price_eur_kwh, 5),
-        }
-        for window in cheap_windows(
+    """Return the cheap windows as display periods (see `_as_periods`)."""
+    return _as_periods(
+        day,
+        cheap_windows(
             prices_eur_kwh,
             threshold_fraction,
             min_quarters,
             count,
             first_quarter=first_quarter,
             last_quarter=last_quarter,
-        )
-    ]
+        ),
+        tz,
+        interval,
+    )
+
+
+def expensive_periods(  # noqa: PLR0913
+    day: date,
+    prices_eur_kwh: Sequence[float],
+    threshold_fraction: float,
+    min_quarters: int,
+    count: int,
+    first_quarter: int = 0,
+    last_quarter: int | None = None,
+    tz: tzinfo = TZ_PORTUGAL,
+    interval: timedelta = timedelta(minutes=15),
+) -> list[dict[str, str | float]]:
+    """Return the expensive windows as display periods (see `_as_periods`)."""
+    return _as_periods(
+        day,
+        expensive_windows(
+            prices_eur_kwh,
+            threshold_fraction,
+            min_quarters,
+            count,
+            first_quarter=first_quarter,
+            last_quarter=last_quarter,
+        ),
+        tz,
+        interval,
+    )

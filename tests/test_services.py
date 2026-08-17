@@ -235,6 +235,12 @@ async def test_best_periods_sensor_points_at_the_next_window(
     assert state.attributes["day_avg_price_eur_kwh"] is not None
     # Tomorrow (flat spot): the TAR shape alone yields vazio periods.
     assert len(state.attributes["tomorrow_periods"]) >= 1
+    # The mirrored red tier: the priciest stretch, clearly above the
+    # cheap one, on both days.
+    expensive = state.attributes["expensive_periods"]
+    assert len(expensive) >= 1
+    assert expensive[0]["avg_price_eur_kwh"] > periods[0]["avg_price_eur_kwh"]
+    assert len(state.attributes["tomorrow_expensive_periods"]) >= 1
 
     # The sensor and the service agree — one ranking, two faces.
     response = await _get_best_periods(hass, {})
@@ -254,6 +260,7 @@ async def test_best_periods_sensor_without_tomorrow(
     assert state is not None
     assert len(state.attributes["periods"]) == 1
     assert state.attributes["tomorrow_periods"] == []
+    assert state.attributes["tomorrow_expensive_periods"] == []
     assert state.attributes["tomorrow_threshold_price_eur_kwh"] is None
     assert state.attributes["tomorrow_day_avg_price_eur_kwh"] is None
 

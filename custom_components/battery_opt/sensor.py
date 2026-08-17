@@ -58,7 +58,7 @@ from .const import (
     CONF_BATTERY_POWER_SENSOR,
     CONF_GRID_ENERGY_SENSOR,
 )
-from .core.appliance import cheap_periods, price_cutoff
+from .core.appliance import cheap_periods, expensive_periods, price_cutoff
 from .core.calendar import period
 from .core.plan import price_segments, schedule_segments
 from .cost import CostTracker
@@ -66,6 +66,8 @@ from .entity import device_info_for
 from .realised import RealisedTracker
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -336,7 +338,10 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
     state is the start of the next period that has not ended yet
     (today's, else tomorrow's); the attributes carry both days' lists
     — same shape as the service response, so one graph card covers
-    the 48 h view — plus each day's cheap cutoff for a threshold line.
+    the 48 h view — plus each day's cheap cutoff for a threshold line,
+    and the mirrored EXPENSIVE tier (maximal runs at the top of the
+    range) for the traffic-light day strip: cheap green, expensive
+    red, the complement in between.
     """
 
     _attr_has_entity_name = True
@@ -357,20 +362,28 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
             "prices_eur_kwh" if offset_days == 0 else "tomorrow_prices_eur_kwh"
         )
 
-    def _day_periods(self, offset_days: int) -> list[dict[str, Any]]:
-        """Cheap periods for plan_date + offset; [] without prices."""
+    def _build_periods(
+        self,
+        offset_days: int,
+        build: Callable[..., list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """Run a tier builder for plan_date + offset; [] without prices."""
         data = self.coordinator.data or {}
         plan_date = data.get("plan_date")
         prices = self._day_prices(offset_days)
         if plan_date is None or not prices:
             return []
-        return cheap_periods(
+        return build(
             plan_date + timedelta(days=offset_days),
             prices,
             BEST_PERIODS_THRESHOLD_PCT / 100.0,
             BEST_PERIODS_MIN_QUARTERS,
             BEST_PERIODS_COUNT,
         )
+
+    def _day_periods(self, offset_days: int) -> list[dict[str, Any]]:
+        """Cheap periods for plan_date + offset; [] without prices."""
+        return self._build_periods(offset_days, cheap_periods)
 
     def _day_cutoff(self, offset_days: int) -> float | None:
         prices = self._day_prices(offset_days)
@@ -405,6 +418,11 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
             "count": BEST_PERIODS_COUNT,
             "periods": self._day_periods(0),
             "tomorrow_periods": self._day_periods(1),
+            # The mirrored top-of-range tier — "avoid these" — for the
+            # traffic-light day strip (README): green cheap, red
+            # expensive, yellow the complement (computed card-side).
+            "expensive_periods": self._build_periods(0, expensive_periods),
+            "tomorrow_expensive_periods": self._build_periods(1, expensive_periods),
             "threshold_price_eur_kwh": self._day_cutoff(0),
             "tomorrow_threshold_price_eur_kwh": self._day_cutoff(1),
             "day_avg_price_eur_kwh": self._day_avg(data.get("prices_eur_kwh")),
