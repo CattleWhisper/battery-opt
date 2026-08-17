@@ -70,12 +70,17 @@ DEFAULT_SELF_DISCHARGE_W = 19.0
 UPDATE_INTERVAL_MINUTES = 15
 
 # Best-periods advisory (the get_best_periods service and the
-# best-periods sensor). Windows are MAXIMAL cheap runs (owner
-# 2026-08-17): a quarter is cheap at or below min + threshold% of the
-# day's price range, runs shorter than the minimum drop, and at most
-# COUNT periods surface (cheapest kept, listed in time order). The
-# service accepts overrides per call; the sensor always uses these.
-BEST_PERIODS_THRESHOLD_PCT = 20.0
+# best-periods sensor). Windows are MAXIMAL runs (owner 2026-08-17):
+# a quarter is cheap at or below min + cheap% of the day's price
+# range, expensive at or above max - expensive% of it; runs shorter
+# than the minimum drop, and at most COUNT periods surface per tier
+# (best kept, listed in time order). Asymmetric on purpose (owner
+# 2026-08-17): these steer the HUMAN toward cheap energy — the
+# planners never read them — so cheap stays selective while expensive
+# paints the whole top half as "avoid". The service accepts overrides
+# per call; the sensor always uses these.
+BEST_PERIODS_CHEAP_PCT = 30.0
+BEST_PERIODS_EXPENSIVE_PCT = 50.0
 BEST_PERIODS_MIN_QUARTERS = 2  # 30 min
 BEST_PERIODS_COUNT = 3
 

@@ -27,9 +27,9 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    BEST_PERIODS_CHEAP_PCT,
     BEST_PERIODS_COUNT,
     BEST_PERIODS_MIN_QUARTERS,
-    BEST_PERIODS_THRESHOLD_PCT,
     DOMAIN,
 )
 from .core.appliance import cheap_periods, price_cutoff
@@ -53,7 +53,7 @@ _GET_BEST_PERIODS_SCHEMA = vol.Schema(
             "min_duration",
             default=timedelta(minutes=_QUARTER_MINUTES * BEST_PERIODS_MIN_QUARTERS),
         ): vol.All(cv.time_period, cv.positive_timedelta),
-        vol.Optional("threshold", default=BEST_PERIODS_THRESHOLD_PCT): vol.All(
+        vol.Optional("threshold", default=BEST_PERIODS_CHEAP_PCT): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=100)
         ),
         vol.Optional("count", default=BEST_PERIODS_COUNT): vol.All(

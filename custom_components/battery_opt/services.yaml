@@ -14,7 +14,7 @@ get_best_periods:
       selector:
         duration:
     threshold:
-      default: 20
+      default: 30
       selector:
         number:
           min: 0

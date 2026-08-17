@@ -225,7 +225,10 @@ async def test_best_periods_sensor_points_at_the_next_window(
     assert state is not None
     # Frozen at noon: the cheap stretch is still ahead.
     assert state.state == "2026-01-14T13:00:00+00:00"
-    assert state.attributes["threshold_pct"] == 20.0
+    # Asymmetric on purpose (owner 2026-08-17): cheap stays selective,
+    # expensive paints the top half — human steering, never planning.
+    assert state.attributes["cheap_threshold_pct"] == 30.0
+    assert state.attributes["expensive_threshold_pct"] == 50.0
     assert state.attributes["min_duration_minutes"] == 30
     periods = state.attributes["periods"]
     assert len(periods) == 1
