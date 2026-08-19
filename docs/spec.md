@@ -434,6 +434,50 @@ Executed 2026-08-11 — all seven answered; full results register in
 7. Confirm polling at the configured scan interval suppresses the
    watchdog indefinitely. — **Moot: no watchdog (item 1)**
 
+### Multi-battery fleet (ADR-0009, Task 16)
+
+Implementation started ahead of a second-unit purchase (owner
+2026-08-18); N=1 must behave identically throughout.
+
+**Config shape:** each battery is a config **subentry** (type
+`battery`) carrying its seven entity pickers, its battery power
+sensor, its usable capacity (kWh) and its standby self-discharge (W).
+The parent entry keeps everything house-level (grid power/energy
+sensors, load sensor, reserve floor %, wear, plan-wear, dry-run).
+Entry migration v1→v2 moves the legacy flat battery group plus
+capacity/self-discharge into subentry #1; with no subentries the
+parent values (then the defaults) still drive planning-only mode.
+
+**Fleet driver:** one `MarstekDriver` per subentry — each unit keeps
+its own three-strike counter and commanded-state cache, and its own
+`marstek_venus_modbus` instance owns its Modbus connection (ADR-0004
+extends per device). A broadcast wrapper drives them as one: states go
+to every unit, SoC cutoffs are written per unit, and the fleet is
+unavailable the moment ANY unit is — with no firmware watchdog, a
+half-commanded fleet is worse than a stopped one.
+
+**Planning:** one virtual battery — capacities and self-discharges
+sum, the floor is floor_pct × Σ capacities, power limits are
+N × device max (C-3 still clamps to the house ceiling). The optimiser,
+static schedule, chaining, arming and validators run unchanged.
+
+**Charge-power allocation (the one shared resource):** the single
+ADR-0007 loop computes `other_load = import − Σ(unit battery powers)`
+and one total target `min(N × 2500, P_USABLE − other_load)`, then
+splits it in capacity-proportional shares —
+`unit_setpoint = total × cap_unit / Σ caps` (3 800 W over 5 + 7 kWh →
+≈1 583 W / ≈2 217 W), capped at each unit's device max with the excess
+redistributed, floored to 50 W steps. Equal C-rate keeps the fleet's
+SoC percentages in lockstep, so the single charge-to-SoC backstop
+percentage stays valid fleet-wide. Independent per-unit loops are
+rejected (mutual-inflation oscillation — ADR-0009).
+
+**Realised savings** integrates the SUM of the unit power sensors.
+Per-subentry device pages with per-unit health entities are a Task 16
+follow-up. **Bench gates before any N≥2 actuation:** re-run this
+section's on-device checklist on the fleet — simultaneous anti-feed
+interplay against one meter, the no-watchdog check per unit/firmware.
+
 ---
 
 ## 9. Triggers

@@ -1,6 +1,6 @@
 # ADR-0009: Multi-battery — subentries, fleet driver, one virtual battery
 
-**Status:** Accepted — implementation deferred until a second unit exists · **Date:** 2026-08
+**Status:** Accepted — in implementation (plan Task 16, owner 2026-08-18; N=1 parity required) · **Date:** 2026-08
 
 ## Context
 
@@ -109,5 +109,7 @@ constants (ADR-0003's Checkpoint B lever). The pinned Home Assistant
   the no-watchdog behaviour re-checked per unit and firmware; the
   ADR-0003 "<2% gap to optimal" claim re-verified at 10 kWh (the
   backtest suggests it holds).
-- Nothing is implemented until a second unit is purchased; this ADR is
-  the design of record for that day.
+- Implementation was pulled forward ahead of any purchase (owner
+  2026-08-18, plan Task 16): the fleet code ships tested at N=2 in
+  software only, N=1 must behave identically, and the bench gates
+  above still block real N≥2 actuation until a unit exists.

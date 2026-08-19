@@ -603,6 +603,62 @@ meantime). Defaults on, restored across restarts.*
 
 ---
 
+### Task 16: Multi-battery fleet (ADR-0009)
+
+**Description:** Implement the ADR-0009 fleet architecture ahead of a
+second-unit purchase (owner 2026-08-18): one config **subentry** per
+battery carrying its entity pickers, power sensor, usable capacity and
+standby self-discharge; a fleet driver that broadcasts states and is
+healthy only when EVERY unit is; one virtual battery for planning
+(per-unit values summed); and the charge-power loop as allocator over
+the shared contracted ceiling with **capacity-proportional shares**
+(`unit_setpoint = total × cap_unit / Σ caps`, capped at each unit's
+device max, excess redistributed). Hard requirement: **N=1 behaves
+identically** — the entire pre-existing suite passes, and a migrated
+single-battery entry actuates exactly as before.
+
+**Acceptance criteria:**
+- [ ] Config subentry type `battery` (add + reconfigure flows):
+      per-unit entity pickers, battery power sensor, capacity (kWh),
+      self-discharge (W)
+- [ ] Entry migration v1→v2: the flat battery group plus
+      capacity/self-discharge move into subentry #1; planning-only
+      entries stay untouched (parent values, then defaults, remain the
+      no-subentry fallback)
+- [ ] Fleet driver: `set_state` broadcast to every unit (each keeps
+      its own three-strike counter and state cache); ANY unit
+      unavailable → fleet unavailable → executor health latch;
+      SoC cutoffs written per unit at setup
+- [ ] Aggregate `BatteryParams`: Σ capacities, Σ self-discharges,
+      floor = floor_pct × Σ capacities, N × device power limits
+      (planning C-3 still clamps to the house ceiling)
+- [ ] Charge loop: `other_load = import − Σ(unit battery powers)`;
+      total target `min(N × 2500, P_USABLE − other_load)`; pure,
+      unit-tested capacity-proportional allocator with per-unit cap,
+      redistribution and 50 W steps
+- [ ] Realised savings integrates the SUM of the unit power sensors
+- [ ] N=1 parity: full pre-existing test suite green, unchanged
+- [ ] N=2 covered by tests (no hardware): params summing, allocation,
+      migration + subentry flows, loop with two power sensors
+
+**Deferred within the task:** per-subentry device pages with per-unit
+healthy/status entities; heterogeneous device models (different
+maxes/efficiencies).
+
+**Verification:** the ADR-0009 bench gates stand — NO N≥2 actuation
+until a real second unit passes the spec §8 on-device checklist re-run
+(simultaneous anti-feed interplay, no-watchdog re-check per firmware).
+Checkpoint C note: this lands pre-soak by owner decision; the soak
+baseline is the shipped code at soak start.
+
+**Dependencies:** ADR-0009, Task 15
+**Files:** `config_flow.py`, `__init__.py`, `driver.py`,
+`charge_loop.py`, `coordinator.py`, `realised.py`, `sensor.py`,
+`const.py`, `strings.json`
+**Scope:** L
+
+---
+
 ### Checkpoint D
 
 - [ ] 3 months in production
@@ -618,7 +674,7 @@ meantime). Defaults on, restored across restarts.*
 | Integrate solar forecast into the model | Panel installed |
 | Evaluate EMHASS / LP | Backtest shows >€10/year of headroom vs. optimal |
 | ERSE 2027 calendar | ERSE publishes the new hours |
-| Second unit | Checkpoint B shows gain ≥€100/year |
+| ~~Second unit~~ | Design fixed as ADR-0009; **fleet support in implementation (Task 16, owner 2026-08-18)** — the purchase itself stays deferred (Checkpoint B: +€111/yr, ~12.7-year payback; revisit after the ERSE 2027 reform) |
 | Publish `pt-erse-tariff` as a package | Third-party interest |
 | ~~Actual-cost sensor from the meter~~ | **Delivered 2026-08-06** (owner picked the grid-import energy sensor via decision 1's config addition) |
 
