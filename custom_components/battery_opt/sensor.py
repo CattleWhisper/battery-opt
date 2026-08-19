@@ -32,7 +32,7 @@ Sensors for battery_opt (spec §8).
   MEASURED battery flows (plan Task 13) — discharge value minus
   charge cost minus true wear, integrated from the battery power
   sensor; month-to-date realised/forecast and their deviation in the
-  attributes. Unavailable without CONF_BATTERY_POWER_SENSOR.
+  attributes. Unavailable without the fleet's power sensors.
 """
 
 from __future__ import annotations
@@ -56,7 +56,6 @@ from .const import (
     BEST_PERIODS_COUNT,
     BEST_PERIODS_EXPENSIVE_PCT,
     BEST_PERIODS_MIN_QUARTERS,
-    CONF_BATTERY_POWER_SENSOR,
     CONF_GRID_ENERGY_SENSOR,
 )
 from .core.appliance import cheap_periods, expensive_periods, price_cutoff
@@ -64,6 +63,7 @@ from .core.calendar import period
 from .core.plan import price_segments, schedule_segments
 from .cost import CostTracker
 from .entity import device_info_for
+from .fleet import fleet_power_sensors
 from .realised import RealisedTracker
 
 if TYPE_CHECKING:
@@ -692,7 +692,7 @@ class RealisedSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
     cost sensor: Sigma(discharged kWh x delivered price) minus
     Sigma(charged kWh x delivered price) minus wear per discharged kWh
     (true wear — Checkpoint B books savings at true wear, plans at
-    plan-wear). Flows integrate from CONF_BATTERY_POWER_SENSOR state
+    plan-wear). Flows integrate from the fleet power sensors' state
     changes (HA battery convention: positive W = discharging; the
     tracker negates into the core's charge-positive booking —
     ADR-0008: no SoC is read). Month-to-date totals and the
@@ -710,20 +710,21 @@ class RealisedSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
     _attr_icon = "mdi:cash-check"
 
     def __init__(self, coordinator: BatteryOptCoordinator, entry_id: str) -> None:
-        """Build the tracker (if a power sensor is configured)."""
+        """Build the tracker (if the fleet's power sensors are configured)."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_realised_savings"
         self._attr_device_info = device_info_for(entry_id)
-        merged = {**coordinator.entry.data, **coordinator.entry.options}
-        entity_id = merged.get(CONF_BATTERY_POWER_SENSOR)
+        # ADR-0009: one sensor per fleet unit, integrated as a SUM;
+        # empty when any unit lacks one (a partial sum would misbook).
+        entity_ids = fleet_power_sensors(coordinator.entry)
         self._tracker: RealisedTracker | None = (
             RealisedTracker(
                 coordinator,
                 entry_id,
-                entity_id,
+                entity_ids,
                 on_change=self.async_write_ha_state,
             )
-            if entity_id
+            if entity_ids
             else None
         )
 
@@ -736,7 +737,7 @@ class RealisedSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
 
     @property
     def available(self) -> bool:
-        """False without CONF_BATTERY_POWER_SENSOR configured."""
+        """False until every fleet unit's power sensor is configured."""
         return self._tracker is not None
 
     @property

@@ -54,6 +54,19 @@ DEFAULT_DRY_RUN = True
 # contracted ceiling is the charge-power loop's job. The backtest
 # keeps the measured 2000 W configuration (core BatteryParams default).
 DEVICE_MAX_CHARGE_W = 2500.0
+DEVICE_MAX_DISCHARGE_W = 2500.0
+
+# ADR-0009 / Task 16: each battery is a config subentry of this type;
+# the four required control entities define a complete unit. With no
+# subentries, the same keys on the parent entry (pre-migration legacy)
+# define a single unit; with neither, planning-only mode.
+SUBENTRY_TYPE_BATTERY = "battery"
+BATTERY_ENTITY_KEYS = (
+    CONF_MODE_SELECT,
+    CONF_CHARGE_POWER_NUMBER,
+    CONF_RS485_SWITCH,
+    CONF_WORK_MODE_SELECT,
+)
 
 DEFAULT_CAPACITY_KWH = 5.0
 DEFAULT_RESERVE_FLOOR_PCT = 27.0

@@ -45,14 +45,22 @@ battery's Modbus connection, with its disabled-by-default entities
 enabled (`force_mode`, `rs485_control_mode`, `set_charge_power`, and
 `charge_to_soc` if you want the firmware backstop).
 
-**Two modes.** Leave the battery entities empty for
+**Two modes.** With no battery configured the integration runs in
 **planning-only** mode: plans, prices and savings are computed and
-published, nothing actuates. Add all four battery entities (force
-mode select, charge power number, rs485 control switch, work mode
-select) via Configure to go **active**. No SoC sensor is configured:
-the reserve floor is the battery's to manage (ADR-0008). Everything
-is editable later through the options flow; the entry reloads on
-save.
+published, nothing actuates. Each battery is added as its own
+**sub-entry** from the integration page ("Add battery", ADR-0009):
+the four control entities (force mode select, charge power number,
+rs485 control switch, work mode select), the optional extras, this
+battery's power sensor, and its usable capacity and standby
+self-discharge. One battery makes the entry **active**; more batteries
+join the same fleet — the planner treats them as one virtual battery
+(capacities and drains summed) and the charge loop splits its setpoint
+in capacity-proportional shares, capped per unit. Existing
+single-battery installs migrate automatically (the old flat entity
+group becomes sub-entry "Battery"). No SoC sensor is configured: the
+reserve floor is the battery's to manage (ADR-0008). Everything is
+editable later — house-level fields through Configure, each battery
+through its sub-entry; the entry reloads on save.
 
 **Dynamic actuation (Task 12).** The capped-greedy plan always runs
 as an advisory dry-run (`sensor.battery_opt_plan`'s `schedule`,
@@ -84,7 +92,7 @@ applies only when no yesterday record exists.
 |---|---|
 | House load sensor (W or kWh) | Real load forecast instead of the flat 1.04 kW |
 | Grid import energy sensor (kWh) | `sensor.battery_opt_cost_today` |
-| Grid import power sensor (W) + battery power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W); the battery power sensor alone also enables `sensor.battery_opt_realised_savings`. The battery sensor follows the **HA battery convention: positive = discharging, negative = charging** |
+| Grid import power sensor (W) + every battery sub-entry's power sensor (W) | The ADR-0007 charge-power loop (without them CHARGE uses a safe static 2000 W total); the battery power sensors alone also enable `sensor.battery_opt_realised_savings` (integrated as the fleet SUM). Battery sensors follow the **HA battery convention: positive = discharging, negative = charging** |
 | Charge-to-SoC number | Firmware charge backstop — effectively **required** in active mode: the bench kill-test found no firmware watchdog, so this backstop is what stops a charge if the integration dies mid-window |
 | SOC cutoff numbers | Setup-time firmware cutoffs — the discharge cutoff is the run-time floor where it exists; the numbers do not exist on the Venus E V3, so leave them empty there |
 
@@ -96,7 +104,7 @@ All grouped under one **Battery Opt** service device.
 |---|---|
 | `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
-| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay — spanning 48 h once tomorrow's preview builds. Trajectories include the measured standby self-discharge (`self_discharge_w` option, default 19 W) |
+| `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay — spanning 48 h once tomorrow's preview builds. Trajectories include the measured standby self-discharge (per battery sub-entry, default 19 W) |
 | `sensor.battery_opt_best_periods` | Start of the next best period to run high-power appliances (timestamp). Periods are **maximal** cheap stretches — every run of quarters at or below the day's minimum + 30% of its price range, at least 30 min long, top 3, in time order. Attributes carry `periods` / `tomorrow_periods` (`{start, end, avg_price_eur_kwh}`), the mirrored `expensive_periods` / `tomorrow_expensive_periods` (the top 50% of the range — the "avoid these" tier), each day's cheap cutoff and average price — same semantics as the `battery_opt.get_best_periods` service |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
@@ -263,9 +271,9 @@ card. Both lines are continuous across midnight: the static chains
 its own end, and tomorrow's greedy is seeded from today's greedy end
 — so after a full sell-down the preview shows the overnight charge
 the greedy would plan from that low start. All forecast lines include
-the battery's measured standby self-discharge (the `self_discharge_w`
-option, default 19 W — tune it in the integration options as your own
-measurements accumulate), so a held charge sags gently toward the
+the battery's measured standby self-discharge (per battery sub-entry,
+default 19 W — tune it there as your own measurements accumulate; the
+fleet's drains sum), so a held charge sags gently toward the
 reserve floor instead of pretending to hold flat. The plan sensor's
 `executor_plan_source` says which of the two is actually driving the
 battery. This is the comparison Checkpoint C watches:

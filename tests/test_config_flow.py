@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import voluptuous as vol
+from homeassistant import data_entry_flow
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import ServiceCall, SupportsResponse
 from homeassistant.data_entry_flow import FlowResultType
@@ -125,7 +126,7 @@ async def _set_lisbon(hass: HomeAssistant) -> None:
 
 
 async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
-    """The single-step form creates a config entry with the input."""
+    """The single-step form creates the house-level entry (v2)."""
     _register_core_omie_service(hass)
     await _set_lisbon(hass)
     result = await hass.config_entries.flow.async_init(
@@ -134,13 +135,67 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], VALID_INPUT
+        result["flow_id"], dict(PARAMETERS)
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Battery Opt"
-    # Task 12: the schema defaults dry_run ON — greedy stays advisory.
-    # The measured standby drain (owner 2026-08-17) defaults to 19 W.
-    assert result["data"] == {**VALID_INPUT, "dry_run": True, "self_discharge_w": 19.0}
+    # ADR-0009: batteries are subentries; the parent form carries only
+    # the house-level parameters. Task 12: dry_run defaults ON; the
+    # measured standby drain (owner 2026-08-17) defaults to 19 W.
+    assert result["data"] == {**PARAMETERS, "dry_run": True, "self_discharge_w": 19.0}
+
+
+async def test_battery_subentry_flow_adds_a_unit(hass: HomeAssistant) -> None:
+    """'Add battery' brings a planning-only entry to life (ADR-0009)."""
+    _register_core_omie_service(hass)
+    await _set_lisbon(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.executor is None
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "battery"), context={"source": "user"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], dict(BATTERY_ENTITIES)
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    subentry = next(iter(entry.subentries.values()))
+    assert subentry.subentry_type == "battery"
+    assert subentry.title == "Battery 1"
+    # Per-unit physicals default from the schema.
+    assert subentry.data[CONF_CAPACITY_KWH] == 5.0
+    assert subentry.data["self_discharge_w"] == 19.0
+    assert entry.runtime_data.executor is not None
+    assert not entry.runtime_data.coordinator.planning_only
+
+
+async def test_battery_subentry_requires_the_control_entities(
+    hass: HomeAssistant,
+) -> None:
+    """The four control entities are required in the subentry form."""
+    _register_core_omie_service(hass)
+    await _set_lisbon(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "battery"), context={"source": "user"}
+    )
+    partial = {
+        key: value
+        for key, value in BATTERY_ENTITIES.items()
+        if key != CONF_RS485_SWITCH
+    }
+    with pytest.raises(data_entry_flow.InvalidData):
+        await hass.config_entries.subentries.async_configure(result["flow_id"], partial)
 
 
 async def test_flow_errors_when_omie_not_set_up(hass: HomeAssistant) -> None:
@@ -155,21 +210,89 @@ async def test_flow_errors_when_omie_not_set_up(hass: HomeAssistant) -> None:
     assert result["errors"] == {"base": "omie_not_set_up"}
 
 
-async def test_flow_rejects_partial_battery_entities(hass: HomeAssistant) -> None:
-    """One battery entity without the others is a form error."""
+async def test_v1_entry_migrates_the_battery_into_a_subentry(
+    hass: HomeAssistant,
+) -> None:
+    """
+    Migration v1→v2 (ADR-0009): the flat group becomes subentry #1.
+
+    N=1 parity: the migrated entry actuates exactly as before — same
+    capacity, same drain, same single-device power limits.
+    """
     _register_core_omie_service(hass)
-    await _set_lisbon(hass)
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
-    partial = {
-        key: value
-        for key, value in VALID_INPUT.items()
-        if key not in (CONF_CHARGE_POWER_NUMBER, CONF_RS485_SWITCH)
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(VALID_INPUT), version=1)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.version == 2
+    subentries = [
+        subentry
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == "battery"
+    ]
+    assert len(subentries) == 1
+    moved = subentries[0].data
+    assert moved[CONF_MODE_SELECT] == BATTERY_ENTITIES[CONF_MODE_SELECT]
+    assert moved[CONF_RS485_SWITCH] == BATTERY_ENTITIES[CONF_RS485_SWITCH]
+    assert moved[CONF_CAPACITY_KWH] == 5.0
+    assert moved["self_discharge_w"] == 19.0
+    params = entry.runtime_data.coordinator.battery_params
+    assert params.cap_usable_kwh == pytest.approx(5.0)
+    assert params.cap_min_kwh == pytest.approx(1.35)
+    assert params.p_charge_max_w == pytest.approx(2500.0)
+    assert params.p_discharge_max_w == pytest.approx(2500.0)
+    assert params.self_discharge_w == pytest.approx(19.0)
+    assert entry.runtime_data.executor is not None
+
+
+async def test_two_battery_subentries_sum_into_one_virtual_battery(
+    hass: HomeAssistant,
+) -> None:
+    """ADR-0009: capacities and drains sum; power limits scale by N."""
+    from homeassistant.config_entries import ConfigSubentryData  # noqa: PLC0415
+
+    _register_core_omie_service(hass)
+    second_battery = {
+        CONF_MODE_SELECT: "select.marstek2_force_mode",
+        CONF_CHARGE_POWER_NUMBER: "number.marstek2_set_charge_power",
+        CONF_RS485_SWITCH: "switch.marstek2_rs485_control_mode",
+        CONF_WORK_MODE_SELECT: "select.marstek2_user_work_mode",
     }
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], partial)
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "battery_entities_all_or_none"}
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=dict(PARAMETERS),
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={**BATTERY_ENTITIES, CONF_CAPACITY_KWH: 5.0},
+                subentry_type="battery",
+                title="Battery 1",
+                unique_id=None,
+            ),
+            ConfigSubentryData(
+                data={
+                    **second_battery,
+                    CONF_CAPACITY_KWH: 7.0,
+                    "self_discharge_w": 25.0,
+                },
+                subentry_type="battery",
+                title="Battery 2",
+                unique_id=None,
+            ),
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    params = entry.runtime_data.coordinator.battery_params
+    assert params.cap_usable_kwh == pytest.approx(12.0)  # 5 + 7
+    assert params.cap_min_kwh == pytest.approx(12.0 * 0.27)
+    assert params.p_charge_max_w == pytest.approx(5000.0)
+    assert params.p_discharge_max_w == pytest.approx(5000.0)
+    assert params.self_discharge_w == pytest.approx(19.0 + 25.0)
+    assert entry.runtime_data.executor is not None
 
 
 async def test_flow_rejects_non_lisbon_timezone(hass: HomeAssistant) -> None:
@@ -572,72 +695,41 @@ async def test_planning_only_without_omie_is_unhealthy(
     assert hass.states.get("sensor.battery_opt_forecast_savings").state == "unknown"
 
 
-async def test_options_flow_adds_battery_entities_later(
+async def test_battery_subentry_reconfigure_changes_the_aggregate(
     hass: HomeAssistant,
 ) -> None:
     """
-    When the battery arrives, options bring the executor to life.
+    Editing a unit's physicals flows into the aggregate params.
 
-    Adding the four entities reloads the entry out of planning-only.
+    The subentry reconfigure flow replaces the options-flow battery
+    editing (ADR-0009): the entry reloads on save and the coordinator
+    sums the fresh per-unit values.
     """
     _register_core_omie_service(hass)
     await _set_lisbon(hass)
-    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
+    entry = MockConfigEntry(domain=DOMAIN, data=dict(VALID_INPUT), version=1)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert entry.runtime_data.executor is None
+    subentry = next(iter(entry.subentries.values()))
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**BATTERY_ENTITIES, **PARAMETERS}
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    await hass.async_block_till_done()
-    assert entry.runtime_data.executor is not None
-    assert not entry.runtime_data.coordinator.planning_only
-
-
-async def test_options_flow_validates_the_post_save_config(
-    hass: HomeAssistant,
-) -> None:
-    """
-    Clearing one battery entity in options errors instead of passing.
-
-    Regression: saving REPLACES the options with the form input, so
-    validation must run on {data + user_input} — validating against
-    the pre-save merged view let a 3-of-4 battery group through,
-    silently dropping the entry to planning-only.
-    """
-    _register_core_omie_service(hass)
-    await _set_lisbon(hass)
-    entry = MockConfigEntry(domain=DOMAIN, data=dict(PARAMETERS))
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
-    # Battery arrives: all four entities land in the OPTIONS.
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**BATTERY_ENTITIES, **PARAMETERS}
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    await hass.async_block_till_done()
-    assert entry.runtime_data.executor is not None
-
-    # Re-open options and clear ONE battery entity (absent from the
-    # submission). The post-save config would hold 3 of 4 → error.
-    cleared = {
-        key: value
-        for key, value in {**BATTERY_ENTITIES, **PARAMETERS}.items()
-        if key != CONF_RS485_SWITCH
-    }
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], cleared
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "battery"),
+        context={"source": "reconfigure", "subentry_id": subentry.subentry_id},
     )
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "battery_entities_all_or_none"}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {**BATTERY_ENTITIES, CONF_CAPACITY_KWH: 7.0, "self_discharge_w": 25.0},
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    params = entry.runtime_data.coordinator.battery_params
+    assert params.cap_usable_kwh == pytest.approx(7.0)
+    assert params.cap_min_kwh == pytest.approx(7.0 * 0.27)
+    assert params.self_discharge_w == pytest.approx(25.0)
 
 
 async def test_all_entities_group_under_one_service_device(

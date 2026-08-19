@@ -26,5 +26,14 @@ async def async_get_config_entry_diagnostics(
     return {
         "entry_data": dict(entry.data),
         "entry_options": dict(entry.options),
+        # ADR-0009: each battery of the fleet is a subentry.
+        "subentries": {
+            subentry.subentry_id: {
+                "subentry_type": subentry.subentry_type,
+                "title": subentry.title,
+                "data": dict(subentry.data),
+            }
+            for subentry in entry.subentries.values()
+        },
         "coordinator_data": coordinator.data,
     }

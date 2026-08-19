@@ -53,6 +53,7 @@ from .const import (
     DEFAULT_SELF_DISCHARGE_W,
     DEFAULT_WEAR_COST,
     DEVICE_MAX_CHARGE_W,
+    DEVICE_MAX_DISCHARGE_W,
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
@@ -67,6 +68,7 @@ from .core.plan import (
 )
 from .core.static_schedule import chained_start_soc, static_plan
 from .executor import DynamicDayPlan
+from .fleet import battery_units
 from .load_history import LOOKBACK_DAYS, async_load_samples
 from .prices_source import day_series_from_service
 
@@ -182,9 +184,26 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def battery_params(self) -> BatteryParams:
-        """Effective parameters: entry data overlaid with options."""
+        """
+        Effective parameters: ONE virtual battery over the fleet.
+
+        ADR-0009: per-unit capacities and standby drains (battery
+        subentries) sum; power limits are N x the device limit
+        (planning C-3 still clamps to the house ceiling). With no
+        units (planning-only, or a pre-migration flat group handled
+        by `battery_units` itself) the parent-entry values and the
+        defaults stand, as one virtual unit.
+        """
         merged = {**self.entry.data, **self.entry.options}
-        capacity = float(merged.get(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
+        units = battery_units(self.entry)
+        if units:
+            capacity = sum(unit.capacity_kwh for unit in units)
+            drain = sum(unit.self_discharge_w for unit in units)
+            n = len(units)
+        else:
+            capacity = float(merged.get(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
+            drain = float(merged.get(CONF_SELF_DISCHARGE_W, DEFAULT_SELF_DISCHARGE_W))
+            n = 1
         floor_pct = float(merged.get(CONF_RESERVE_FLOOR_PCT, DEFAULT_RESERVE_FLOOR_PCT))
         return BatteryParams(
             cap_usable_kwh=capacity,
@@ -192,12 +211,11 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             wear_cost_eur_kwh=float(merged.get(CONF_WEAR_COST, DEFAULT_WEAR_COST)),
             # ADR-0007: planning C-3 capacity is the device limit; the
             # run-time contracted-power margin is the charge loop's.
-            p_charge_max_w=DEVICE_MAX_CHARGE_W,
+            p_charge_max_w=DEVICE_MAX_CHARGE_W * n,
+            p_discharge_max_w=DEVICE_MAX_DISCHARGE_W * n,
             # Owner 2026-08-17: measured standby drain; acts only on
             # the published trajectories and the chaining seeds.
-            self_discharge_w=float(
-                merged.get(CONF_SELF_DISCHARGE_W, DEFAULT_SELF_DISCHARGE_W)
-            ),
+            self_discharge_w=drain,
         )
 
     @property

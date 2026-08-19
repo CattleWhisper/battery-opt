@@ -62,7 +62,7 @@ async def test_discharge_integrates_at_the_delivered_price(
     """+4000 W held for 15 min at 0.30 books 1 kWh -> 0.28 net of wear."""
     freezer.move_to("2026-08-08T10:00:00+00:00")
     _set_power(hass, 4000.0)
-    tracker = RealisedTracker(_StubCoordinator(hass), "entry1", ENTITY_ID)
+    tracker = RealisedTracker(_StubCoordinator(hass), "entry1", [ENTITY_ID])
     await tracker.async_start()
 
     freezer.tick(timedelta(minutes=15))  # within MAX_SAMPLE_GAP_S
@@ -83,7 +83,7 @@ async def test_charge_and_discharge_net_out(
     _set_power(hass, -2000.0)  # charging (HA convention: negative)
     stub = _StubCoordinator(hass)
     stub.price = 0.10
-    tracker = RealisedTracker(stub, "entry1", ENTITY_ID)
+    tracker = RealisedTracker(stub, "entry1", [ENTITY_ID])
     await tracker.async_start()
 
     freezer.tick(timedelta(minutes=15))
@@ -108,7 +108,7 @@ async def test_stale_gap_contributes_nothing(
     """A sample older than MAX_SAMPLE_GAP_S integrates as zero."""
     freezer.move_to("2026-08-08T10:00:00+00:00")
     _set_power(hass, 2000.0)
-    tracker = RealisedTracker(_StubCoordinator(hass), "entry1", ENTITY_ID)
+    tracker = RealisedTracker(_StubCoordinator(hass), "entry1", [ENTITY_ID])
     await tracker.async_start()
 
     freezer.tick(timedelta(seconds=MAX_SAMPLE_GAP_S + 60))
@@ -134,7 +134,7 @@ async def test_day_folds_and_month_report_fires_with_deviation_flag(
     freezer.move_to("2026-08-31T22:00:00+00:00")
     _set_power(hass, 1000.0)
     stub = _StubCoordinator(hass)
-    tracker = RealisedTracker(stub, "entry1", ENTITY_ID)
+    tracker = RealisedTracker(stub, "entry1", [ENTITY_ID])
     await tracker.async_start()
 
     # The coordinator records a small forecast for the day.
@@ -165,7 +165,7 @@ async def test_restore_from_store_after_restart(
     """A second tracker instance picks up the day and ledger."""
     freezer.move_to("2026-08-08T10:00:00+00:00")
     _set_power(hass, 4000.0)
-    first = RealisedTracker(_StubCoordinator(hass), "entryX", ENTITY_ID)
+    first = RealisedTracker(_StubCoordinator(hass), "entryX", [ENTITY_ID])
     await first.async_start()
     freezer.tick(timedelta(minutes=15))
     _set_power(hass, 0.0)
@@ -173,7 +173,7 @@ async def test_restore_from_store_after_restart(
     assert first.state.discharged_kwh == pytest.approx(1.0)
     first.async_stop()
 
-    second = RealisedTracker(_StubCoordinator(hass), "entryX", ENTITY_ID)
+    second = RealisedTracker(_StubCoordinator(hass), "entryX", [ENTITY_ID])
     await second.async_start()
     assert second.state.day == first.state.day
     assert second.state.discharged_kwh == pytest.approx(1.0)

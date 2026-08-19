@@ -2,13 +2,14 @@
 Realised-savings tracker (plan Task 13): HA wiring for core.reporting.
 
 Mirrors cost.py's tracker pattern. `RealisedTracker` listens to the
-battery power sensor (CONF_BATTERY_POWER_SENSOR — the same entity the
-ADR-0007 charge loop reads, following the HA battery convention:
-positive W = DIScharging, owner 2026-08-11), integrates each held
-sample over its elapsed interval at the delivered price of that
-instant, and persists day + month across restarts via its own Store.
-The sign is negated at the core boundary — `core.reporting` books
-charge-positive.
+battery power sensors (the same entities the ADR-0007 charge loop
+reads, following the HA battery convention: positive W = DIScharging,
+owner 2026-08-11 — one per fleet unit, ADR-0009), integrates the held
+SUM over its elapsed interval at the delivered price of that instant,
+and persists day + month across restarts via its own Store. The sign
+is negated at the core boundary — `core.reporting` books
+charge-positive. An interval where ANY sensor is unavailable
+contributes nothing: a partial fleet sum would misbook a unit's flow.
 
 At local midnight the closed day folds into the month ledger; when
 the month changes (or a restart lands in a new month), the monthly
@@ -68,13 +69,13 @@ class RealisedTracker:
         self,
         coordinator: BatteryOptCoordinator,
         entry_id: str,
-        entity_id: str,
+        entity_ids: list[str],
         on_change: Callable[[], None] | None = None,
     ) -> None:
-        """Bind to the power entity and the coordinator's price lookup."""
+        """Bind to the power entities and the coordinator's price lookup."""
         self.hass: HomeAssistant = coordinator.hass
         self._coordinator = coordinator
-        self.entity_id = entity_id
+        self.entity_ids = entity_ids
         self._on_change = on_change or (lambda: None)
         self._store: Store[dict[str, Any]] = Store(
             self.hass, _STORE_VERSION, f"{DOMAIN}_{entry_id}_realised"
@@ -85,9 +86,18 @@ class RealisedTracker:
             wear_cost_eur_kwh=coordinator.battery_params.wear_cost_eur_kwh,
         )
         self.ledger = MonthLedger(month=now.date().isoformat()[:7])
-        self._last_power_w: float | None = None
+        self._last_power_w: dict[str, float | None] = dict.fromkeys(entity_ids)
         self._last_sample_at: datetime | None = None
         self._unsubs: list[Callable[[], None]] = []
+
+    def _total_power_w(self) -> float | None:
+        """Held fleet total; None while ANY sensor's value is unknown."""
+        total = 0.0
+        for value in self._last_power_w.values():
+            if value is None:
+                return None
+            total += value
+        return total
 
     async def async_start(self) -> None:
         """Restore persisted state, then start all listeners."""
@@ -103,13 +113,14 @@ class RealisedTracker:
                     # Restart across midnight: close the stored day now.
                     self.ledger.fold_day(restored)
         self._maybe_roll_month()
-        current = self.hass.states.get(self.entity_id)
-        if current is not None:
-            self._last_power_w = _state_value(current.state)
-            self._last_sample_at = dt_util.utcnow()
+        for entity_id in self.entity_ids:
+            current = self.hass.states.get(entity_id)
+            if current is not None:
+                self._last_power_w[entity_id] = _state_value(current.state)
+                self._last_sample_at = dt_util.utcnow()
         self._unsubs = [
             async_track_state_change_event(
-                self.hass, [self.entity_id], self._handle_state_change
+                self.hass, self.entity_ids, self._handle_state_change
             ),
             async_track_time_change(
                 self.hass, self._handle_midnight, hour=0, minute=0, second=0
@@ -179,18 +190,19 @@ class RealisedTracker:
         self._save()
 
     def _integrate(self, now: datetime) -> None:
-        """Book the held power sample over the interval ending now."""
-        if self._last_power_w is None or self._last_sample_at is None:
+        """Book the held fleet total over the interval ending now."""
+        total_w = self._total_power_w()
+        if total_w is None or self._last_sample_at is None:
             self._last_sample_at = now
             return
         elapsed_s = (now - self._last_sample_at).total_seconds()
         self._last_sample_at = now
         if elapsed_s <= 0 or elapsed_s > MAX_SAMPLE_GAP_S:
             return
-        # Sensor is HA-convention (positive = discharging); the core
+        # Sensors are HA-convention (positive = discharging); the core
         # books charge-positive — negate at the boundary.
         self.state.add_interval(
-            -self._last_power_w,
+            -total_w,
             elapsed_s / 3600.0,
             self._coordinator.current_price_eur_kwh(),
         )
@@ -202,6 +214,6 @@ class RealisedTracker:
         if new_state is None:
             return
         self._integrate(dt_util.utcnow())
-        self._last_power_w = _state_value(new_state.state)
+        self._last_power_w[event.data["entity_id"]] = _state_value(new_state.state)
         self._save()
         self._on_change()

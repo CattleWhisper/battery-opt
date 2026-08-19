@@ -44,7 +44,10 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 BatteryState = Literal["charge", "hold", "discharge"]
 
@@ -275,6 +278,143 @@ class MarstekDriver(BatteryDriver):
                 )
                 ok = False
         return ok
+
+
+def allocate_charge_w(
+    total_w: float,
+    caps_kwh: Sequence[float],
+    *,
+    unit_max_w: float,
+    step_w: float = 50.0,
+) -> list[float]:
+    """
+    Split a total charge setpoint in capacity-proportional shares.
+
+    ADR-0009: `unit_setpoint = total x cap_unit / sum(caps)` — equal
+    C-rate keeps the fleet's SoC percentages in lockstep. A share
+    exceeding the unit's device max is capped there and the excess
+    redistributed among the units with headroom (at most N rounds).
+    Each final share floors DOWN to the register step — rounding up
+    could breach the contracted margin (C-3), same rule as the loop's
+    total. Zero-capacity entries are treated as equal weights, never a
+    division by zero.
+    """
+    epsilon = 1e-9  # allocation slack, far below any physical watt
+    n = len(caps_kwh)
+    if n == 0 or total_w <= 0:
+        return [0.0] * n
+    shares = [0.0] * n
+    active = set(range(n))
+    remaining = min(total_w, unit_max_w * n)
+    while remaining > epsilon and active:
+        weight = sum(caps_kwh[i] for i in active)
+        tentative = {
+            i: (
+                remaining * caps_kwh[i] / weight
+                if weight > 0
+                else remaining / len(active)
+            )
+            for i in active
+        }
+        overflow = 0.0
+        for i, add in tentative.items():
+            allowed = min(add, unit_max_w - shares[i])
+            shares[i] += allowed
+            overflow += add - allowed
+            if shares[i] >= unit_max_w - epsilon:
+                active.discard(i)
+        if overflow <= epsilon:
+            break
+        remaining = overflow
+    return [int(share // step_w) * step_w for share in shares]
+
+
+class FleetDriver(BatteryDriver):
+    """
+    Drive N units as one battery (ADR-0009, Task 16).
+
+    States broadcast to every unit (each keeps its own three-strike
+    counter and commanded-state cache, so a failed unit replays its
+    own full transition next time). Charge power splits in
+    capacity-proportional shares via `allocate_charge_w`. Every unit
+    is always attempted — a transient failure on one must not leave
+    another stuck in the previous state — and the WORST error raises
+    afterwards: any `DriverUnavailableError` makes the whole fleet
+    unavailable (the executor's all-healthy gate; with no firmware
+    watchdog, a half-commanded fleet is worse than a stopped one).
+    N=1 delegates 1:1 and behaves exactly like the bare unit driver.
+    """
+
+    def __init__(
+        self,
+        units: Sequence[BatteryDriver],
+        caps_kwh: Sequence[float],
+        *,
+        unit_max_w: float,
+    ) -> None:
+        """Bind the unit drivers and their capacities (same order)."""
+        if len(units) != len(caps_kwh) or not units:
+            msg = "FleetDriver needs one capacity per unit, at least one unit"
+            raise ValueError(msg)
+        self._units = list(units)
+        self._caps_kwh = list(caps_kwh)
+        self._unit_max_w = unit_max_w
+
+    def _raise_worst(self, errors: list[DriverError]) -> None:
+        if not errors:
+            return
+        for error in errors:
+            if isinstance(error, DriverUnavailableError):
+                raise error
+        raise errors[0]
+
+    async def set_state(
+        self,
+        state: BatteryState,
+        *,
+        charge_power_w: float | None = None,
+        target_soc_pct: float | None = None,
+    ) -> None:
+        """Broadcast the transition; charge power splits per unit."""
+        shares: list[float | None]
+        if state == "charge":
+            if charge_power_w is None:
+                msg = "CHARGE requires charge_power_w"
+                raise ValueError(msg)
+            shares = list(
+                allocate_charge_w(
+                    charge_power_w, self._caps_kwh, unit_max_w=self._unit_max_w
+                )
+            )
+        else:
+            shares = [None] * len(self._units)
+        errors: list[DriverError] = []
+        for unit, share in zip(self._units, shares, strict=True):
+            try:
+                await unit.set_state(
+                    state, charge_power_w=share, target_soc_pct=target_soc_pct
+                )
+            except DriverError as err:
+                errors.append(err)
+        self._raise_worst(errors)
+
+    async def set_charge_power(self, watts: float) -> None:
+        """Split the total setpoint in capacity-proportional shares."""
+        shares = allocate_charge_w(watts, self._caps_kwh, unit_max_w=self._unit_max_w)
+        errors: list[DriverError] = []
+        for unit, share in zip(self._units, shares, strict=True):
+            try:
+                await unit.set_charge_power(share)
+            except DriverError as err:
+                errors.append(err)
+        self._raise_worst(errors)
+
+    async def write_soc_cutoffs(self, floor_pct: float, ceiling_pct: float) -> bool:
+        """Write the cutoffs on every unit; True only if all confirmed."""
+        results = [
+            await unit.write_soc_cutoffs(floor_pct, ceiling_pct) for unit in self._units
+        ]
+        return all(results)
 
 
 @dataclass

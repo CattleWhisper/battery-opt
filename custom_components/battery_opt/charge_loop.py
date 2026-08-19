@@ -70,17 +70,24 @@ class ChargePowerLoop:
         driver: BatteryDriver,
         get_inputs: Callable[[], tuple[float | None, float | None]],
         is_charging: Callable[[], bool],
+        *,
+        p_max_w: float = P_DEVICE_MAX_W,
     ) -> None:
         """
         Wire the driver and the measurement/state sources.
 
         `get_inputs` returns (grid_import_w, battery_charge_w), either
-        None when its sensor is unavailable. `is_charging` reports
-        whether the state machine is currently in CHARGE.
+        None when its sensor is unavailable — for a fleet (ADR-0009)
+        battery_charge_w is the SUM over every unit. `is_charging`
+        reports whether the state machine is currently in CHARGE.
+        `p_max_w` is the fleet's total device ceiling (N x unit max);
+        the loop computes TOTALS only — the FleetDriver splits them in
+        capacity-proportional shares.
         """
         self._driver = driver
         self._get_inputs = get_inputs
         self._is_charging = is_charging
+        self._p_max_w = p_max_w
         self._last_written_w: float | None = None
         self._last_write_monotonic: float | None = None
         self.fallback = False
@@ -117,7 +124,7 @@ class ChargePowerLoop:
             self.fallback = True
             return None
         self.fallback = False
-        return charge_setpoint_w(grid_import_w, battery_charge_w)
+        return charge_setpoint_w(grid_import_w, battery_charge_w, p_max_w=self._p_max_w)
 
     async def on_update(self, now: float) -> None:
         """
