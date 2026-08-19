@@ -93,7 +93,7 @@ UPDATE_INTERVAL_MINUTES = 15
 # paints the whole top half as "avoid". The service accepts overrides
 # per call; the sensor always uses these.
 BEST_PERIODS_CHEAP_PCT = 30.0
-BEST_PERIODS_EXPENSIVE_PCT = 50.0
+BEST_PERIODS_EXPENSIVE_PCT = 40.0
 BEST_PERIODS_MIN_QUARTERS = 2  # 30 min
 BEST_PERIODS_COUNT = 3
 
