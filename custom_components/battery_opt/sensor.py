@@ -55,6 +55,7 @@ from .const import (
     BEST_PERIODS_CHEAP_PCT,
     BEST_PERIODS_COUNT,
     BEST_PERIODS_EXPENSIVE_PCT,
+    BEST_PERIODS_LOOKBACK_DAYS,
     BEST_PERIODS_MIN_QUARTERS,
     CONF_GRID_ENERGY_SENSOR,
 )
@@ -344,7 +345,15 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
     the range — deliberately wider than cheap: the tiers steer the
     human toward cheap energy, never the planners) for the
     traffic-light day strip: cheap green, expensive red, the
-    complement in between.
+    complement in between. Each day's range comes from the trailing
+    BEST_PERIODS_LOOKBACK_DAYS days of ARCHIVED prices (never today's
+    own live data — see `_reference_prices`) plus that day's own
+    vector (owner 2026-08-27) — not that day alone — so a naturally
+    flat day (little internal spread) reads as cheap against the
+    week rather than scattering across both tiers from noise in its
+    own narrow range, and one day's freak swing never swamps a
+    neighbouring day's classification. A fresh install with no
+    archive yet falls back to the single-day range unchanged.
     """
 
     _attr_has_entity_name = True
@@ -365,6 +374,23 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
             "prices_eur_kwh" if offset_days == 0 else "tomorrow_prices_eur_kwh"
         )
 
+    def _reference_prices(self, offset_days: int) -> list[float] | None:
+        """
+        Return plan_date + offset's own reference: shared history + its own vector.
+
+        The coordinator-built history (trailing week, ALWAYS strictly
+        before today) is shared, but each day is widened by its OWN
+        vector only (owner 2026-08-27) — never the other day's — so
+        today's freak price swing can widen today's cutoff without
+        ever swamping tomorrow's classification (and vice versa). None
+        (falls back to the day's own range) only when both are empty.
+        """
+        data = self.coordinator.data or {}
+        history = data.get("best_periods_history_eur_kwh") or []
+        own = self._day_prices(offset_days) or []
+        pool = [*history, *own]
+        return pool or None
+
     def _build_periods(
         self,
         offset_days: int,
@@ -383,6 +409,7 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
             threshold_pct / 100.0,
             BEST_PERIODS_MIN_QUARTERS,
             BEST_PERIODS_COUNT,
+            reference_prices_eur_kwh=self._reference_prices(offset_days),
         )
 
     def _day_periods(self, offset_days: int) -> list[dict[str, Any]]:
@@ -393,7 +420,11 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
         prices = self._day_prices(offset_days)
         if not prices:
             return None
-        cutoff = price_cutoff(prices, BEST_PERIODS_CHEAP_PCT / 100.0)
+        cutoff = price_cutoff(
+            prices,
+            BEST_PERIODS_CHEAP_PCT / 100.0,
+            reference_prices_eur_kwh=self._reference_prices(offset_days),
+        )
         return None if cutoff is None else round(cutoff, 5)
 
     @staticmethod
@@ -421,6 +452,7 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
             "expensive_threshold_pct": BEST_PERIODS_EXPENSIVE_PCT,
             "min_duration_minutes": 15 * BEST_PERIODS_MIN_QUARTERS,
             "count": BEST_PERIODS_COUNT,
+            "reference_lookback_days": BEST_PERIODS_LOOKBACK_DAYS,
             "periods": self._day_periods(0),
             "tomorrow_periods": self._day_periods(1),
             # The mirrored top-of-range tier — "avoid these" — for the

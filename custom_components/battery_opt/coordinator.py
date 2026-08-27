@@ -36,9 +36,14 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from .archive import async_archive_day, async_archive_load_day
+from .archive import (
+    async_archive_day,
+    async_archive_load_day,
+    async_recent_delivered_prices,
+)
 from .const import (
     BASE_LOAD_W,
+    BEST_PERIODS_LOOKBACK_DAYS,
     CONF_CAPACITY_KWH,
     CONF_DRY_RUN,
     CONF_LOAD_SENSOR,
@@ -273,6 +278,21 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Decision 4: archive every successful full-day build; the
             # same path is overwritten once a padded tail resolves.
             await async_archive_day(self.hass, today, series)
+        # Best-periods history (owner 2026-08-27): the trailing
+        # BEST_PERIODS_LOOKBACK_DAYS days of ARCHIVED prices, strictly
+        # before today — `async_recent_delivered_prices` starts at
+        # offset 1, so today itself is never in it. Deliberately NOT
+        # unioned with today's own vector here: the sensor combines
+        # this shared history with EACH day's own vector separately
+        # (today's with today's, tomorrow's with tomorrow's) so one
+        # day's freak price swing widens that day's own cutoff without
+        # ever leaking into a neighbouring day's classification — a
+        # fresh install with no archive yet leaves this empty, which
+        # reduces every day to its own range (core.appliance's
+        # fallback) exactly as before this feature existed.
+        data["best_periods_history_eur_kwh"] = await async_recent_delivered_prices(
+            self.hass, today, BEST_PERIODS_LOOKBACK_DAYS
+        )
         greedy_end = data["plan_soc_kwh"][-1] if data["fallback"] is None else None
         data.update(await self._tomorrow_preview(today, params, greedy_end))
         return data

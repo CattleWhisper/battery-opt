@@ -12,6 +12,14 @@ this is the future quarter-resolution forecast dataset that
 supersedes the hourly recorder-statistics adapter (`load_history.py`)
 once enough days have accumulated.
 
+`async_recent_delivered_prices` reads the price archive back: the
+pooled multi-day reference the best-periods sensor and service size
+their cheap/expensive cutoffs against (owner 2026-08-27), instead of
+each day's own narrow spread. Missing or unreadable days are skipped,
+not errors — a fresh install just returns an empty pool, and
+`core.appliance`'s `reference_prices_eur_kwh` falls back to the
+single-day range unchanged.
+
 Thin and HA-side only: `core/` stays free of homeassistant imports
 (ADR-0001). File IO runs off the event loop via
 `hass.async_add_executor_job` (spec §9 boundary: no blocking I/O in
@@ -21,6 +29,7 @@ the coordinator).
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -70,6 +79,46 @@ async def async_archive_day(
     path = _archive_path(hass, day)
     payload = _build_payload(day, series)
     await hass.async_add_executor_job(_write_file, path, payload)
+
+
+def _read_delivered_prices(path: Path) -> list[float]:
+    """Best-effort read; a missing or corrupt file yields no prices."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        return []
+    values = payload.get("delivered_eur_kwh")
+    return list(values) if isinstance(values, list) else []
+
+
+async def async_recent_delivered_prices(
+    hass: HomeAssistant,
+    day: date,
+    lookback_days: int,
+    first_quarter: int = 0,
+    last_quarter: int | None = None,
+) -> list[float]:
+    """
+    Pool delivered-price quarters from the `lookback_days` days before `day`.
+
+    Each day's own archived vector is bounded to [first_quarter,
+    last_quarter) before pooling, same convention as
+    `core.appliance.price_cutoff` — a caller that excludes the night
+    via `after` gets a reference that excludes it too, on every
+    pooled day, not just today's. Missing or unreadable days
+    contribute nothing; the pool can come back empty (fresh install,
+    or a `day` before the archive started).
+    """
+    pooled: list[float] = []
+    for offset in range(1, lookback_days + 1):
+        path = _archive_path(hass, day - timedelta(days=offset))
+        values = await hass.async_add_executor_job(_read_delivered_prices, path)
+        if not values:
+            continue
+        hi = len(values) if last_quarter is None else min(last_quarter, len(values))
+        lo = min(first_quarter, hi)
+        pooled.extend(values[lo:hi])
+    return pooled
 
 
 def _load_archive_path(hass: HomeAssistant, day: date) -> Path:

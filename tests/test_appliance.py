@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from custom_components.battery_opt.core.appliance import (
+    ApplianceWindow,
     cheap_windows,
     expensive_windows,
     price_cutoff,
@@ -134,3 +135,74 @@ def test_empty_range_yields_nothing() -> None:
     assert cheap_windows([], 0.2, 2, 3) == []
     assert cheap_windows([0.1] * 96, 0.2, 2, 3, first_quarter=90, last_quarter=90) == []
     assert price_cutoff([0.1] * 96, 0.2, first_quarter=96) is None
+
+
+def test_reference_widens_a_flat_days_narrow_range() -> None:
+    """
+    The motivating case: a flat day judged against a spread-out week.
+
+    Alone, this day's tiny 0.10-0.12 wobble would call its own top
+    third "expensive". Against a week that actually swung 0.02-0.40,
+    the whole day sits in the bottom of a much wider range and reads
+    as uniformly cheap instead.
+    """
+    today = [0.10] * 96
+    today[40:44] = [0.12] * 4  # a small wobble, entirely self-contained
+    history = [0.40, 0.02] * 48  # last week's real spread
+    # Cutoff = 0.02 + 0.3 x (0.40 - 0.02) = 0.134: both 0.10 and 0.12
+    # clear it, so the whole day comes out as one cheap window.
+    windows = cheap_windows(today, 0.3, 2, 3, reference_prices_eur_kwh=history)
+    assert windows == [
+        ApplianceWindow(
+            start_index=0,
+            end_index=96,
+            avg_price_eur_kwh=pytest.approx(sum(today) / 96),
+        ),
+    ]
+    # And nothing crosses the expensive cutoff = 0.40 - 0.3x0.38 ~ 0.286.
+    assert expensive_windows(today, 0.3, 2, 3, reference_prices_eur_kwh=history) == []
+
+
+def test_reference_falls_back_to_the_days_own_range_when_empty() -> None:
+    """No reference (or an empty one) reproduces the single-day cutoff exactly."""
+    prices = [0.26] * 96
+    prices[35:37] = [0.21] * 2
+    prices[37:49] = [0.397] * 12
+    prices[49:64] = [0.19] * 15
+    plain = cheap_windows(prices, 0.2, 2, 3)
+    assert cheap_windows(prices, 0.2, 2, 3, reference_prices_eur_kwh=[]) == plain
+    assert cheap_windows(prices, 0.2, 2, 3, reference_prices_eur_kwh=None) == plain
+    assert price_cutoff(prices, 0.2, reference_prices_eur_kwh=[]) == price_cutoff(
+        prices, 0.2
+    )
+
+
+def test_reference_can_narrow_a_days_range_and_grow_the_expensive_tier() -> None:
+    """A day judged against a narrower reference gets a stricter cutoff."""
+    prices = [0.20] * 96
+    prices[10:18] = [0.30] * 8  # today's own mid shoulder
+    prices[40:44] = [0.50] * 4  # today's own spike
+    # Self-comparison: cutoff = 0.50 - 0.2 x (0.50-0.20) = 0.44 — only
+    # the spike clears it.
+    assert [
+        (w.start_index, w.end_index) for w in expensive_windows(prices, 0.2, 2, 3)
+    ] == [(40, 44)]
+    # Against a week that barely moved (0.20-0.22), the same 20%
+    # fraction gives cutoff = 0.22 - 0.2 x 0.02 ~ 0.216: the shoulder
+    # ALSO clears it now, even though its own value never changed.
+    narrow_reference = [0.20, 0.22] * 48
+    windows = expensive_windows(
+        prices, 0.2, 2, 3, reference_prices_eur_kwh=narrow_reference
+    )
+    assert [(w.start_index, w.end_index) for w in windows] == [(10, 18), (40, 44)]
+
+
+def test_reference_only_moves_the_range_membership_stays_the_days_own() -> None:
+    """Windows are still built from the DAY's own values, never the reference's."""
+    prices = [0.10] * 96
+    prices[20:24] = [0.50] * 4
+    reference = [-100.0, 100.0]  # a wildly wide, unrelated reference
+    windows = cheap_windows(prices, 0.5, 2, 3, reference_prices_eur_kwh=reference)
+    # Cutoff = -100 + 0.5 x 200 = 0: nothing in `prices` (all >= 0.10)
+    # can be at or below it.
+    assert windows == []

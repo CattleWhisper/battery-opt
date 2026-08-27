@@ -98,4 +98,13 @@ BEST_PERIODS_EXPENSIVE_PCT = 40.0
 BEST_PERIODS_MIN_QUARTERS = 2  # 30 min
 BEST_PERIODS_COUNT = 3
 
+# The cutoff's min/max come from the trailing LOOKBACK_DAYS days of
+# archived delivered prices (today included), not today alone (owner
+# 2026-08-27): a single day's own spread is unstable — a naturally
+# flat day (Sunday, all vazio; a mild OMIE day) would read most of
+# ITSELF as "expensive" purely from its own narrow range. A fresh
+# install with no archive yet falls back to the single day's own
+# range unchanged (core.appliance's reference_prices_eur_kwh param).
+BEST_PERIODS_LOOKBACK_DAYS = 7
+
 BASE_LOAD_W = 1040.0  # CONTEXT.md: flat 24/7 load; Task 11 adds forecasting

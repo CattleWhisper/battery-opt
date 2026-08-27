@@ -26,6 +26,19 @@ the dashboard's traffic-light day strip. Everything between the two
 tiers is the strip's middle band, computed by the card as the
 complement.
 
+`reference_prices_eur_kwh` (owner 2026-08-27), where every entry
+point accepts it, decouples the min/max RANGE from the vector being
+CLASSIFIED: the day's own quarters are still what gets tested against
+the cutoff, but the cutoff itself is sized off the reference when one
+is given (e.g. a multi-day pooled history), falling back to the day's
+own bounded vector when the reference is empty or omitted — so a
+fresh install with no history yet reproduces the original single-day
+behaviour exactly. This is what stops a naturally flat day (little
+internal spread) from reading most of itself as "expensive" purely
+because its own range is narrow: judged against a wider, stabler
+range, a flat-but-cheap day comes out cheap, not scattered across both
+tiers by noise in its own tiny spread.
+
 Naming: these are appliance WINDOWS, never "periods" — `period` is
 the TAR term (ponta/cheias/vazio) throughout this codebase.
 """
@@ -68,6 +81,7 @@ def price_cutoff(
     threshold_fraction: float,
     first_quarter: int = 0,
     last_quarter: int | None = None,
+    reference_prices_eur_kwh: Sequence[float] | None = None,
 ) -> float | None:
     """
     Return the cheap cutoff for the (bounded) vector; None if empty.
@@ -75,14 +89,18 @@ def price_cutoff(
     min + threshold_fraction x (max - min) over [first_quarter,
     last_quarter) — computed inside the bounds, so "from 08:00 on"
     ranks against what is actually reachable, not against a night
-    minimum the caller excluded.
+    minimum the caller excluded. When `reference_prices_eur_kwh` is
+    given and non-empty, the min/max instead come from IT (e.g. a
+    pooled multi-day history) — only the range shifts; membership
+    still tests the day's own vector.
     """
     lo, hi = _bounds(len(prices_eur_kwh), first_quarter, last_quarter)
     if hi <= lo:
         return None
     segment = prices_eur_kwh[lo:hi]
-    low = min(segment)
-    return low + threshold_fraction * (max(segment) - low)
+    reference = reference_prices_eur_kwh or segment
+    low = min(reference)
+    return low + threshold_fraction * (max(reference) - low)
 
 
 def cheap_windows(  # noqa: PLR0913
@@ -92,6 +110,7 @@ def cheap_windows(  # noqa: PLR0913
     count: int,
     first_quarter: int = 0,
     last_quarter: int | None = None,
+    reference_prices_eur_kwh: Sequence[float] | None = None,
 ) -> list[ApplianceWindow]:
     """
     Return the maximal cheap runs, in time order.
@@ -101,10 +120,15 @@ def cheap_windows(  # noqa: PLR0913
     `min_quarters` are dropped, and when more than `count` remain only
     the cheapest by average survive. The result stays chronological —
     a notification reads it in time order; each window carries its
-    average price for ranking.
+    average price for ranking. See `price_cutoff` for
+    `reference_prices_eur_kwh`.
     """
     cutoff = price_cutoff(
-        prices_eur_kwh, threshold_fraction, first_quarter, last_quarter
+        prices_eur_kwh,
+        threshold_fraction,
+        first_quarter,
+        last_quarter,
+        reference_prices_eur_kwh=reference_prices_eur_kwh,
     )
     if cutoff is None or min_quarters < 1 or count < 1:
         return []
@@ -142,21 +166,27 @@ def expensive_windows(  # noqa: PLR0913
     count: int,
     first_quarter: int = 0,
     last_quarter: int | None = None,
+    reference_prices_eur_kwh: Sequence[float] | None = None,
 ) -> list[ApplianceWindow]:
     """
     Return the maximal expensive runs, in time order.
 
     The mirror of `cheap_windows`: runs at or above
     max - threshold x (max - min), the priciest kept under `count`.
-    Implemented by negating the vector — one detection, both tiers.
-    One deliberate asymmetry: a flat (zero-spread) day has NO
-    expensive tier — the cheap detection honestly claims the whole
-    span there ("any time is fine"), and the mirror must not claim
-    it too.
+    Implemented by negating the vector — one detection, both tiers
+    (the reference, when given, is negated along with it). One
+    deliberate asymmetry: a flat (zero-spread) RANGE has NO expensive
+    tier — the cheap detection honestly claims the whole span there
+    ("any time is fine"), and the mirror must not claim it too. The
+    flatness check runs against the reference when one is given (a
+    flat day judged against a spread-out history has a real top band
+    to avoid; a flat reference — e.g. no history yet on a flat day —
+    still has none).
     """
     lo, hi = _bounds(len(prices_eur_kwh), first_quarter, last_quarter)
     segment = prices_eur_kwh[lo:hi]
-    if not segment or min(segment) == max(segment):
+    reference = reference_prices_eur_kwh or segment
+    if not segment or not reference or min(reference) == max(reference):
         return []
     mirrored = cheap_windows(
         [-price for price in prices_eur_kwh],
@@ -165,6 +195,11 @@ def expensive_windows(  # noqa: PLR0913
         count,
         first_quarter=first_quarter,
         last_quarter=last_quarter,
+        reference_prices_eur_kwh=(
+            [-price for price in reference_prices_eur_kwh]
+            if reference_prices_eur_kwh
+            else None
+        ),
     )
     return [
         ApplianceWindow(
@@ -212,6 +247,7 @@ def cheap_periods(  # noqa: PLR0913
     last_quarter: int | None = None,
     tz: tzinfo = TZ_PORTUGAL,
     interval: timedelta = timedelta(minutes=15),
+    reference_prices_eur_kwh: Sequence[float] | None = None,
 ) -> list[dict[str, str | float]]:
     """Return the cheap windows as display periods (see `_as_periods`)."""
     return _as_periods(
@@ -223,6 +259,7 @@ def cheap_periods(  # noqa: PLR0913
             count,
             first_quarter=first_quarter,
             last_quarter=last_quarter,
+            reference_prices_eur_kwh=reference_prices_eur_kwh,
         ),
         tz,
         interval,
@@ -239,6 +276,7 @@ def expensive_periods(  # noqa: PLR0913
     last_quarter: int | None = None,
     tz: tzinfo = TZ_PORTUGAL,
     interval: timedelta = timedelta(minutes=15),
+    reference_prices_eur_kwh: Sequence[float] | None = None,
 ) -> list[dict[str, str | float]]:
     """Return the expensive windows as display periods (see `_as_periods`)."""
     return _as_periods(
@@ -250,6 +288,7 @@ def expensive_periods(  # noqa: PLR0913
             count,
             first_quarter=first_quarter,
             last_quarter=last_quarter,
+            reference_prices_eur_kwh=reference_prices_eur_kwh,
         ),
         tz,
         interval,
