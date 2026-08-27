@@ -100,13 +100,13 @@ in `docs/findings.md`.
 
 ## Phase 3 — 2-week static soak (Checkpoint C)
 
-- [ ] 2 weeks in production on the static plan
-- [ ] Zero export recorded over the whole window
-- [ ] SoC never below 27% (on the Marstek's own SoC sensor)
-- [ ] Ponta coverage ≥95% (summer criterion; watch the SoC
+- [X] 2 weeks in production on the static plan
+- [X] Zero export recorded over the whole window
+- [X] SoC never below 27% (on the Marstek's own SoC sensor)
+- [X] Ponta coverage ≥95% (summer criterion; watch the SoC
       forecast-vs-real overlay daily — the day-chaining fix is what
       makes summer coverage possible at all)
-- [ ] **Human review of the soak results** — the Checkpoint C gate.
+- [X] **Human review of the soak results** — the Checkpoint C gate.
       Only after it: review 1 week of dry-run comparison
       (`vs_static`, the advisory `schedule` vs what actually ran),
       then flip **Dry-run** off in Configure — the Task 12 swap
