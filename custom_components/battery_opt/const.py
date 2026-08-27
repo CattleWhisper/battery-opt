@@ -90,7 +90,8 @@ UPDATE_INTERVAL_MINUTES = 15
 # (best kept, listed in time order). Asymmetric on purpose (owner
 # 2026-08-17): these steer the HUMAN toward cheap energy — the
 # planners never read them — so cheap stays selective while expensive
-# paints the whole top half as "avoid". The service accepts overrides
+# paints a broad top band as "avoid" (owner-tuned to 40, ba1587e).
+# The service accepts overrides
 # per call; the sensor always uses these.
 BEST_PERIODS_CHEAP_PCT = 30.0
 BEST_PERIODS_EXPENSIVE_PCT = 40.0

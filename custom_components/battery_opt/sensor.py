@@ -340,7 +340,7 @@ class BestPeriodsSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinat
     (today's, else tomorrow's); the attributes carry both days' lists
     — same shape as the service response, so one graph card covers
     the 48 h view — plus each day's cheap cutoff for a threshold line,
-    and the mirrored EXPENSIVE tier (maximal runs in the top 50% of
+    and the mirrored EXPENSIVE tier (maximal runs in the top 40% of
     the range — deliberately wider than cheap: the tiers steer the
     human toward cheap energy, never the planners) for the
     traffic-light day strip: cheap green, expensive red, the

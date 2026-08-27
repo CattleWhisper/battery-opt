@@ -105,7 +105,7 @@ All grouped under one **Battery Opt** service device.
 | `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay — spanning 48 h once tomorrow's preview builds. Trajectories include the measured standby self-discharge (per battery sub-entry, default 19 W) |
-| `sensor.battery_opt_best_periods` | Start of the next best period to run high-power appliances (timestamp). Periods are **maximal** cheap stretches — every run of quarters at or below the day's minimum + 30% of its price range, at least 30 min long, top 3, in time order. Attributes carry `periods` / `tomorrow_periods` (`{start, end, avg_price_eur_kwh}`), the mirrored `expensive_periods` / `tomorrow_expensive_periods` (the top 50% of the range — the "avoid these" tier), each day's cheap cutoff and average price — same semantics as the `battery_opt.get_best_periods` service |
+| `sensor.battery_opt_best_periods` | Start of the next best period to run high-power appliances (timestamp). Periods are **maximal** cheap stretches — every run of quarters at or below the day's minimum + 30% of its price range, at least 30 min long, top 3, in time order. Attributes carry `periods` / `tomorrow_periods` (`{start, end, avg_price_eur_kwh}`), the mirrored `expensive_periods` / `tomorrow_expensive_periods` (the top 40% of the range — the "avoid these" tier), each day's cheap cutoff and average price — same semantics as the `battery_opt.get_best_periods` service |
 | `sensor.battery_opt_forecast_savings` | Forecast saving today vs not cycling (EUR) |
 | `sensor.battery_opt_vs_static` | Forecast gain of the dynamic plan over the fixed seasonal schedule (EUR) — the metric that justifies the project |
 | `sensor.battery_opt_cost_today` | Grid-import cost today incl. the daily fixed terms, excl. VAT (needs the grid energy sensor) |
@@ -400,7 +400,7 @@ at each period's average price:
 (48 h once tomorrow publishes) green / yellow / red: green = the
 cheap periods (bottom 30% of the day's price range), red = the
 mirrored expensive tier (`expensive_periods`, maximal runs in the
-top 50% of the range — deliberately wider than green, since the
+top 40% of the range — deliberately wider than green, since the
 tiers exist to steer people toward cheap energy), yellow =
 everything in between, computed as the complement:
 
