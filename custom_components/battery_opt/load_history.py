@@ -39,7 +39,17 @@ if TYPE_CHECKING:
 
     from homeassistant.core import HomeAssistant
 
-LOOKBACK_DAYS = 28
+# Owner 2026-08-27 (forecast-accuracy hardening): 28 days is EXACTLY 4
+# same-weekday occurrences with zero margin — one fully-gapped
+# historical day (a recorder purge, an entity rename, an integration
+# restart spanning midnight) drops the count to 3 and flattens the
+# WHOLE day to base load (core.forecast's outer fallback tier, not the
+# per-slot one). Widened to 8 weeks so up to 4 missing same-weekday
+# days can still leave 4 real occurrences to choose from; long-term
+# statistics are retained indefinitely by the recorder, so this is not
+# bounded by the ~10-day short-term retention that ruled out
+# 5-minute stats in the first place.
+LOOKBACK_DAYS = 56
 
 _SensorKind = Literal["power", "energy"]
 

@@ -40,6 +40,7 @@ from .archive import (
     async_archive_day,
     async_archive_load_day,
     async_recent_delivered_prices,
+    async_recent_load_days,
 )
 from .const import (
     BASE_LOAD_W,
@@ -63,7 +64,7 @@ from .const import (
     UPDATE_INTERVAL_MINUTES,
 )
 from .core.calendar import TZ_PORTUGAL
-from .core.forecast import forecast_load
+from .core.forecast import apply_intraday_correction, forecast_load, merge_day_samples
 from .core.optimiser import solve
 from .core.plan import (
     BatteryParams,
@@ -403,14 +404,65 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Flat `BASE_LOAD_W` without a configured meter, or when history
         is too thin — `forecast_load` itself applies the <4-same-
         weekday-occurrences fallback per slot and for the whole day.
+
+        Owner 2026-08-27 (forecast-accuracy hardening, Stage 2): the
+        quarter-resolution load archive (`archive.async_recent_load_days`,
+        accumulating since Task 11 decision 5) wins per date over
+        `load_history.py`'s hour-expanded recorder adapter, which still
+        covers whatever dates the archive hasn't reached yet
+        (`merge_day_samples`) — this is decision 5's "supersedes the
+        hourly adapter once enough days have accumulated", finally
+        wired up.
+
+        Stage 3: when `today` really is today (never for tomorrow's
+        preview, which calls this too — see `_apply_intraday_correction`),
+        the remaining hours are additionally scaled by how today has
+        actually run so far.
         """
         merged = {**self.entry.data, **self.entry.options}
         entity_id = merged.get(CONF_LOAD_SENSOR)
         if not entity_id:
             return [BASE_LOAD_W] * n
-        samples: list[DaySample] = await async_load_samples(self.hass, entity_id, today)
+        archived = await async_recent_load_days(self.hass, today, LOOKBACK_DAYS)
+        adapter = await async_load_samples(self.hass, entity_id, today)
+        samples = merge_day_samples(archived, adapter)
         solar = [0.0] * n
-        return forecast_load(today, samples, solar, n_intervals=n)
+        forecast = forecast_load(today, samples, solar, n_intervals=n)
+        if today == dt_util.now().date():
+            forecast = await self._apply_intraday_correction(today, entity_id, forecast)
+        return forecast
+
+    async def _apply_intraday_correction(
+        self,
+        today: date,
+        entity_id: str,
+        forecast: list[float],
+    ) -> list[float]:
+        """
+        Scale `forecast`'s remaining hours by today's own load so far (Stage 3).
+
+        `async_load_samples`'s window always ends at start-of-day for
+        the `day` argument, so querying for TOMORROW with a 1-day
+        lookback covers exactly [start of today, start of tomorrow) —
+        today's own hours. The recorder only materialises an hourly
+        long-term-statistics row once that hour CLOSES, so any hour
+        not yet finished (and the rest of the day) comes back absent —
+        exactly `apply_intraday_correction`'s "not yet observed"
+        convention, with no extra bookkeeping needed for "now".
+
+        A length mismatch (a DST-shifted 92/100-interval day the
+        hour-expanded adapter can't align to `forecast`'s own vector —
+        not material, CONTEXT.md) skips correction rather than
+        misaligning quarters.
+        """
+        tomorrow = today + timedelta(days=1)
+        todays_samples = await async_load_samples(
+            self.hass, entity_id, tomorrow, lookback_days=1
+        )
+        observed = next((s for s in todays_samples if s.day == today), None)
+        if observed is None or len(observed.load_w) != len(forecast):
+            return forecast
+        return apply_intraday_correction(forecast, observed.load_w)
 
     async def _prices_for_day(self, day: date) -> DaySeries | None:
         """
@@ -604,9 +656,17 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug("Day close: no observed load for %s yet", yesterday)
             return
         await async_archive_load_day(self.hass, yesterday, observed)
-        forecast_samples = await async_load_samples(
+        # Same merge as _forecast_load_vector (owner 2026-08-27): the
+        # MAE must measure the forecast method actually driving the
+        # plan, not a stale adapter-only one. `yesterday` itself is
+        # excluded by construction — async_recent_load_days only reads
+        # strictly-earlier archive files — so this stays "history
+        # available before yesterday" as documented above.
+        archived = await async_recent_load_days(self.hass, yesterday, LOOKBACK_DAYS)
+        adapter = await async_load_samples(
             self.hass, entity_id, yesterday, lookback_days=LOOKBACK_DAYS
         )
+        forecast_samples = merge_day_samples(archived, adapter)
         forecast = forecast_load(
             yesterday, forecast_samples, [0.0] * len(observed.load_w)
         )

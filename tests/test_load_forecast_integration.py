@@ -6,13 +6,22 @@ test_forecast.py; per the overnight-session decision, the HA adapter
 (`load_history.py`) is not exercised against a real recorder here —
 these tests monkeypatch `coordinator.async_load_samples` instead,
 covering: the coordinator falling back to a flat load without a
-meter, using the forecast when one is configured, and the 00:05
-day-close job (archive + MAE, decisions 5 and 7).
+meter, using the forecast when one is configured, the 00:05 day-close
+job (archive + MAE, decisions 5 and 7), preferring the load archive
+over the adapter on a shared date (Stage 2), and the same-day
+intraday correction (Stage 3) — all owner 2026-08-27, forecast-
+accuracy hardening.
+
+`_clean_load_archive_dir` mirrors test_archive.py's `_clean_archive_dir`:
+`hass.config.path()` is one fixed dir reused across every test *run*,
+not per-test, so a test that archives a load day must wipe first or
+risk a later run's assertion seeing a stale file.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,7 +31,10 @@ import pytest
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.battery_opt.archive import LOAD_ARCHIVE_SUBDIR
+from custom_components.battery_opt.archive import (
+    LOAD_ARCHIVE_SUBDIR,
+    async_archive_load_day,
+)
 from custom_components.battery_opt.const import (
     BASE_LOAD_W,
     CONF_CAPACITY_KWH,
@@ -48,6 +60,12 @@ PARAMETERS = {
 }
 
 _LOAD_SAMPLES_TARGET = "custom_components.battery_opt.coordinator.async_load_samples"
+
+
+@pytest.fixture(autouse=True)
+def _clean_load_archive_dir(hass: HomeAssistant) -> None:
+    """Start every test in this file with no pre-existing load-archive files."""
+    shutil.rmtree(Path(hass.config.path(LOAD_ARCHIVE_SUBDIR)), ignore_errors=True)
 
 
 def _same_weekday_samples(
@@ -249,3 +267,124 @@ async def test_load_mae_persists_across_reload(hass: HomeAssistant) -> None:
 
     mae_state = hass.states.get("sensor.battery_opt_load_mae")
     assert float(mae_state.state) == pytest.approx(200.0)
+
+
+async def test_forecast_load_vector_prefers_the_load_archive_on_overlap(
+    hass: HomeAssistant,
+) -> None:
+    """
+    Stage 2: an archived quarter-resolution day wins over the adapter's.
+
+    Four same-weekday days at 1000/2000/3000/4000 W (adapter) median
+    to 2500; overriding the most recent one to 9000 W via the load
+    archive shifts the median to 3500 — provable only if the archive
+    value actually replaced the adapter's for that date.
+    """
+    today = dt_util.now().date()
+    days = [today - timedelta(weeks=w) for w in range(1, 5)]
+    adapter_samples = [
+        DaySample(day=day, load_w=(watts,) * 96)
+        for day, watts in zip(days, [1000.0, 2000.0, 3000.0, 4000.0], strict=True)
+    ]
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={**PARAMETERS, CONF_LOAD_SENSOR: "sensor.house_power"}
+    )
+    entry.add_to_hass(hass)
+
+    with patch(_LOAD_SAMPLES_TARGET, return_value=adapter_samples):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = entry.runtime_data.coordinator
+        await async_archive_load_day(
+            hass, days[0], DaySample(day=days[0], load_w=(9000.0,) * 96)
+        )
+        result = await coordinator._forecast_load_vector(today, 96)  # noqa: SLF001
+
+    assert result == pytest.approx([3500.0] * 96)  # median of 2000/3000/4000/9000
+
+
+async def test_forecast_load_vector_applies_intraday_correction_for_today(
+    hass: HomeAssistant,
+) -> None:
+    """
+    Stage 3: today's own partial-day data scales the REST of the forecast.
+
+    History forecasts a flat 1000 W all day; the first 4 h (16
+    quarters) of today's REAL observed load run at double that
+    (2000 W) — the remaining, not-yet-elapsed hours should scale to
+    2000 W too, while the already-elapsed hours keep the original
+    forecast, not the observation.
+    """
+    today = dt_util.now().date()
+    tomorrow = today + timedelta(days=1)
+    history_samples = _same_weekday_samples(today, watts=1000.0)
+    todays_partial = DaySample(day=today, load_w=(2000.0,) * 16 + (None,) * 80)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={**PARAMETERS, CONF_LOAD_SENSOR: "sensor.house_power"}
+    )
+    entry.add_to_hass(hass)
+
+    async def fake_loader(
+        _hass: HomeAssistant,
+        _entity_id: str,
+        day: date,
+        lookback_days: int = LOOKBACK_DAYS,
+    ) -> list[DaySample]:
+        if day == tomorrow and lookback_days == 1:
+            return [todays_partial]
+        if day == today:
+            return history_samples
+        return []
+
+    with patch(_LOAD_SAMPLES_TARGET, new=fake_loader):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = entry.runtime_data.coordinator
+        result = await coordinator._forecast_load_vector(today, 96)  # noqa: SLF001
+
+    assert result[:16] == pytest.approx([1000.0] * 16)  # elapsed: unscaled forecast
+    assert result[16:] == pytest.approx([2000.0] * 80)  # remaining: scaled 2x
+
+
+async def test_intraday_correction_does_not_apply_to_tomorrows_preview(
+    hass: HomeAssistant,
+) -> None:
+    """
+    Stage 3 only engages for the REAL today, never a D+1 preview call.
+
+    Even if a caller's data source WOULD supply something matching
+    the "day+1, lookback=1" query `_apply_intraday_correction` issues
+    (structurally nonsensical for tomorrow itself, but cheap to prove
+    defensively), it must never be consulted when the target day
+    isn't today.
+    """
+    today = dt_util.now().date()
+    tomorrow = today + timedelta(days=1)
+    history_samples = _same_weekday_samples(tomorrow, watts=1000.0)
+    would_be_partial = DaySample(day=tomorrow, load_w=(9000.0,) * 16 + (None,) * 80)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={**PARAMETERS, CONF_LOAD_SENSOR: "sensor.house_power"}
+    )
+    entry.add_to_hass(hass)
+
+    async def fake_loader(
+        _hass: HomeAssistant,
+        _entity_id: str,
+        day: date,
+        lookback_days: int = LOOKBACK_DAYS,
+    ) -> list[DaySample]:
+        if day == tomorrow + timedelta(days=1) and lookback_days == 1:
+            return [would_be_partial]
+        if day == tomorrow:
+            return history_samples
+        return []
+
+    with patch(_LOAD_SAMPLES_TARGET, new=fake_loader):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = entry.runtime_data.coordinator
+        result = await coordinator._forecast_load_vector(tomorrow, 96)  # noqa: SLF001
+
+    assert result == pytest.approx([1000.0] * 96)  # unscaled: no intraday call made

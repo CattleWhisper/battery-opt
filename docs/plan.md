@@ -381,7 +381,10 @@ long-term statistics are HOURLY, not quarter-hourly — short-term
 identical quarters. True quarter resolution arrives later from our
 own load archive (`archive.py`'s new `battery_opt/load/` path,
 accumulated at day close) once enough days have accumulated —
-tracked, not solved, by this delivery.
+tracked, not solved, by this delivery. **Solved 2026-08-27** (below):
+`archive.async_recent_load_days` reads the accumulated archive back
+and `core.forecast.merge_day_samples` prefers it over the hour-
+expanded adapter per date, closing this gap.
 
 The coordinator uses the forecast as the advisory plan's load input
 whenever `CONF_LOAD_SENSOR` is configured (flat `BASE_LOAD_W`
@@ -398,7 +401,7 @@ meter exists and one day has closed), persisted across restarts via
 
 **Verification:**
 - [x] Mean absolute error vs. actual exposed as a sensor, for monitoring (`sensor.battery_opt_load_mae`)
-- [ ] Real-world accuracy check — needs several weeks of accumulated same-weekday history in production; nothing to measure yet the night this landed
+- [ ] Real-world accuracy check — needs several weeks of accumulated same-weekday history in production; nothing to measure yet the night this landed. Watch `load_mae_w` trend down after the 2026-08-27 hardening below (`docs/findings.md` has no measured figure yet either way)
 
 *Note 2026-08-08: the battery bench tests briefly distorted the
 original meter-based load readings; the owner resolved it at the
@@ -406,6 +409,28 @@ source by creating dedicated house-load sensors with the correct
 measurement, so no in-code exclusion is needed — point
 `CONF_LOAD_SENSOR` at the corrected sensor. This also settles the
 production question of battery flows polluting the load forecast.*
+
+**Forecast-accuracy hardening (owner 2026-08-27):** found while
+investigating a reported forecast-vs-real SoC divergence (the battery
+discharging slower than planned one morning, because real load ran
+below forecast). Root cause: `core/forecast.py`'s per-slot rule
+required ALL 4 same-weekday values present or the slot silently
+flattened to `BASE_LOAD_W` — a single recorder gap in one of only 4
+tracked days (`LOOKBACK_DAYS` was exactly 4 occurrences, zero margin)
+quietly made the forecast part-synthetic. Three changes, in order:
+1. `MIN_SLOT_SAMPLES` (2, was implicitly 4): a slot medians over
+   whichever values are present, only falling back below that.
+2. `LOOKBACK_DAYS` 28 → 56: margin against a fully-gapped historical
+   day dropping the same-weekday count below 4.
+3. The load archive is finally read back (`async_recent_load_days`,
+   `merge_day_samples`) — see the resolution-deviation note above —
+   and `apply_intraday_correction` scales the REST of today's forecast
+   by observed-so-far ÷ forecast-so-far (≥1 h elapsed, clamped
+   0.3–3.0×), using the load meter only — ADR-0008 (no SoC read)
+   untouched. Full rationale, ranked causes and the sequencing
+   decision (land before the still-unstarted 2-week static soak, not
+   during it) are in the session's diagnosis; SoC re-seeding was
+   considered and deliberately deferred past Checkpoint C.
 
 **Dependencies:** Task 10
 **Files:** `core/forecast.py`, `load_history.py`, `coordinator.py`, `sensor.py`, `config_flow.py`, `strings.json`, `translations/en.json`, `archive.py`, `__init__.py`

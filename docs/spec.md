@@ -171,7 +171,7 @@ segments.
 |---|---|---|
 | OMIE D+1 prices | ~13:30 daily | Fixed seasonal schedule |
 | TAR calendar | pure function | — |
-| Load forecast | median of the last 4 same-weekday occurrences | flat 1.04 kW |
+| Load forecast | median of the last 4 same-weekday occurrences (gap-tolerant per slot down to 2 of 4 present, owner 2026-08-27), the quarter-resolution load archive preferred over the hour-expanded recorder adapter per date, today's own remaining hours further scaled by observed-so-far ÷ forecast-so-far (clamped 0.3–3.0×) — `core/forecast.py` | flat 1.04 kW |
 | Solar forecast | `forecast_solar` | 0 |
 
 The SoC is deliberately NOT an input (ADR-0008, owner 2026-08-07):

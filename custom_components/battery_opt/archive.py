@@ -20,6 +20,16 @@ not errors — a fresh install just returns an empty pool, and
 `core.appliance`'s `reference_prices_eur_kwh` falls back to the
 single-day range unchanged.
 
+`async_recent_load_days` is the load archive's equivalent reader
+(owner 2026-08-27, forecast-accuracy hardening, Stage 2) — decision
+5's "supersedes the hourly recorder-statistics adapter … once enough
+days have accumulated" had never actually been wired up; this is that
+wiring. Unlike the price reader it returns `DaySample`s, not a flat
+pool: `core.forecast.forecast_load` needs each day's own date to do
+its same-weekday filtering, and `core.forecast.merge_day_samples`
+is what lets a caller prefer these true quarter-resolution days over
+`load_history.py`'s hour-expanded ones on any date both cover.
+
 Thin and HA-side only: `core/` stays free of homeassistant imports
 (ADR-0001). File IO runs off the event loop via
 `hass.async_add_executor_job` (spec §9 boundary: no blocking I/O in
@@ -35,12 +45,13 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 
+from .core.forecast import DaySample
+
 if TYPE_CHECKING:
     from datetime import date
 
     from homeassistant.core import HomeAssistant
 
-    from .core.forecast import DaySample
     from .prices_source import DaySeries
 
 ARCHIVE_SUBDIR = "battery_opt/prices"
@@ -143,3 +154,41 @@ async def async_archive_load_day(
     path = _load_archive_path(hass, day)
     payload = _build_load_payload(day, sample)
     await hass.async_add_executor_job(_write_file, path, payload)
+
+
+def _read_load_sample(path: Path, day: date) -> DaySample | None:
+    """Best-effort read; a missing or corrupt file yields no sample."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        return None
+    values = payload.get("load_w")
+    if not isinstance(values, list):
+        return None
+    return DaySample(day=day, load_w=tuple(values))
+
+
+async def async_recent_load_days(
+    hass: HomeAssistant,
+    day: date,
+    lookback_days: int,
+) -> list[DaySample]:
+    """
+    Return archived, TRUE quarter-resolution DaySamples strictly before `day`.
+
+    One entry per day that has an archive file — order is not
+    meaningful, `forecast_load` sorts and same-weekday-filters
+    internally. Missing or unreadable days simply contribute nothing;
+    the result can come back empty (fresh install, or a `day` before
+    day-close archiving started). Pair with `core.forecast`'s
+    `merge_day_samples` to prefer these over `load_history.py`'s
+    hour-expanded samples on any date both cover.
+    """
+    samples: list[DaySample] = []
+    for offset in range(1, lookback_days + 1):
+        target = day - timedelta(days=offset)
+        path = _load_archive_path(hass, target)
+        sample = await hass.async_add_executor_job(_read_load_sample, path, target)
+        if sample is not None:
+            samples.append(sample)
+    return samples
