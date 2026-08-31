@@ -57,9 +57,15 @@ join the same fleet — the planner treats them as one virtual battery
 (capacities and drains summed) and the charge loop splits its setpoint
 in capacity-proportional shares, capped per unit. Existing
 single-battery installs migrate automatically (the old flat entity
-group becomes sub-entry "Battery"). No SoC sensor is configured: the
-reserve floor is the battery's to manage (ADR-0008). Everything is
-editable later — house-level fields through Configure, each battery
+group becomes sub-entry "Battery"). The reserve floor stays the
+battery's to manage (ADR-0008) — but each battery takes an **optional
+SoC sensor**, used for one thing only (ADR-0010): just after local
+midnight it is read once to seed that day's plan from where the
+battery really is. Without it the plan seeds from its own model, and
+a seed that understates the battery ends the ponta discharge early
+and buys the rest of the expensive window from the grid. Leave it
+empty and nothing changes; a stale, unreadable or out-of-range
+reading falls back to the model too. Everything is editable later — house-level fields through Configure, each battery
 through its sub-entry; the entry reloads on save.
 
 **Dynamic actuation (Task 12).** The capped-greedy plan always runs

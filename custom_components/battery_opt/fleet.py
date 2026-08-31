@@ -28,6 +28,7 @@ from .const import (
     CONF_MODE_SELECT,
     CONF_RS485_SWITCH,
     CONF_SELF_DISCHARGE_W,
+    CONF_SOC_SENSOR,
     CONF_WORK_MODE_SELECT,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_SELF_DISCHARGE_W,
@@ -47,6 +48,7 @@ class BatteryUnit:
     capacity_kwh: float
     self_discharge_w: float
     power_sensor: str | None
+    soc_sensor: str | None
 
 
 def _unit_from(data: Mapping[str, Any]) -> BatteryUnit:
@@ -65,6 +67,7 @@ def _unit_from(data: Mapping[str, Any]) -> BatteryUnit:
             data.get(CONF_SELF_DISCHARGE_W, DEFAULT_SELF_DISCHARGE_W)
         ),
         power_sensor=data.get(CONF_BATTERY_POWER_SENSOR) or None,
+        soc_sensor=data.get(CONF_SOC_SENSOR) or None,
     )
 
 
@@ -113,4 +116,24 @@ def fleet_power_sensors(entry: Any) -> list[str]:
         return [s for s in sensors if s] if all(sensors) else []
     merged = {**entry.data, **entry.options}
     sensor = merged.get(CONF_BATTERY_POWER_SENSOR)
+    return [sensor] if sensor else []
+
+
+def fleet_soc_sensors(entry: Any) -> list[str]:
+    """
+    Return the fleet's SoC sensors, or [] unless EVERY unit has one.
+
+    ADR-0010's midnight seed is a fleet-level energy figure, so a
+    partial fleet is unusable: reading 2 of 3 units would seed the day
+    with two thirds of the real charge and plan a discharge the
+    battery cannot deliver. All-or-nothing, exactly like
+    `fleet_power_sensors`. Falls back to the parent entry (legacy flat
+    group, and pre-ADR-0008 entries that still carry the key).
+    """
+    units = battery_units(entry)
+    if units:
+        sensors = [unit.soc_sensor for unit in units]
+        return [s for s in sensors if s] if all(sensors) else []
+    merged = {**entry.data, **entry.options}
+    sensor = merged.get(CONF_SOC_SENSOR)
     return [sensor] if sensor else []

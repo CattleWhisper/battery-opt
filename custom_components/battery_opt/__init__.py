@@ -152,6 +152,9 @@ def _wire_actuation(  # noqa: PLR0913 - one wiring point, many collaborators
         # Task 12: dry-run (the default) keeps actuation on the static
         # plan; off actuates the coordinator's validated greedy.
         get_dynamic_plan=lambda: coordinator.executor_plan,
+        # ADR-0010: one owner for the measured seed (the coordinator
+        # captures and persists it); the executor just asks.
+        get_measured_start_soc=coordinator.measured_start_soc_kwh,
         dynamic_enabled=not merged.get(CONF_DRY_RUN, DEFAULT_DRY_RUN),
     )
 
@@ -293,6 +296,7 @@ async def async_setup_entry(
     coordinator = BatteryOptCoordinator(hass, entry, driver)
     await coordinator.async_restore_load_mae()
     await coordinator.async_restore_greedy_end()
+    await coordinator.async_restore_midnight_soc()
     await coordinator.async_config_entry_first_refresh()
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 

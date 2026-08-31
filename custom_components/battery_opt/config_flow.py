@@ -46,6 +46,7 @@ from .const import (
     CONF_RESERVE_FLOOR_PCT,
     CONF_RS485_SWITCH,
     CONF_SELF_DISCHARGE_W,
+    CONF_SOC_SENSOR,
     CONF_WEAR_COST,
     CONF_WORK_MODE_SELECT,
     DEFAULT_CAPACITY_KWH,
@@ -190,6 +191,16 @@ def _battery_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_BATTERY_POWER_SENSOR,
                 description=suggested(CONF_BATTERY_POWER_SENSOR),
+            ): _entity("sensor"),
+            # This unit's SoC (%), ADR-0010. Read at most once a day,
+            # just after midnight, purely to seed that day's plan from
+            # where the battery really is. Optional: leave it empty and
+            # every seed stays the modelled chain (pre-ADR-0010
+            # behaviour). Like the power sensor, EVERY unit must set it
+            # for the fleet total to be usable.
+            vol.Optional(
+                CONF_SOC_SENSOR,
+                description=suggested(CONF_SOC_SENSOR),
             ): _entity("sensor"),
             # Per-unit physicals (ADR-0009): summed in code.
             vol.Required(

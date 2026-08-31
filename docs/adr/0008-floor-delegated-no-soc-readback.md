@@ -3,6 +3,11 @@
 **Status:** Accepted (owner, 2026-08-07) · **Date:** 2026-08
 **Amends:** ADR-0006 (its "the integration keeps the reserve-floor
 guard" consequence)
+**Amended by:** ADR-0010 (2026-08-31) — "reads no SoC, anywhere" now
+has exactly one exception: a once-daily, bounded-window SoC read that
+seeds the day's PLAN. Run-time control, the reserve floor and the
+health path remain SoC-free, and the rationale below (a guard that
+goes blind on a frozen sensor) still governs those.
 
 ## Context
 

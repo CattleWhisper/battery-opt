@@ -174,8 +174,24 @@ segments.
 | Load forecast | median of the last 4 same-weekday occurrences (gap-tolerant per slot down to 2 of 4 present, owner 2026-08-27), the quarter-resolution load archive preferred over the hour-expanded recorder adapter per date, today's own remaining hours further scaled by observed-so-far ÷ forecast-so-far (clamped 0.3–3.0×) — `core/forecast.py` | flat 1.04 kW |
 | Solar forecast | `forecast_solar` | 0 |
 
-The SoC is deliberately NOT an input (ADR-0008, owner 2026-08-07):
-no SoC is read anywhere. The day seed follows the ACTUATED regime
+The SoC is not a run-time input (ADR-0008, owner 2026-08-07), with
+one exception: **ADR-0010's midnight seed sync (owner 2026-08-31)**.
+When a SoC sensor is configured, the day's start SoC is MEASURED —
+read once, inside `SOC_SYNC_WINDOW_MINUTES` after local midnight,
+freshness judged on `last_reported` so a battery resting at a flat
+SoC is not mistaken for a dead one, all-or-nothing across the fleet,
+clamped into `[cap_min, cap_usable]` and persisted so a restart keeps
+the morning's value. It outranks every modelled seed below, but
+today's own pinned record still wins so intraday refreshes never flip
+it. Unset, stale, unreadable or past the window, all of it falls back
+to the modelled chain described here. This exists because a seed that
+understates the battery ends the ponta discharge early (observed
+2026-08-31: plan at the floor by 11:00, real battery at 44%, the rest
+of ponta bought from the grid). Everything else stays SoC-free — the
+reserve floor is still the battery's, and the plan still never
+extends discharge past the modelled floor (ADR-0010 rejects arming it:
+the V3's 44001 cutoff is MISSING, so nothing would stop the drain at
+the reserve). The modelled day seed follows the ACTUATED regime
 (revised 2026-08-13 with Task 12). **Under dry-run (static
 actuation):** every plan — the executor's static plan, the static
 fallback, the advisory greedy and tomorrow's preview — seeds its day

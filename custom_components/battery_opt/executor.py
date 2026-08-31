@@ -116,6 +116,7 @@ class BatteryOptExecutor:
         get_charge_entry_w: Callable[[], float] | None = None,
         on_charge_entry: Callable[[float], None] | None = None,
         get_dynamic_plan: Callable[[], DynamicDayPlan | None] | None = None,
+        get_measured_start_soc: Callable[[date], float | None] | None = None,
         *,
         dynamic_enabled: bool = False,
     ) -> None:
@@ -131,6 +132,12 @@ class BatteryOptExecutor:
         Task 12: `dynamic_enabled` (config `dry_run` inverted; dry-run
         is the default) makes the executor actuate the coordinator's
         greedy plan from `get_dynamic_plan`, with static as fallback.
+
+        ADR-0010: `get_measured_start_soc` returns the day's measured
+        midnight seed, or None to keep the modelled chain. Injected
+        rather than read here so the SoC lives in exactly one place
+        (`soc_sync.py`) and the executor stays unit-testable without
+        a live sensor.
         """
         self._driver = driver
         self._get_params = get_params
@@ -139,6 +146,7 @@ class BatteryOptExecutor:
         self._get_charge_entry_w = get_charge_entry_w or (lambda: CHARGE_FALLBACK_W)
         self._on_charge_entry = on_charge_entry or (lambda _watts: None)
         self._get_dynamic_plan = get_dynamic_plan or (lambda: None)
+        self._get_measured_start_soc = get_measured_start_soc or (lambda _day: None)
         self.dynamic_enabled = dynamic_enabled
         self._listeners: list[Callable[[], None]] = []
         self.healthy = False
@@ -233,11 +241,19 @@ class BatteryOptExecutor:
         # so the static chain's "full" seed would model energy the
         # battery does not have.
         base = self._get_params()
-        start = (
-            base.cap_min_kwh
-            if self.dynamic_enabled
-            else chained_start_soc(today, self._load_w, self._solar_w, base)
-        )
+        # ADR-0010: the measured midnight seed outranks both regime
+        # defaults. Under static actuation this is what stops the
+        # ponta discharge ending on modelled-empty while the real
+        # battery still holds usable charge above the floor. None
+        # (no sensor, stale reading, past the capture window) keeps
+        # the modelled chain exactly as before.
+        start = self._get_measured_start_soc(today)
+        if start is None:
+            start = (
+                base.cap_min_kwh
+                if self.dynamic_enabled
+                else chained_start_soc(today, self._load_w, self._solar_w, base)
+            )
         params = dataclasses.replace(base, soc_start_kwh=start)
         self.plan = self._plan_factory(today, self._load_w, self._solar_w, params)
         self.plan_day = today

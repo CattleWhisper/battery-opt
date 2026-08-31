@@ -11,8 +11,13 @@ DOMAIN = "battery_opt"
 
 CONF_MODE_SELECT = "mode_select"
 CONF_CHARGE_POWER_NUMBER = "charge_power_number"
-# legacy: pre-2026-08-07 entries carry it; the integration no longer
-# reads the SoC — the reserve floor is the battery's to manage
+# The battery's own SoC sensor. Removed from the config flow by
+# ADR-0008 (no SoC readback anywhere), REINSTATED by ADR-0010 for one
+# narrow purpose: the midnight seed sync. It is read at most once per
+# day, inside a bounded window after local midnight, and feeds ONLY
+# the day's planning start SoC — never run-time control, never the
+# reserve floor (still the battery's, ADR-0008). Absent or unreadable,
+# every seed falls back to the modelled chain exactly as before.
 CONF_SOC_SENSOR = "soc_sensor"
 # ADR-0006 control entities: rs485 switch + work-mode select complete
 # the required battery group; the three numbers are optional-with-
@@ -106,5 +111,16 @@ BEST_PERIODS_COUNT = 3
 # install with no archive yet falls back to the single day's own
 # range unchanged (core.appliance's reference_prices_eur_kwh param).
 BEST_PERIODS_LOOKBACK_DAYS = 7
+
+# Midnight SoC sync (ADR-0010). The measured seed is only accepted
+# from a reading taken inside SOC_SYNC_WINDOW_MINUTES after local
+# midnight — later in the day "now" is no longer the day's START, so
+# the modelled chain is the honest seed. Staleness is judged on the
+# state's `last_reported` (which advances on every write, even when
+# the percentage is unchanged), so a battery resting at a flat SoC
+# overnight is NOT mistaken for a dead one — the frozen-reading
+# failure that ADR-0008 removed the old floor guard over.
+SOC_SYNC_WINDOW_MINUTES = 60
+SOC_SYNC_MAX_AGE_MINUTES = 30
 
 BASE_LOAD_W = 1040.0  # CONTEXT.md: flat 24/7 load; Task 11 adds forecasting

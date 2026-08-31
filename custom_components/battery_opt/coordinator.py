@@ -61,6 +61,8 @@ from .const import (
     DEVICE_MAX_CHARGE_W,
     DEVICE_MAX_DISCHARGE_W,
     DOMAIN,
+    SOC_SYNC_MAX_AGE_MINUTES,
+    SOC_SYNC_WINDOW_MINUTES,
     UPDATE_INTERVAL_MINUTES,
 )
 from .core.calendar import TZ_PORTUGAL
@@ -74,9 +76,10 @@ from .core.plan import (
 )
 from .core.static_schedule import chained_start_soc, static_plan
 from .executor import DynamicDayPlan
-from .fleet import battery_units
+from .fleet import battery_units, fleet_soc_sensors
 from .load_history import LOOKBACK_DAYS, async_load_samples
 from .prices_source import day_series_from_service
+from .soc_sync import measured_soc_kwh, within_sync_window
 
 # A normal day; DST-short/long days (92/100) are a fallback-only edge
 # case (no real prices to size the vector from) and are not material.
@@ -93,6 +96,11 @@ _MAE_STORE_VERSION = 1
 # Owner 2026-08-13: the greedy chains its own end across days; the
 # recorded end survives restarts so today can seed from yesterday.
 _GREEDY_END_STORE_VERSION = 1
+
+# ADR-0010: the measured midnight seed, persisted so a restart later
+# in the day keeps today's synced start instead of silently reverting
+# to the modelled chain (the capture window is long gone by then).
+_MIDNIGHT_SOC_STORE_VERSION = 1
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -141,6 +149,13 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._greedy_end_store: Store[dict[str, Any]] = Store(
             hass, _GREEDY_END_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_greedy_end"
         )
+        # ADR-0010: {"date", "soc_kwh"} for the day whose start SoC was
+        # measured. One capture per day, inside the post-midnight
+        # window; None until the first successful sync.
+        self._midnight_soc: dict[str, Any] | None = None
+        self._midnight_soc_store: Store[dict[str, Any]] = Store(
+            hass, _MIDNIGHT_SOC_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_midnight_soc"
+        )
 
     async def async_restore_load_mae(self) -> None:
         """Restore the persisted load-forecast MAE (decision 7), if any."""
@@ -153,6 +168,62 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stored = await self._greedy_end_store.async_load()
         if stored is not None and stored.get("date"):
             self._greedy_day = stored
+
+    async def async_restore_midnight_soc(self) -> None:
+        """Restore today's measured seed (ADR-0010), if one was captured."""
+        stored = await self._midnight_soc_store.async_load()
+        if stored is not None and stored.get("date"):
+            self._midnight_soc = stored
+
+    def measured_start_soc_kwh(self, day: date) -> float | None:
+        """
+        Return the day's measured start SoC (kWh), or None to use the model.
+
+        ADR-0010. Captured at most once per day: inside the
+        post-midnight window a fresh reading is taken and recorded;
+        afterwards only that record is served, so a restart at 14:00
+        keeps the morning's synced seed rather than seeding the day
+        with an afternoon SoC. Every failure path — no sensor, a
+        partial fleet, a stale or implausible reading, or simply
+        being past the window with nothing recorded — returns None,
+        and the caller keeps the modelled chain unchanged.
+        """
+        recorded = self._midnight_soc
+        if recorded is not None and recorded.get("date") == day.isoformat():
+            return float(recorded["soc_kwh"])
+        now = dt_util.now()
+        if day != now.date() or not within_sync_window(now, SOC_SYNC_WINDOW_MINUTES):
+            return None
+        sensors = fleet_soc_sensors(self.entry)
+        if not sensors:
+            return None
+        units = battery_units(self.entry)
+        params = self.battery_params
+        # Pair each sensor with ITS unit's capacity so a mixed fleet
+        # sums correctly; the legacy single-group entry has no units,
+        # and then the whole virtual battery is the one capacity.
+        capacities = (
+            [unit.capacity_kwh for unit in units]
+            if len(units) == len(sensors)
+            else [params.cap_usable_kwh]
+        )
+        measured = measured_soc_kwh(
+            self.hass,
+            list(zip(sensors, capacities, strict=True)),
+            now,
+            SOC_SYNC_MAX_AGE_MINUTES,
+        )
+        if measured is None:
+            return None
+        # C-4/C-5 are plan properties; the seed itself must sit inside
+        # the modelled envelope or every trajectory built from it
+        # starts out of bounds.
+        seed = min(max(measured, params.cap_min_kwh), params.cap_usable_kwh)
+        record = {"date": day.isoformat(), "soc_kwh": round(seed, 3)}
+        self._midnight_soc = record
+        self.hass.async_create_task(self._midnight_soc_store.async_save(record))
+        _LOGGER.debug("Midnight SoC sync for %s: %.3f kWh", day, seed)
+        return seed
 
     def _record_greedy_day(self, day: date, start: float, end: float) -> None:
         record = {
@@ -169,17 +240,27 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         Return the greedy's chained start for `today`, None if unchained.
 
-        Yesterday's record chains its END forward; today's own record
-        pins the START already used, so intraday refreshes never flip
-        the seed. Anything older (first run, HA off yesterday,
-        yesterday a static fallback) returns None — the regime default
-        then applies.
+        Today's own record pins the START already used, so intraday
+        refreshes never flip the seed. Failing that, ADR-0010's
+        measured midnight seed wins over yesterday's END: both answer
+        "where is the battery now", and one of them actually looked.
+        Yesterday's modelled end chains forward only when no
+        measurement exists. Anything older (first run, HA off
+        yesterday, yesterday a static fallback) returns None — the
+        regime default then applies.
         """
-        if self._greedy_day is None:
-            return None
-        if self._greedy_day["date"] == today.isoformat():
+        if (
+            self._greedy_day is not None
+            and self._greedy_day["date"] == today.isoformat()
+        ):
             return float(self._greedy_day["start_soc_kwh"])
-        if self._greedy_day["date"] == (today - timedelta(days=1)).isoformat():
+        measured = self.measured_start_soc_kwh(today)
+        if measured is not None:
+            return measured
+        if (
+            self._greedy_day is not None
+            and self._greedy_day["date"] == (today - timedelta(days=1)).isoformat()
+        ):
             return float(self._greedy_day["end_soc_kwh"])
         return None
 
@@ -258,6 +339,13 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         above the floor; the battery then simply holds more than
         modelled — the safe direction, corrected within a day.)
         """
+        measured = self.measured_start_soc_kwh(day)
+        if measured is not None:
+            # ADR-0010: where the battery ACTUALLY is beats where the
+            # chain thinks it should be. This is what lets the plan
+            # spend a surplus it really has instead of stopping the
+            # ponta discharge on modelled-empty.
+            return measured
         if self.dry_run:
             return chained_start_soc(day, load, solar, params)
         return params.cap_min_kwh

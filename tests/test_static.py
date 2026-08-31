@@ -229,3 +229,33 @@ def test_chained_start_subtracts_weekend_drain() -> None:
     ]
     tuesday = chained_start_soc(date(2026, 7, 14), FLAT_LOAD, NO_SOLAR, params)
     assert tuesday == pytest.approx(monday_end)
+
+
+def test_a_higher_seed_buys_more_ponta_coverage() -> None:
+    """
+    ADR-0010's whole point: the seed decides how much ponta is served.
+
+    Reproduces the owner's 2026-08-31 observation. Each ponta quarter
+    is sized against `available_kwh` derived from the MODELLED SoC, so
+    a seed pinned at the floor discharges nothing at all, while the
+    battery's real charge would have covered the first stretch of the
+    most expensive window of the day.
+
+    It is bounded by physics, not by the seed: 44% of 5 kWh above a
+    12% floor is ~1.6 kWh, which at a 1.04 kW load is ~1.5 h — so the
+    measured seed extends the cover, it does not complete the 3 h
+    ponta block.
+    """
+    params = dataclasses.replace(PARAMS, cap_min_kwh=0.6)  # 12% floor
+    summer_wednesday = date(2026, 8, 26)  # ponta 09:15-12:15
+
+    floor_seeded = dataclasses.replace(params, soc_start_kwh=params.cap_min_kwh)
+    at_floor = static_plan(summer_wednesday, FLAT_LOAD, NO_SOLAR, floor_seeded)
+    assert [w for w in at_floor.discharge_w if w > 0] == []
+
+    measured = dataclasses.replace(params, soc_start_kwh=2.2)  # a real 44%
+    with_surplus = static_plan(summer_wednesday, FLAT_LOAD, NO_SOLAR, measured)
+    quarters = [i for i, w in enumerate(with_surplus.discharge_w) if w > 0]
+    assert quarters[0] == 37  # 09:15, the first ponta quarter
+    assert len(quarters) == 6  # through 10:45, then genuinely empty
+    assert soc_trajectory(with_surplus, measured)[-1] >= params.cap_min_kwh
