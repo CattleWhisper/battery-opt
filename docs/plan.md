@@ -24,6 +24,8 @@ See `docs/adr/`. In brief:
 - **ADR-0006** — Discharge via the firmware's anti-feed mode, not force-discharge
 - **ADR-0007** — Charge power by closed loop on measured import; the plan carries states only
 - **ADR-0008** — Reserve floor delegated to the battery; no SoC readback
+- **ADR-0009** — Multi-battery fleet: batteries as config subentries, one virtual battery
+- **ADR-0010** — Midnight SoC sync: a once-daily, bounded reading seeds the day's plan (amends ADR-0008)
 
 ---
 
@@ -298,8 +300,16 @@ already knew was wrong.
 watchdog** — the 42011 charge-to-SoC backstop is the load-bearing
 charge stop, so `charge_to_soc` is effectively required in active
 mode), and the Task 15 drills plus the 48 h bench soak passed
-(validation checklist Phases 1–2). Only the Task 9 power-off drill
-remains before the 2-week static soak starts.
+(validation checklist Phases 1–2).
+
+**Status 2026-08-31:** the 2-week static soak (Phase 3) is complete
+and reviewed — checked off below, mirroring `docs/validation-checklist.md`.
+**Open discrepancy, not resolved here:** that checklist's Phase 2 still
+shows the Task 9 power-off drill unchecked, even though this section's
+own prose (above, as of 2026-08-11) named it a prerequisite for the
+soak. Either the drill ran and the checklist wasn't updated, or the
+soak proceeded without it — worth the owner confirming which, and
+ticking or striking the Phase 2 box accordingly.
 
 **Pre-soak fix (2026-08-07): virtual day-chaining.** Found while
 investigating a plan-sensor question: a floor-seeded summer static day
@@ -313,11 +323,11 @@ CONTEXT.md trap). No SoC readback — ADR-0008 stands; winter behaviour
 is unchanged (winter weekdays end drained, so the chained seed is the
 floor there).
 
-- [ ] 2 weeks in production on the static plan
-- [ ] Zero export recorded
-- [ ] SoC never below 27% (observed on the Marstek's own SoC sensor — ADR-0008)
-- [ ] Ponta coverage ≥95% in summer / at the ~67% one-unit deliverable ceiling in winter (SC-6 as revised — the Checkpoint B finding: winter weekdays demand 5.2 kWh vs 3.46 deliverable)
-- [ ] **Human review before enabling dynamic**
+- [x] 2 weeks in production on the static plan
+- [x] Zero export recorded
+- [x] SoC never below 27% (observed on the Marstek's own SoC sensor — ADR-0008)
+- [x] Ponta coverage ≥95% in summer / at the ~67% one-unit deliverable ceiling in winter (SC-6 as revised — the Checkpoint B finding: winter weekdays demand 5.2 kWh vs 3.46 deliverable)
+- [x] **Human review before enabling dynamic** — reviewed 2026-08-31 (`docs/validation-checklist.md` Phase 3); dynamic actuation is now a config toggle (flip **Dry-run** off), not a code change
 
 ---
 
