@@ -76,8 +76,8 @@ the static seasonal schedule; OFF actuates the greedy, falling back
 to the static schedule whenever prices are missing or a plan fails
 validation. The plan sensor's `executor_plan_source` attribute shows
 which plan is actually driving the battery (`static` / `greedy` /
-`static-fallback`). Leave dry-run on until the Checkpoint C review
-passes.
+`static-fallback`, or `ups` / `ups-fallback` in UPS mode). Leave
+dry-run on until the Checkpoint C review passes.
 
 Both plans keep the CHARGE state **armed through the whole cheap
 window** even after their model reaches capacity (real load runs
@@ -91,6 +91,25 @@ greedy ended — after a sell-down that means low, so it plans the
 night's cheap charge before each morning ponta — and the regime
 default (static chain under dry-run, reserve floor under dynamic)
 applies only when no yesterday record exists.
+
+**UPS mode (ADR-0011).** `switch.battery_opt_ups_mode` suspends
+arbitrage and holds the pack as backup: it still charges — on the
+day's cheapest quarters, or the cheapest TAR band when prices are
+missing — but never discharges, in any plan, on any fallback path.
+It overrides dry-run (both of dry-run's options discharge) and takes
+effect on the spot rather than at the next quarter, because the
+reason to flip it is usually a storm warning. Turn it off and normal
+planning resumes; the greedy's day-chain is untouched by the detour.
+
+Two things to know before relying on it. It **costs money**, and says
+so: the plan only buys, so `forecast_savings` goes negative and
+`vs_static` prices the arbitrage you are giving up. And it guarantees
+only that *the energy is still there* — the grid-failure switchover
+itself is the battery's own EPS function on its own output circuit,
+which this integration neither performs nor can verify. Without the
+optional SoC sensor the plan still charges correctly but its
+published SoC line reads pessimistically (it assumes an empty pack
+each day), which is the best reason yet to configure one.
 
 **Optional entities**, each degrading gracefully when unset:
 
@@ -108,7 +127,7 @@ All grouped under one **Battery Opt** service device.
 
 | Entity | What it shows |
 |---|---|
-| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
+| `sensor.battery_opt_plan` | Current action (`charge` / `discharge` / `hold`); attributes carry `schedule` — the advisory plan as merged charge/discharge windows (`start`/`end`/`direction`/`power_w`, hold omitted) spanning today and, once published, tomorrow — `static_schedule` (the static baseline in the same format, for the plan-comparison graph), the static-fallback flag, `ups_mode`, the charge-loop setpoint/fallback and, in active mode, `executor_plan_source` (what the executor is actuating) |
 | `sensor.battery_opt_current_price` | Delivered price now per the EDP Indexada formula (€/kWh, excl. fixed terms and VAT); attributes carry `prices` — merged segments (`start`/`end`/`price_eur_kwh`/`tar_period`, split at every TAR boundary) spanning today and tomorrow; Energy-dashboard-ready |
 | `sensor.battery_opt_soc_forecast` | Planned SoC for the current quarter (%, same unit as the Marstek's own SoC sensor — overlay the two to compare forecast vs real); full day trajectory in attributes, plus `greedy_trajectory_pct` / `static_trajectory_pct` for the both-plans overlay — spanning 48 h once tomorrow's preview builds. Trajectories include the measured standby self-discharge (per battery sub-entry, default 19 W) |
 | `sensor.battery_opt_best_periods` | Start of the next best period to run high-power appliances (timestamp). Periods are **maximal** cheap stretches — every run of quarters at or below the day's minimum + 30% of its price range, at least 30 min long, top 3, in time order. Attributes carry `periods` / `tomorrow_periods` (`{start, end, avg_price_eur_kwh}`), the mirrored `expensive_periods` / `tomorrow_expensive_periods` (the top 40% of the range — the "avoid these" tier), each day's cheap cutoff and average price — same semantics as the `battery_opt.get_best_periods` service |
@@ -120,6 +139,7 @@ All grouped under one **Battery Opt** service device.
 | `binary_sensor.battery_opt_healthy` | Safe-to-actuate: off on driver failure or an invalid plan (active mode; missing prices degrade to the static plan instead, marked `fallback: static`), or on missing prices in planning-only mode — the executor never actuates while off |
 | `switch.battery_opt_executor_actuation` | **Manual override** (active mode): off = the executor keeps planning and validating but skips every battery write, so you can drive the battery yourself; re-enabling replays the full transition sequence. Default on, restored across restarts |
 | `switch.battery_opt_charge_loop_actuation` | Manual override for the charge-power loop: off = it keeps computing but writes no setpoints (shown only when the loop's sensors are configured) |
+| `switch.battery_opt_ups_mode` | **UPS mode** (ADR-0011): on = the battery stops arbitraging and is held as backup — it still charges on the day's cheapest energy but never discharges. Applies immediately, not at the next quarter. Default off, restored across restarts; present in planning-only mode too |
 | `button.battery_opt_recalculate_plan` | Force an immediate full recomputation — refetch prices, rebuild the load forecast, re-solve today's plan and tomorrow's preview — without waiting for the 15-minute poll. Recomputes only; actuation stays with the executor (next quarter tick, or press Apply plan) |
 | `button.battery_opt_apply_plan` | Run an executor tick now (active mode): apply the current quarter's state without waiting for the boundary. It is the real tick — validation, the override switch and the health latch all apply — and it writes nothing if the state is already commanded. Handy right after re-enabling the actuation switch |
 

@@ -20,6 +20,12 @@ exactly the Task 12 dry-run), or, with `dry_run` off, the validated
 greedy this coordinator publishes as `executor_plan` (static whenever
 that is None).
 
+UPS mode (ADR-0011, `self.ups_mode`) replaces the greedy entirely
+while it is on: today's plan and tomorrow's preview both become
+charge-cheapest/never-discharge plans, the static baseline is still
+published beside them so `vs_static_eur` prices what the arbitrage
+is giving up, and the greedy chain record is left untouched.
+
 The greedy over 96 intervals is milliseconds — safe inline on the
 event loop (ADR-0002); nothing here blocks.
 """
@@ -70,11 +76,13 @@ from .core.forecast import apply_intraday_correction, forecast_load, merge_day_s
 from .core.optimiser import solve
 from .core.plan import (
     BatteryParams,
+    Plan,
     saving_vs_no_cycling,
     soc_trajectory,
     validate_plan,
 )
 from .core.static_schedule import chained_start_soc, static_plan
+from .core.ups import ups_plan, ups_start_soc_kwh
 from .executor import DynamicDayPlan
 from .fleet import battery_units, fleet_soc_sensors
 from .load_history import LOOKBACK_DAYS, async_load_samples
@@ -137,6 +145,12 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # executor (None while prices are missing or the solve is
         # untrustworthy — the executor then runs the chained static).
         self.executor_plan: DynamicDayPlan | None = None
+        # ADR-0011: set by switch.battery_opt_ups_mode. While on, every
+        # plan this coordinator builds charges on the cheapest energy
+        # and never discharges. Deliberately NOT a config option: it is
+        # the switch's single source of truth, and the executor reads
+        # it from here so the two can never disagree.
+        self.ups_mode = False
         self._load_mae_w: float | None = None
         self._mae_store: Store[dict[str, Any]] = Store(
             hass, _MAE_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_load_mae"
@@ -435,6 +449,17 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # The static baseline needs no prices — published alongside the
         # greedy preview for the plan-comparison dashboard.
         static = static_plan(tomorrow, load, solar, static_params)
+        if self.ups_mode:
+            return self._ups_preview(
+                tomorrow,
+                params,
+                prices,
+                load,
+                static,
+                static_params,
+                today_greedy_end_kwh,
+                padded=series.padded,
+            )
         greedy_params = dataclasses.replace(
             params,
             soc_start_kwh=(
@@ -483,6 +508,59 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     static, static_params, include_self_discharge=True
                 )
             ],
+        }
+
+    # Mirrors the shape of the inline greedy preview it replaces; the
+    # arguments are all values _tomorrow_preview has already computed,
+    # and recomputing them here would risk the two diverging.
+    def _ups_preview(  # noqa: PLR0913
+        self,
+        tomorrow: date,
+        params: BatteryParams,
+        prices: list[float],
+        load: list[float],
+        static: Plan,
+        static_params: BatteryParams,
+        today_end_kwh: float | None,
+        *,
+        padded: bool,
+    ) -> dict[str, Any]:
+        """
+        Tomorrow's UPS plan (ADR-0011), seeded from today's UPS end.
+
+        A UPS day ends wherever it charged to, so today's planned end
+        is the honest seed — the same chaining convention the greedy
+        preview uses, applied to the plan that is actually running.
+        It goes through the same clamp as every other UPS seed:
+        today's plan ends a hair under capacity by design, and the
+        arming headroom has to survive into tomorrow.
+        """
+        ups_params = dataclasses.replace(
+            params,
+            soc_start_kwh=ups_start_soc_kwh(
+                today_end_kwh
+                if today_end_kwh is not None
+                else self.measured_start_soc_kwh(tomorrow),
+                params,
+            ),
+        )
+        plan = ups_plan(tomorrow, load, ups_params, prices)
+        static_soc = [
+            round(v, 3)
+            for v in soc_trajectory(static, static_params, include_self_discharge=True)
+        ]
+        return {
+            "tomorrow_prices_eur_kwh": [round(p, 5) for p in prices],
+            "tomorrow_prices_padded": padded,
+            "tomorrow_charge_w": list(plan.charge_w),
+            "tomorrow_discharge_w": list(plan.discharge_w),
+            "tomorrow_static_charge_w": list(static.charge_w),
+            "tomorrow_static_discharge_w": list(static.discharge_w),
+            "tomorrow_plan_soc_kwh": [
+                round(v, 3)
+                for v in soc_trajectory(plan, ups_params, include_self_discharge=True)
+            ],
+            "tomorrow_static_soc_kwh": static_soc,
         }
 
     async def _forecast_load_vector(self, today: date, n: int) -> list[float]:
@@ -597,6 +675,8 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
         solar = [0.0] * len(load)
+        if self.ups_mode:
+            return self._ups_plan_data(today, params, prices, load, solar)
         # Two virtual batteries (owner 2026-08-13). The STATIC baseline
         # seeds per the actuated regime (_day_start_soc): dry-run
         # chains the static plan's own end — under static actuation
@@ -673,6 +753,103 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ],
             "forecast_saving_eur": round(greedy_saving, 4),
             "vs_static_eur": round(greedy_saving - static_saving, 4),
+            "fallback": None,
+        }
+
+    def _ups_plan_data(
+        self,
+        today: date,
+        params: BatteryParams,
+        prices: list[float] | None,
+        load: list[float],
+        solar: list[float],
+    ) -> dict[str, Any]:
+        """
+        UPS mode (ADR-0011): charge on the cheapest energy, never discharge.
+
+        The static baseline is still published alongside — that is the
+        arbitrage the owner is giving up, and `vs_static_eur` prices
+        it. With no delivered prices the plan is still built (TAR
+        ranks the intervals offline), and only the money figures go
+        unreported.
+
+        The greedy chain record is deliberately NOT written here: it
+        tracks the arbitrage battery's own trajectory, and a UPS day
+        has nothing to say about where that battery would have been.
+        Toggling the mode off therefore resumes the greedy chain from
+        its last real day, and ADR-0010's measured seed corrects it on
+        the first midnight after.
+        """
+        ups_params = dataclasses.replace(
+            params,
+            soc_start_kwh=ups_start_soc_kwh(self.measured_start_soc_kwh(today), params),
+        )
+        plan = ups_plan(today, load, ups_params, prices)
+        static_params = dataclasses.replace(
+            params, soc_start_kwh=self._day_start_soc(today, load, solar, params)
+        )
+        if validate_plan(plan, load, solar, ups_params):
+            # Unreachable by construction (the builder emits no
+            # discharge and stops at the ceiling), so this is
+            # belt-and-braces. Publishing the static baseline here
+            # cannot leak a discharge into the battery: the executor
+            # branches on the live UPS flag, not on what is published,
+            # and with nothing published it builds its own UPS plan.
+            _LOGGER.warning("UPS plan failed validation; publishing the baseline")
+            self.executor_plan = None
+            return {
+                **self._static_fallback(today, load, solar, static_params),
+                "ups_mode": True,
+            }
+        self.executor_plan = DynamicDayPlan(
+            day=today,
+            plan=plan,
+            params=ups_params,
+            load_w=tuple(load),
+            solar_w=tuple(solar),
+            ups=True,
+        )
+        static = static_plan(today, load, solar, static_params)
+        ups_soc = soc_trajectory(plan, ups_params, include_self_discharge=True)
+        # A UPS plan only buys, so its "saving" is negative: it is the
+        # standing cost of holding the reserve. Reported as-is — the
+        # owner asked for backup, not for a flattering number.
+        ups_saving = (
+            saving_vs_no_cycling(plan, prices, ups_params)
+            if prices is not None
+            else None
+        )
+        static_saving = (
+            saving_vs_no_cycling(static, prices, static_params)
+            if prices is not None
+            else None
+        )
+        return {
+            "prices_ok": prices is not None,
+            "ups_mode": True,
+            "plan_date": today,
+            "plan_charge_w": list(plan.charge_w),
+            "plan_discharge_w": list(plan.discharge_w),
+            "plan_soc_kwh": [round(v, 3) for v in ups_soc],
+            "static_charge_w": list(static.charge_w),
+            "static_discharge_w": list(static.discharge_w),
+            "static_soc_kwh": [
+                round(v, 3)
+                for v in soc_trajectory(
+                    static, static_params, include_self_discharge=True
+                )
+            ],
+            "forecast_saving_eur": (
+                None if ups_saving is None else round(ups_saving, 4)
+            ),
+            "vs_static_eur": (
+                None
+                if ups_saving is None or static_saving is None
+                else round(ups_saving - static_saving, 4)
+            ),
+            # Not a fallback: this IS the requested plan. The TAR
+            # ranking used when prices are missing is flagged by
+            # `prices_ok`, exactly as everywhere else.
             "fallback": None,
         }
 

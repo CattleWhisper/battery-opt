@@ -457,6 +457,38 @@ Executed 2026-08-11 — all seven answered; full results register in
 7. Confirm polling at the configured scan interval suppresses the
    watchdog indefinitely. — **Moot: no watchdog (item 1)**
 
+### UPS mode (ADR-0011)
+
+`switch.battery_opt_ups_mode` replaces the day's plan with one that
+charges on the cheapest energy and **never discharges**, holding the
+pack as backup against a grid failure. It is a mode, not a gate: the
+executor keeps planning, validating and actuating, but only the
+CHARGE and HOLD states are reachable.
+
+**Plan:** `core/ups.py`. `discharge_w` is structurally zero — no code
+path writes one. Charging goes into the cheapest quarters of the day
+(delivered prices; TAR ranking offline), sized to refill the pack,
+with the window sized from the reserve floor so it does not shrink
+when the model believes the pack is already full. The remainder of
+that window is ARMED at the ADR-0007 state selector, funded by
+`ARMING_HEADROOM_KWH` held back from the C-5 ceiling, so the charge
+loop and the firmware percent target can top up a real SoC that sits
+below the modelled one.
+
+**Precedence:** UPS mode wins over `dry_run` (both of whose options
+discharge) and over the greedy/static fallback chain. A published UPS
+plan that fails validation demotes to the executor's own offline UPS
+plan, never to the static schedule.
+
+**Source of truth:** `coordinator.ups_mode`, read live by the
+executor on each tick; published plans carry a `ups` flag and are
+adopted only when it matches, which closes the toggle race.
+
+**Out of scope:** the grid-failure switchover itself (the battery's
+own EPS function, on its own output circuit — neither performed nor
+verified here), grid-failure detection, and any change to the reserve
+floor or the contracted-power ceiling.
+
 ### Multi-battery fleet (ADR-0009, Task 16)
 
 Implementation started ahead of a second-unit purchase (owner
@@ -550,6 +582,8 @@ interplay against one meter, the no-watchdog check per unit/firmware.
 - Enabling additional cycles into cheias
 
 **Never**
+- Discharge while UPS mode is on — including on every fallback and
+  failure path (ADR-0011)
 - Export to the grid, even at a favourable price
 - Actuate without checking `binary_sensor.battery_opt_healthy`
 - Open a second Modbus connection

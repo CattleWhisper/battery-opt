@@ -155,6 +155,9 @@ def _wire_actuation(  # noqa: PLR0913 - one wiring point, many collaborators
         # ADR-0010: one owner for the measured seed (the coordinator
         # captures and persists it); the executor just asks.
         get_measured_start_soc=coordinator.measured_start_soc_kwh,
+        # ADR-0011: read live on every tick, so switch.battery_opt_ups_mode
+        # cannot be out of step with what actuates.
+        get_ups_mode=lambda: coordinator.ups_mode,
         dynamic_enabled=not merged.get(CONF_DRY_RUN, DEFAULT_DRY_RUN),
     )
 

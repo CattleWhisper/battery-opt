@@ -755,8 +755,11 @@ async def test_all_entities_group_under_one_service_device(
     grouped = [e for e in entity_registry.entities.values() if e.device_id == device.id]
     # plan, forecast savings, vs static, price, best periods,
     # SoC forecast, load MAE, cost today, realised savings, healthy,
-    # recalculate button
-    assert len(grouped) == 11
+    # recalculate button, UPS mode switch. The UPS switch is here even
+    # in planning-only mode (ADR-0011): it changes the PLAN, which
+    # planning-only computes — unlike the actuation gates, which only
+    # exist when there is something to actuate.
+    assert len(grouped) == 12
 
 
 async def test_recalculate_button_forces_plan_refresh(hass: HomeAssistant) -> None:

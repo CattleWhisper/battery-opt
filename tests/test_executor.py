@@ -477,3 +477,243 @@ def test_invalid_dynamic_plan_demotes_to_static() -> None:
     asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 15)))
     assert executor.plan_source == "static-fallback"
     assert len(notifications) == 1
+
+
+# --- UPS mode (ADR-0011) -------------------------------------------
+#
+# 2026-01-15 is a winter Thursday: 00:00-07:00 vazio (the static
+# charge window, and the cheapest TAR band), 09:30-12:00 ponta (where
+# the static plan discharges). Those two facts make every assertion
+# below a statement about the mode rather than about the clock.
+
+
+def _ups_executor(
+    driver: FakeDriver,
+    ups: list[bool],
+    dynamic: DynamicDayPlan | None = None,
+    notifications: list[str] | None = None,
+    *,
+    dynamic_enabled: bool = False,
+) -> BatteryOptExecutor:
+    """Build an executor whose UPS flag is a mutable cell the test owns."""
+    return BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        notify=(notifications.append if notifications is not None else None),
+        get_dynamic_plan=lambda: dynamic,
+        get_ups_mode=lambda: ups[0],
+        dynamic_enabled=dynamic_enabled,
+    )
+
+
+def test_ups_mode_holds_through_the_ponta_the_static_plan_would_sell() -> None:
+    """
+    The whole point: 10:00 ponta discharges normally, and must not here.
+
+    Same tick as test_discharge_interval_is_a_mode_switch_never_a_setpoint,
+    with the switch on.
+    """
+    driver = FakeDriver()
+    executor = _ups_executor(driver, ups=[True])
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 0)))
+    assert driver.calls == [("set_state", ("hold", None, None))]
+    assert executor.last_action == "hold"
+    assert executor.plan_source == "ups-fallback"
+
+
+def test_ups_mode_still_charges_on_the_cheapest_band() -> None:
+    """
+    Backup, not paralysis: the reserve is still refilled in vazio.
+
+    With no published plan the TAR ranking picks 00:00-07:00, and the
+    firmware backstop targets a full pack.
+    """
+    driver = FakeDriver()
+    executor = _ups_executor(driver, ups=[True])
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 0, 0)))
+    assert driver.calls == [("set_state", ("charge", 2000.0, 100.0))]
+    assert executor.last_action == "charge"
+
+
+def test_ups_mode_applies_on_the_next_tick_not_the_next_day() -> None:
+    """
+    Flipping the switch invalidates today's cached plan immediately.
+
+    A storm warning arriving at 10:00 must stop the 10:15 discharge,
+    not the one after midnight.
+    """
+    driver = FakeDriver()
+    ups = [False]
+    executor = _ups_executor(driver, ups=ups)
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 0)))
+    assert executor.last_action == "discharge"
+    ups[0] = True
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 15)))
+    assert executor.last_action == "hold"
+    assert driver.calls[-1] == ("set_state", ("hold", None, None))
+
+
+def test_leaving_ups_mode_resumes_arbitrage_on_the_next_tick() -> None:
+    """The switch is symmetric: turning it off restores the plan too."""
+    driver = FakeDriver()
+    ups = [True]
+    executor = _ups_executor(driver, ups=ups)
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 0)))
+    assert executor.last_action == "hold"
+    ups[0] = False
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 15)))
+    assert executor.last_action == "discharge"
+    assert executor.plan_source == "static"
+
+
+def test_ups_mode_adopts_the_coordinators_price_ranked_plan() -> None:
+    """A published plan flagged `ups` is preferred over the offline one."""
+    day = date(2026, 1, 15)
+    n = 96
+    charge = [0.0] * n
+    charge[52] = 2000.0  # 13:00 — cheias, so never the offline choice
+    published = DynamicDayPlan(
+        day=day,
+        plan=Plan(charge_w=tuple(charge), discharge_w=(0.0,) * n),
+        params=PARAMS,
+        load_w=(1040.0,) * n,
+        solar_w=(0.0,) * n,
+        ups=True,
+    )
+    driver = FakeDriver()
+    executor = _ups_executor(driver, ups=[True], dynamic=published)
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.plan_source == "ups"
+    assert executor.last_action == "charge"
+
+
+def test_ups_mode_refuses_a_published_plan_that_is_not_a_ups_plan() -> None:
+    """
+    The toggle race: the greedy is still published when the switch flips.
+
+    Until the coordinator refreshes, `executor_plan` holds an
+    arbitrage plan that discharges at 13:00. Adopting it would spend
+    the reserve seconds after the owner asked to keep it.
+    """
+    driver = FakeDriver()
+    executor = _ups_executor(
+        driver,
+        ups=[True],
+        dynamic=_dynamic_payload(date(2026, 1, 15)),  # ups defaults False
+        dynamic_enabled=True,
+    )
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.plan_source == "ups-fallback"
+    assert executor.last_action == "hold"
+
+
+def test_ups_mode_overrides_dry_run() -> None:
+    """
+    Dry-run means "actuate the static plan", which discharges.
+
+    So it cannot survive UPS mode: the regime that keeps the reserve
+    has to win over the regime that decides WHICH arbitrage plan runs.
+    """
+    driver = FakeDriver()
+    executor = _ups_executor(driver, ups=[True], dynamic_enabled=False)
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 10, 0)))
+    assert executor.plan_source == "ups-fallback"
+    assert executor.last_action == "hold"
+
+
+def test_an_invalid_ups_plan_demotes_to_ups_not_to_static() -> None:
+    """
+    Fail-closed WITHIN the mode.
+
+    The generic demotion path falls back to the static schedule — and
+    the static schedule discharges. A UPS plan that somehow fails
+    validation must land on the offline UPS plan instead, or the
+    failure handling would itself empty the reserve.
+    """
+    day = date(2026, 1, 15)
+    n = 96
+    discharge = [0.0] * n
+    discharge[52] = 5000.0  # above both the net load (C-1) and P_DIS_MAX (C-2)
+    published = DynamicDayPlan(
+        day=day,
+        plan=Plan(charge_w=(0.0,) * n, discharge_w=tuple(discharge)),
+        params=PARAMS,
+        load_w=(1040.0,) * n,
+        solar_w=(0.0,) * n,
+        ups=True,
+    )
+    notifications: list[str] = []
+    driver = FakeDriver()
+    executor = _ups_executor(
+        driver, ups=[True], dynamic=published, notifications=notifications
+    )
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.plan_source == "ups-fallback"
+    assert executor.last_action == "hold"
+    assert executor.healthy is True
+    assert "offline UPS" in notifications[0]
+
+
+def test_ups_mode_seeds_from_the_measured_soc_when_one_exists() -> None:
+    """
+    ADR-0010's midnight sync is what keeps the published line honest here.
+
+    A pack measured nearly full books no real charge energy; one
+    measured empty books a full window. Either way the CHARGE state
+    still spans the cheap band (core/ups.py), so this changes the
+    trajectory, not the actuation.
+    """
+    driver = FakeDriver()
+    full = BatteryOptExecutor(
+        driver=driver,
+        get_params=lambda: PARAMS,
+        get_measured_start_soc=lambda _day: PARAMS.cap_usable_kwh,
+        get_ups_mode=lambda: True,
+    )
+    asyncio.run(full.tick(datetime(2026, 1, 15, 0, 0)))
+    charged = sum(full.plan.charge_w) * PARAMS.interval_hours / 1000
+
+    empty = BatteryOptExecutor(
+        driver=FakeDriver(),
+        get_params=lambda: PARAMS,
+        get_measured_start_soc=lambda _day: PARAMS.cap_min_kwh,
+        get_ups_mode=lambda: True,
+    )
+    asyncio.run(empty.tick(datetime(2026, 1, 15, 0, 0)))
+    assert sum(empty.plan.charge_w) * PARAMS.interval_hours / 1000 > charged
+    # Both still command CHARGE at 00:00 — the window is seed-independent.
+    assert full.last_action == "charge"
+    assert empty.last_action == "charge"
+
+
+def test_a_rejected_ups_plan_is_not_re_adopted_every_tick() -> None:
+    """
+    Demotion has to stick until the coordinator publishes something new.
+
+    Without the identity check the executor would re-adopt the same
+    invalid published plan on the next tick, demote it again, and
+    flip-flop `plan_source` all day.
+    """
+    day = date(2026, 1, 15)
+    n = 96
+    discharge = [0.0] * n
+    discharge[52] = 5000.0
+    published = DynamicDayPlan(
+        day=day,
+        plan=Plan(charge_w=(0.0,) * n, discharge_w=tuple(discharge)),
+        params=PARAMS,
+        load_w=(1040.0,) * n,
+        solar_w=(0.0,) * n,
+        ups=True,
+    )
+    executor = _ups_executor(FakeDriver(), ups=[True], dynamic=published)
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 0)))
+    assert executor.plan_source == "ups-fallback"
+    demoted = executor.plan
+
+    asyncio.run(executor.tick(datetime(2026, 1, 15, 13, 15)))
+    # Object identity is what separates "stayed demoted" from
+    # "re-adopted and demoted again": both leave plan_source at
+    # ups-fallback, but only the thrash rebuilds the plan.
+    assert executor.plan is demoted
+    assert executor.last_action == "hold"

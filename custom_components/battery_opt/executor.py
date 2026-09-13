@@ -42,6 +42,13 @@ charge window sits after the morning ponta. The plan stays a
 schedule, not a tracker: the seed is the model rolled forward, and
 no SoC is ever read.
 
+UPS mode (ADR-0011) overrides all of the above while its switch is
+on: the executor actuates a plan that charges on the day's cheapest
+energy and NEVER discharges, so the pack stays available as backup.
+The flag is read live on every tick, and the fallback when no UPS
+plan has been published is another UPS plan — never the static
+schedule, which discharges.
+
 This module is HA-free like the driver: the quarter-hour timer and
 the notification service live in the integration __init__; tests
 drive tick() directly.
@@ -57,6 +64,7 @@ from .charge_loop import CHARGE_FALLBACK_W
 from .const import BASE_LOAD_W
 from .core.plan import BatteryParams, Plan, soc_trajectory, validate_plan
 from .core.static_schedule import chained_start_soc, static_plan
+from .core.ups import ups_plan, ups_start_soc_kwh
 from .driver import DriverError, DriverUnavailableError
 
 if TYPE_CHECKING:
@@ -80,8 +88,13 @@ Action = Literal["charge", "discharge", "hold", "unknown"]
 
 # What the executor is actuating: the fixed seasonal schedule
 # (dry-run / Phase 1), the coordinator's greedy (Task 12 live), or
-# static because no trustworthy greedy exists for today.
-PlanSource = Literal["static", "greedy", "static-fallback"]
+# static because no trustworthy greedy exists for today. The two ups*
+# sources are ADR-0011: the coordinator's price-ranked UPS plan, or
+# the executor's own TAR-ranked one when no published plan applies.
+PlanSource = Literal["static", "greedy", "static-fallback", "ups", "ups-fallback"]
+
+# Sources that carry the ADR-0011 guarantee of never discharging.
+UPS_SOURCES: frozenset[PlanSource] = frozenset({"ups", "ups-fallback"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,6 +113,12 @@ class DynamicDayPlan:
     params: BatteryParams
     load_w: tuple[float, ...]
     solar_w: tuple[float, ...]
+    # ADR-0011: True when this is a UPS plan. The executor adopts a
+    # published plan only when this MATCHES its own live UPS flag —
+    # without the check, the gap between flipping the switch and the
+    # coordinator's next refresh would actuate the arbitrage plan
+    # that is still published, discharging the reserve.
+    ups: bool = False
 
 
 class BatteryOptExecutor:
@@ -117,6 +136,7 @@ class BatteryOptExecutor:
         on_charge_entry: Callable[[float], None] | None = None,
         get_dynamic_plan: Callable[[], DynamicDayPlan | None] | None = None,
         get_measured_start_soc: Callable[[date], float | None] | None = None,
+        get_ups_mode: Callable[[], bool] | None = None,
         *,
         dynamic_enabled: bool = False,
     ) -> None:
@@ -138,6 +158,10 @@ class BatteryOptExecutor:
         rather than read here so the SoC lives in exactly one place
         (`soc_sync.py`) and the executor stays unit-testable without
         a live sensor.
+
+        ADR-0011: `get_ups_mode` is read LIVE on every tick, never
+        cached at construction — the switch must take effect on the
+        next tick whatever the coordinator has published.
         """
         self._driver = driver
         self._get_params = get_params
@@ -147,6 +171,7 @@ class BatteryOptExecutor:
         self._on_charge_entry = on_charge_entry or (lambda _watts: None)
         self._get_dynamic_plan = get_dynamic_plan or (lambda: None)
         self._get_measured_start_soc = get_measured_start_soc or (lambda _day: None)
+        self._get_ups_mode = get_ups_mode or (lambda: False)
         self.dynamic_enabled = dynamic_enabled
         self._listeners: list[Callable[[], None]] = []
         self.healthy = False
@@ -198,11 +223,17 @@ class BatteryOptExecutor:
 
     def _ensure_plan(self, now: datetime) -> tuple[Plan, BatteryParams]:
         today = now.date()
+        ups = self._get_ups_mode()
         cached = (
             self.plan is not None
             and self._plan_params is not None
             and self.plan_day == today
+            # A regime change invalidates today's cache outright: the
+            # switch must not wait for the date to roll over.
+            and (self.plan_source in UPS_SOURCES) == ups
         )
+        if ups:
+            return self._ensure_ups(today, cached=cached)
         if cached and (not self.dynamic_enabled or self.plan_source == "greedy"):
             return self.plan, self._plan_params
         if self.dynamic_enabled:
@@ -225,6 +256,57 @@ class BatteryOptExecutor:
                 # (e.g. the 00:00 tick precedes the 00:00:30 refresh).
                 return self.plan, self._plan_params
         return self._build_static(today)
+
+    def _ensure_ups(self, today: date, *, cached: bool) -> tuple[Plan, BatteryParams]:
+        """Adopt the published UPS plan, else build the offline one."""
+        dynamic = self._get_dynamic_plan()
+        # `ups` must match: a plan published before the switch was
+        # flipped is an arbitrage plan and would discharge. The
+        # identity check is the greedy path's: without it a published
+        # plan that tick-time validation rejected would be re-adopted
+        # and re-demoted on every tick, while the coordinator's next
+        # refresh (a new object) still retries cleanly.
+        if (
+            dynamic is not None
+            and dynamic.day == today
+            and dynamic.ups
+            and dynamic.plan is not self._rejected_dynamic
+        ):
+            self.plan = dynamic.plan
+            self.plan_day = today
+            self._plan_params = dynamic.params
+            self._plan_load_w = list(dynamic.load_w)
+            self._plan_solar_w = list(dynamic.solar_w)
+            self.plan_source = "ups"
+            return dynamic.plan, dynamic.params
+        if cached:
+            # Today's offline plan stands; it upgrades to the
+            # price-ranked one on the first tick after the coordinator
+            # publishes it.
+            return self.plan, self._plan_params
+        return self._build_ups(today)
+
+    def _build_ups(self, today: date) -> tuple[Plan, BatteryParams]:
+        """
+        Build the offline UPS plan: TAR-ranked, no prices needed.
+
+        Seeded by `ups_start_soc_kwh` — the measured midnight SoC when
+        ADR-0010 has one, else the reserve floor — the same rule the
+        coordinator applies, so the two paths cannot disagree about
+        where the battery is.
+        """
+        base = self._get_params()
+        params = dataclasses.replace(
+            base,
+            soc_start_kwh=ups_start_soc_kwh(self._get_measured_start_soc(today), base),
+        )
+        self.plan = ups_plan(today, self._load_w, params)
+        self.plan_day = today
+        self._plan_params = params
+        self._plan_load_w = list(self._load_w)
+        self._plan_solar_w = list(self._solar_w)
+        self.plan_source = "ups-fallback"
+        return self.plan, params
 
     def _build_static(self, today: date) -> tuple[Plan, BatteryParams]:
         # Virtual day-chaining: seed today from the previous weekday's
@@ -311,20 +393,28 @@ class BatteryOptExecutor:
         violations = validate_plan(
             plan, self._plan_load_w, self._plan_solar_w, plan_params
         )
-        if violations and self.plan_source == "greedy":
-            # Task 12 fail-closed (decision 6): an invalid dynamic plan
-            # is demoted to the chained static, never actuated. Cannot
-            # happen by construction — the coordinator only publishes
-            # validated plans — so it is belt-and-braces; notify at
-            # most once a day to avoid a chatty pathological loop.
+        if violations and self.plan_source in {"greedy", "ups"}:
+            # Task 12 fail-closed (decision 6): an invalid published
+            # plan is demoted to one this executor built itself, never
+            # actuated. Cannot happen by construction — the
+            # coordinator only publishes validated plans — so it is
+            # belt-and-braces; notify at most once a day to avoid a
+            # chatty pathological loop. ADR-0011: a UPS plan demotes
+            # to the offline UPS plan, NOT to the static schedule —
+            # falling out of the mode would discharge the reserve the
+            # owner asked to keep.
             self._rejected_dynamic = plan
+            ups = self.plan_source == "ups"
             if self._demote_notified_day != now.date():
                 self._demote_notified_day = now.date()
                 self._notify(
                     f"battery_opt: dynamic plan invalid ({violations[0]}); "
-                    "falling back to the static schedule"
+                    f"falling back to the {'offline UPS' if ups else 'static'} "
+                    "schedule"
                 )
-            plan, plan_params = self._build_static(now.date())
+            plan, plan_params = (
+                self._build_ups(now.date()) if ups else self._build_static(now.date())
+            )
             violations = validate_plan(
                 plan, self._plan_load_w, self._plan_solar_w, plan_params
             )

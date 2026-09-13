@@ -26,6 +26,7 @@ See `docs/adr/`. In brief:
 - **ADR-0008** — Reserve floor delegated to the battery; no SoC readback
 - **ADR-0009** — Multi-battery fleet: batteries as config subentries, one virtual battery
 - **ADR-0010** — Midnight SoC sync: a once-daily, bounded reading seeds the day's plan (amends ADR-0008)
+- **ADR-0011** — UPS mode: hold the pack as backup — charge on the cheapest energy, never discharge
 
 ---
 

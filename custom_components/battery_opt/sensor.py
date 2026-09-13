@@ -196,6 +196,11 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
             ),
             "prices_ok": data.get("prices_ok"),
             "prices_padded": data.get("prices_padded"),
+            # ADR-0011: True while the published plan is a UPS plan —
+            # charge on the cheapest energy, never discharge. The
+            # `static_schedule` attribute then shows the arbitrage
+            # being given up, and `vs_static` prices it.
+            "ups_mode": bool(data.get("ups_mode", False)),
             # Decision 6: set to "static" whenever no trustworthy
             # dynamic plan exists (missing prices, or defensively an
             # invalid solve) and the fixed seasonal schedule is
