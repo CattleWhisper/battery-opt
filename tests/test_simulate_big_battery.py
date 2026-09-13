@@ -17,6 +17,7 @@ import pytest
 from backtest.simulate_big_battery import (
     QUARTERS_PER_DAY,
     BatterySpec,
+    flat_consumption,
     simulate_day,
 )
 
@@ -122,3 +123,40 @@ def test_missing_prices_do_not_block_the_rest_of_the_day() -> None:
     )
     assert result.charged_kwh == pytest.approx(10.0 / 0.9)
     assert result.avg_charge_price == pytest.approx(CHEAP)
+
+
+def test_flat_consumption_spreads_the_daily_figure_over_the_window() -> None:
+    """--daily-kwh fills every day in [start, end] inclusive."""
+    grid = flat_consumption(24.0, date(2026, 9, 1), date(2026, 9, 3))
+    assert sorted(grid) == [date(2026, 9, 1), date(2026, 9, 2), date(2026, 9, 3)]
+    for quarters in grid.values():
+        assert len(quarters) == QUARTERS_PER_DAY
+        assert sum(quarters) == pytest.approx(24.0)
+        assert quarters[0] == pytest.approx(24.0 / QUARTERS_PER_DAY)
+
+
+def test_a_single_day_window_is_one_day_not_zero() -> None:
+    """A window whose start equals its end is one day, not zero."""
+    grid = flat_consumption(10.0, date(2026, 9, 1), date(2026, 9, 1))
+    assert list(grid) == [date(2026, 9, 1)]
+
+
+def test_synthetic_load_matches_an_equivalent_meter_day() -> None:
+    """
+    The two input modes must agree.
+
+    A flat --daily-kwh run and a meter export of the same flat load
+    describe the same day, so they must simulate to the same cost —
+    otherwise one of the two paths is distorting the consumption it
+    hands to the simulation.
+    """
+    spec = BatterySpec(capacity_kwh=20.0, excess_price=0.25)
+    prices = _prices(cheap_quarters=32)
+    synthetic = flat_consumption(24.0, date(2026, 9, 2), date(2026, 9, 2))
+
+    from_daily = simulate_day(DAY, synthetic[date(2026, 9, 2)], prices, spec)
+    from_meter = simulate_day(DAY, _flat_load(24.0), prices, spec)
+
+    assert from_daily.total_eur == pytest.approx(from_meter.total_eur)
+    assert from_daily.served_kwh == pytest.approx(from_meter.served_kwh)
+    assert from_daily.charged_kwh == pytest.approx(from_meter.charged_kwh)

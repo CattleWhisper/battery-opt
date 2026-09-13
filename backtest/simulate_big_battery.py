@@ -25,8 +25,15 @@ Two constraints keep the answer honest rather than a pure price sort:
   into one night. Shortfall spills to `--excess-price`, which is what
   makes the result sensitive to capacity rather than linear in it.
 
+Consumption comes from either a real meter export (`--meter`) or a
+flat daily figure (`--daily-kwh`), so the tool can answer a sizing
+question before any measurement exists.
+
 Usage:
     python backtest/simulate_big_battery.py --meter ~/Downloads/history.csv \
+        --capacity 20 --from 2026-08-31 --to 2026-09-08
+
+    python backtest/simulate_big_battery.py --daily-kwh 23.6 \
         --capacity 20 --from 2026-08-31 --to 2026-09-08
 """
 
@@ -119,6 +126,32 @@ def consumption_by_quarter(
             continue
         grid[moment.date()][quarter_index(moment)] += delta
     return dict(grid)
+
+
+def flat_consumption(
+    daily_kwh: float, start: date, end: date
+) -> dict[date, list[float]]:
+    """
+    Spread one daily figure evenly over every day in [start, end].
+
+    The alternative to a meter export, for sizing questions asked
+    before any measurement exists ("what would 20 kWh do at ~24
+    kWh/day?"). An even split is the project's own load model rather
+    than an arbitrary choice: CONTEXT.md runs a flat 1.04 kW BASE_LOAD,
+    and the June invoice confirmed the profile is "effectively flat".
+
+    What it cannot show is a consumption SHAPE effect. With a flat
+    load every quarter offers identical charging headroom, so the
+    cheap-window search is decided purely by price — a real profile
+    that peaks in the expensive hours would do worse than this says.
+    """
+    per_quarter = daily_kwh / QUARTERS_PER_DAY
+    grid: dict[date, list[float]] = {}
+    day = start
+    while day <= end:
+        grid[day] = [per_quarter] * QUARTERS_PER_DAY
+        day += timedelta(days=1)
+    return grid
 
 
 def delivered_prices(
@@ -305,12 +338,65 @@ def report(simulation: Simulation, spec: BatterySpec, simples_rate: float) -> st
     return "\n".join(lines)
 
 
+def _synthetic_grid(args: argparse.Namespace) -> dict[date, list[float]] | None:
+    """Build a flat window from --daily-kwh, or explain why it cannot."""
+    if args.start is None or args.end is None:
+        print("--daily-kwh needs both --from and --to", file=sys.stderr)
+        return None
+    if args.end < args.start:
+        print("--to is before --from", file=sys.stderr)
+        return None
+    if args.daily_kwh <= 0:
+        print("--daily-kwh must be positive", file=sys.stderr)
+        return None
+    grid = flat_consumption(args.daily_kwh, args.start, args.end)
+    print(
+        f"Synthetic load: {args.daily_kwh:g} kWh/day flat, "
+        f"{len(grid)} day(s) ({min(grid)} .. {max(grid)})"
+    )
+    return grid
+
+
+def _meter_grid(args: argparse.Namespace) -> dict[date, list[float]] | None:
+    """Build the window from a meter export, clipped to --from/--to."""
+    readings = load_meter(args.meter)
+    if len(readings) < 2:
+        print(f"Not enough usable rows in {args.meter}", file=sys.stderr)
+        return None
+    grid = consumption_by_quarter(readings)
+    if args.start:
+        grid = {d: v for d, v in grid.items() if d >= args.start}
+    if args.end:
+        grid = {d: v for d, v in grid.items() if d <= args.end}
+    if not grid:
+        print("No consumption in the selected window.", file=sys.stderr)
+        return None
+    print(
+        f"Meter: {len(readings):,} rows, {len(grid)} day(s) "
+        f"({min(grid)} .. {max(grid)})"
+    )
+    return grid
+
+
+def build_grid(args: argparse.Namespace) -> dict[date, list[float]] | None:
+    """Resolve consumption from whichever source the caller chose."""
+    if args.daily_kwh is not None:
+        return _synthetic_grid(args)
+    return _meter_grid(args)
+
+
 def main() -> int:
     """Parse arguments, simulate, print."""
     parser = argparse.ArgumentParser(
         description="Simulate a large battery charged in each day's cheapest hours.",
     )
-    parser.add_argument("--meter", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--meter", type=Path, help="HA energy-meter history CSV")
+    source.add_argument(
+        "--daily-kwh",
+        type=float,
+        help="flat daily consumption instead of a meter export; needs --from and --to",
+    )
     parser.add_argument("--capacity", type=float, default=20.0, help="kWh usable")
     parser.add_argument(
         "--excess-price",
@@ -329,23 +415,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    readings = load_meter(args.meter)
-    if len(readings) < 2:
-        print(f"Not enough usable rows in {args.meter}", file=sys.stderr)
+    grid = build_grid(args)
+    if grid is None:
         return 1
-    grid = consumption_by_quarter(readings)
-    if args.start:
-        grid = {d: v for d, v in grid.items() if d >= args.start}
-    if args.end:
-        grid = {d: v for d, v in grid.items() if d <= args.end}
-    if not grid:
-        print("No consumption in the selected window.", file=sys.stderr)
-        return 1
-
-    print(
-        f"Meter: {len(readings):,} rows, {len(grid)} day(s) "
-        f"({min(grid)} .. {max(grid)})"
-    )
     prices = delivered_prices(
         sorted(grid), args.omie_dir, allow_download=not args.no_download
     )
