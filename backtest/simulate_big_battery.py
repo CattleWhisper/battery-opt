@@ -426,8 +426,56 @@ def run(
     return simulation
 
 
-def report(simulation: Simulation, spec: BatterySpec, simples_rate: float) -> str:
-    """Render the per-day table and the window summary."""
+def by_month(days: list[DayResult]) -> dict[str, list[DayResult]]:
+    """Group simulated days into calendar months, in order."""
+    months: dict[str, list[DayResult]] = defaultdict(list)
+    for day in days:
+        months[day.day.strftime("%Y-%m")].append(day)
+    return dict(sorted(months.items()))
+
+
+def _monthly_lines(simulation: Simulation, simples_rate: float) -> list[str]:
+    """
+    Render the per-month rollup.
+
+    Calendar months, which is NOT the billing period: EDP invoices run
+    2nd-to-1st, so a month here will not tie out exactly against a
+    bill. Use `--from`/`--to` to match an invoice window when that is
+    what you need to reconcile.
+    """
+    months = by_month(simulation.days)
+    if not months:
+        return []
+    lines = [
+        "Monthly summary",
+        f"  {'month':<10}{'days':>6}{'used':>10}{'import':>10}"
+        f"{'EUR/kWh':>9}{'sim EUR':>10}{'spot EUR':>10}"
+        f"{'simples':>10}{'vs simples':>12}",
+    ]
+    for month, days in months.items():
+        used = sum(day.consumption_kwh for day in days)
+        imported = sum(day.grid_kwh for day in days)
+        sim = sum(day.cost_eur for day in days)
+        spot = sum(day.baseline_eur for day in days)
+        simples = used * simples_rate
+        rate = sim / used if used else 0.0
+        lines.append(
+            f"  {month:<10}{len(days):>6}{used:>10.1f}{imported:>10.1f}"
+            f"{rate:>9.4f}{sim:>10.2f}{spot:>10.2f}"
+            f"{simples:>10.2f}{sim - simples:>+12.2f}"
+        )
+    lines.append("")
+    return lines
+
+
+def report(
+    simulation: Simulation,
+    spec: BatterySpec,
+    simples_rate: float,
+    *,
+    daily: bool = True,
+) -> str:
+    """Render the per-day table, the monthly rollup and the window summary."""
     lines: list[str] = []
     add = lines.append
     if simulation.missing_prices:
@@ -437,19 +485,21 @@ def report(simulation: Simulation, spec: BatterySpec, simples_rate: float) -> st
         )
         add("")
 
-    add(f"Per-day simulation ({spec.capacity_kwh:g} kWh battery, SoC chained)")
-    add(
-        f"  {'day':<12}{'used':>8}{'import':>9}{'from batt':>11}"
-        f"{'uncov':>8}{'SoC end':>9}{'EUR/kWh':>9}{'sim EUR':>9}{'spot EUR':>10}"
-    )
-    for day in simulation.days:
+    if daily:
+        add(f"Per-day simulation ({spec.capacity_kwh:g} kWh battery, SoC chained)")
         add(
-            f"  {day.day!s:<12}{day.consumption_kwh:>8.2f}{day.grid_kwh:>9.2f}"
-            f"{day.discharged_kwh:>11.2f}{day.uncovered_kwh:>8.2f}"
-            f"{day.soc_end_kwh:>9.2f}{day.avg_import_price:>9.4f}"
-            f"{day.total_eur:>9.2f}{day.baseline_eur:>10.2f}"
+            f"  {'day':<12}{'used':>8}{'import':>9}{'from batt':>11}"
+            f"{'uncov':>8}{'SoC end':>9}{'EUR/kWh':>9}{'sim EUR':>9}{'spot EUR':>10}"
         )
-    add("")
+        for day in simulation.days:
+            add(
+                f"  {day.day!s:<12}{day.consumption_kwh:>8.2f}{day.grid_kwh:>9.2f}"
+                f"{day.discharged_kwh:>11.2f}{day.uncovered_kwh:>8.2f}"
+                f"{day.soc_end_kwh:>9.2f}{day.avg_import_price:>9.4f}"
+                f"{day.total_eur:>9.2f}{day.baseline_eur:>10.2f}"
+            )
+        add("")
+    lines.extend(_monthly_lines(simulation, simples_rate))
 
     n = len(simulation.days)
     if not n:
@@ -564,6 +614,11 @@ def main() -> int:
     parser.add_argument(
         "--no-download", action="store_true", help="never fetch missing OMIE days"
     )
+    parser.add_argument(
+        "--no-daily",
+        action="store_true",
+        help="skip the per-day table and show only the monthly rollup",
+    )
     args = parser.parse_args()
 
     grid = build_grid(args)
@@ -583,7 +638,7 @@ def main() -> int:
     )
     simulation = run(grid, prices, spec)
     print()
-    print(report(simulation, spec, args.simples_rate))
+    print(report(simulation, spec, args.simples_rate, daily=not args.no_daily))
     return 0
 
 

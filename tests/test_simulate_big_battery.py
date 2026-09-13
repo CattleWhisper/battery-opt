@@ -20,7 +20,9 @@ from backtest.simulate_big_battery import (
     QUARTER_HOURS,
     QUARTERS_PER_DAY,
     BatterySpec,
+    by_month,
     flat_consumption,
+    report,
     run,
     select_charge_quarters,
     simulate_day,
@@ -217,3 +219,55 @@ def test_synthetic_load_matches_an_equivalent_meter_day() -> None:
     from_meter = simulate_day(DAY, _flat_load(24.0), prices, SPEC)
     assert from_daily.total_eur == pytest.approx(from_meter.total_eur)
     assert from_daily.soc_end_kwh == pytest.approx(from_meter.soc_end_kwh)
+
+
+def test_months_group_in_calendar_order() -> None:
+    """Days land in their own calendar month, oldest month first."""
+    grid = flat_consumption(24.0, date(2026, 8, 30), date(2026, 9, 2))
+    prices = dict.fromkeys(grid, _prices(32))
+    months = by_month(run(grid, prices, SPEC).days)
+    assert list(months) == ["2026-08", "2026-09"]
+    assert len(months["2026-08"]) == 2
+    assert len(months["2026-09"]) == 2
+
+
+def test_monthly_totals_reconcile_with_the_window() -> None:
+    """
+    The rollup must account for every day exactly once.
+
+    A summary that silently drops or double-counts a day at a month
+    boundary would misstate the very comparison it exists to support.
+    """
+    grid = flat_consumption(24.0, date(2026, 8, 28), date(2026, 9, 5))
+    prices = dict.fromkeys(grid, _prices(32))
+    simulation = run(grid, prices, SPEC)
+    months = by_month(simulation.days)
+
+    assert sum(len(days) for days in months.values()) == len(simulation.days)
+    for attribute in ("consumption_kwh", "grid_kwh", "cost_eur", "baseline_eur"):
+        pooled = sum(
+            getattr(day, attribute) for days in months.values() for day in days
+        )
+        assert pooled == pytest.approx(simulation.total(attribute))
+
+
+def test_a_single_month_window_still_rolls_up() -> None:
+    """One month is one row, not an empty table."""
+    grid = flat_consumption(24.0, date(2026, 9, 1), date(2026, 9, 3))
+    prices = dict.fromkeys(grid, _prices(32))
+    months = by_month(run(grid, prices, SPEC).days)
+    assert list(months) == ["2026-09"]
+
+
+def test_the_monthly_section_survives_hiding_the_daily_table() -> None:
+    """--no-daily drops the per-day rows and keeps the rollup."""
+    grid = flat_consumption(24.0, date(2026, 9, 1), date(2026, 9, 2))
+    prices = dict.fromkeys(grid, _prices(32))
+    simulation = run(grid, prices, SPEC)
+    with_daily = report(simulation, SPEC, 0.1420, daily=True)
+    without = report(simulation, SPEC, 0.1420, daily=False)
+    assert "Monthly summary" in with_daily
+    assert "Monthly summary" in without
+    assert "Per-day simulation" in with_daily
+    assert "Per-day simulation" not in without
+    assert "2026-09-01" not in without  # the daily rows are gone
