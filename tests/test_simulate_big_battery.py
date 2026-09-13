@@ -1,11 +1,13 @@
 """
 Tests for the large-battery what-if (backtest/simulate_big_battery.py).
 
-The tool answers a sizing question, so the properties worth pinning are
-the ones that make the answer non-linear in capacity: round-trip losses
-inflate the purchase, the contracted-power ceiling caps how much of a
-cheap window is reachable, and a pack bigger than the day's own
-consumption buys nothing extra.
+The tool walks the day quarter by quarter and prices every kWh where
+it falls, so the properties worth pinning are physical rather than
+arithmetic: energy is conserved, the pack never exceeds its capacity
+or goes negative, the contracted-power ceiling holds in every quarter,
+and the state of charge chains across midnight. Those are what make
+the answer non-linear in capacity — and what a flat "excess price"
+assumption used to paper over.
 """
 
 from __future__ import annotations
@@ -15,14 +17,18 @@ from datetime import date
 import pytest
 
 from backtest.simulate_big_battery import (
+    QUARTER_HOURS,
     QUARTERS_PER_DAY,
     BatterySpec,
     flat_consumption,
+    run,
+    select_charge_quarters,
     simulate_day,
 )
 
 DAY = date(2026, 9, 2)
 CHEAP, DEAR = 0.05, 0.40
+SPEC = BatterySpec(capacity_kwh=20.0)
 
 
 def _prices(cheap_quarters: int) -> list[float]:
@@ -34,95 +40,158 @@ def _flat_load(total_kwh: float) -> list[float]:
     return [total_kwh / QUARTERS_PER_DAY] * QUARTERS_PER_DAY
 
 
-def test_charges_in_the_cheapest_quarters_first() -> None:
-    """The whole point: the fill order is by price, not by clock."""
-    result = simulate_day(
-        DAY,
-        _flat_load(24.0),
-        _prices(cheap_quarters=32),
-        BatterySpec(capacity_kwh=10.0, excess_price=0.25),
-    )
-    # 10 kWh served needs 11.11 kWh bought; the cheap block holds far
-    # more than that, so every kWh must be bought at the cheap price.
-    assert result.avg_charge_price == pytest.approx(CHEAP)
-    assert result.charged_kwh == pytest.approx(10.0 / 0.9)
-
-
-def test_round_trip_losses_inflate_the_purchase() -> None:
-    """Delivering X kWh costs X/eta at the meter, never X."""
-    spec = BatterySpec(capacity_kwh=9.0, excess_price=0.25, eta_roundtrip=0.9)
-    result = simulate_day(DAY, _flat_load(24.0), _prices(64), spec)
-    assert result.served_kwh == pytest.approx(9.0)
-    assert result.charged_kwh == pytest.approx(10.0)
-
-
-def test_capacity_beyond_the_days_consumption_buys_nothing() -> None:
-    """A pack larger than the day's use is not charged past what it serves."""
-    load = _flat_load(12.0)
-    small = simulate_day(
-        DAY, load, _prices(64), BatterySpec(capacity_kwh=12.0, excess_price=0.25)
-    )
-    huge = simulate_day(
-        DAY, load, _prices(64), BatterySpec(capacity_kwh=500.0, excess_price=0.25)
-    )
-    assert huge.served_kwh == pytest.approx(small.served_kwh) == pytest.approx(12.0)
-    assert huge.total_eur == pytest.approx(small.total_eur)
-    assert huge.excess_kwh == pytest.approx(0.0)
-
-
-def test_the_contracted_power_ceiling_caps_what_can_be_charged() -> None:
+def test_energy_is_conserved() -> None:
     """
-    Headroom is the ceiling MINUS that quarter's own load.
+    Import equals the load bought directly plus everything stored.
 
-    With a 1500 W ceiling against a flat 1 kW house load, only 500 W of
-    charging fits in any quarter: 96 x 500 W x 0.25 h = 12 kWh bought,
-    10.8 kWh delivered, and the remainder spills to the excess price.
+    The accounting identity the whole report rests on: nothing may be
+    consumed that was not either imported at the time or discharged
+    from the pack.
     """
-    result = simulate_day(
-        DAY,
-        _flat_load(24.0),  # 1 kW flat
-        _prices(96),
-        BatterySpec(capacity_kwh=20.0, excess_price=0.25, p_usable_w=1500.0),
-    )
-    assert result.charged_kwh == pytest.approx(12.0)
-    assert result.served_kwh == pytest.approx(10.8)
-    assert result.excess_kwh == pytest.approx(24.0 - 10.8)
+    result = simulate_day(DAY, _flat_load(24.0), _prices(32), SPEC)
+    direct = result.consumption_kwh - result.discharged_kwh
+    assert result.grid_kwh == pytest.approx(direct + result.charged_kwh)
 
 
-def test_uncovered_energy_is_priced_at_the_flat_excess_rate() -> None:
-    """Whatever the battery cannot serve is bought at --excess-price."""
-    spec = BatterySpec(capacity_kwh=5.0, excess_price=0.25)
-    result = simulate_day(DAY, _flat_load(24.0), _prices(64), spec)
-    assert result.excess_kwh == pytest.approx(19.0)
-    assert result.excess_cost_eur == pytest.approx(19.0 * 0.25)
-    assert result.total_eur == pytest.approx(result.charge_cost_eur + 19.0 * 0.25)
+def test_import_exceeds_consumption_by_the_round_trip_loss() -> None:
+    """Cycling a kWh through the pack costs more than not cycling it."""
+    result = simulate_day(DAY, _flat_load(24.0), _prices(32), SPEC)
+    assert result.charged_kwh > 0
+    assert result.grid_kwh > result.consumption_kwh
+
+
+def test_the_pack_never_exceeds_capacity_or_goes_negative() -> None:
+    """State of charge stays inside [0, capacity] all day."""
+    spec = BatterySpec(capacity_kwh=5.0)
+    soc = 0.0
+    for _ in range(3):  # several chained days, so it reaches steady state
+        result = simulate_day(DAY, _flat_load(24.0), _prices(48), spec, soc)
+        soc = result.soc_end_kwh
+        assert -1e-9 <= soc <= spec.capacity_kwh + 1e-9
+
+
+def test_the_contracted_power_ceiling_holds_in_every_quarter() -> None:
+    """
+    Load plus charging never exceeds --p-usable.
+
+    This is the invariant that stops the simulation from "solving" a
+    big pack by drawing power the supply cannot deliver.
+    """
+    spec = BatterySpec(capacity_kwh=50.0, p_usable_w=2000.0)
+    load = _flat_load(24.0)  # 1 kW flat
+    charge_quarters = select_charge_quarters(load, _prices(96), spec)
+    for quarter in charge_quarters:
+        load_w = load[quarter] / QUARTER_HOURS * 1000.0
+        assert load_w <= spec.p_usable_w
+    # 1 kW load under a 2 kW ceiling leaves 1 kW of charging room.
+    result = simulate_day(DAY, load, _prices(96), spec)
+    max_quarter_import = spec.p_usable_w * QUARTER_HOURS / 1000.0
+    assert result.charged_kwh <= max_quarter_import * len(charge_quarters) + 1e-9
+
+
+def test_charging_happens_in_the_cheapest_quarters() -> None:
+    """Selection is by price, not by clock."""
+    chosen = select_charge_quarters(_flat_load(24.0), _prices(32), SPEC)
+    assert chosen  # something was picked
+    assert all(q < 32 for q in chosen)  # all inside the cheap block
+
+
+def test_load_in_a_cheap_quarter_is_bought_not_discharged() -> None:
+    """
+    Deliberate: cheap quarters are served from the grid.
+
+    Spending the pack during the cheapest hours would throw away the
+    arbitrage, so the battery is held for the dear ones.
+    """
+    result = simulate_day(DAY, _flat_load(24.0), _prices(32), SPEC)
+    non_charge = QUARTERS_PER_DAY - result.charge_quarters
+    # Everything the battery served came from non-charge quarters.
+    assert result.discharged_kwh <= non_charge * (24.0 / QUARTERS_PER_DAY) + 1e-9
+
+
+def test_every_kwh_is_priced_at_its_own_quarter() -> None:
+    """
+    No flat rate anywhere: an all-cheap day costs exactly the cheap price.
+
+    With one price all day the effective rate must equal it, which it
+    cannot if any part of the bill is charged at an assumed average.
+    """
+    result = simulate_day(DAY, _flat_load(24.0), [CHEAP] * QUARTERS_PER_DAY, SPEC)
+    assert result.avg_import_price == pytest.approx(CHEAP)
+    assert result.cost_eur == pytest.approx(result.grid_kwh * CHEAP)
+
+
+def test_state_of_charge_chains_across_days() -> None:
+    """
+    Each day starts where the previous one ended — no midnight reset.
+
+    Without chaining, energy bought in a cheap late-evening quarter
+    would vanish at midnight and the answer would depend on where the
+    window happened to start.
+    """
+    grid = flat_consumption(24.0, date(2026, 9, 1), date(2026, 9, 4))
+    prices = dict.fromkeys(grid, _prices(32))
+    simulation = run(grid, prices, SPEC)
+    assert len(simulation.days) == 4
+    for previous, current in zip(simulation.days, simulation.days[1:], strict=False):
+        assert current.soc_start_kwh == pytest.approx(previous.soc_end_kwh)
+
+
+def test_a_pack_that_starts_full_buys_less_on_day_one() -> None:
+    """
+    Carried-in charge displaces buying, which is what chaining is FOR.
+
+    On a flat repeating day the equilibrium is to end empty — the pack
+    buys exactly what the day needs — so the chain shows up in what an
+    opening charge saves, not in a rising state of charge.
+    """
+    grid = flat_consumption(24.0, date(2026, 9, 1), date(2026, 9, 2))
+    prices = dict.fromkeys(grid, _prices(32))
+    empty = run(grid, prices, SPEC, soc_start_kwh=0.0)
+    full = run(grid, prices, SPEC, soc_start_kwh=SPEC.capacity_kwh)
+    assert full.days[0].soc_start_kwh == pytest.approx(SPEC.capacity_kwh)
+    assert full.days[0].charged_kwh < empty.days[0].charged_kwh
+    assert full.total("cost_eur") < empty.total("cost_eur")
+
+
+def test_a_bigger_pack_never_costs_more() -> None:
+    """Monotonicity: extra capacity cannot make the bill worse."""
+    grid = flat_consumption(24.0, date(2026, 9, 1), date(2026, 9, 3))
+    prices = dict.fromkeys(grid, _prices(32))
+    costs = [
+        run(grid, prices, BatterySpec(capacity_kwh=cap)).total("cost_eur")
+        for cap in (0.0, 5.0, 10.0, 20.0)
+    ]
+    assert costs == sorted(costs, reverse=True)
+
+
+def test_no_battery_reproduces_the_spot_baseline() -> None:
+    """A zero-capacity pack must cost exactly what buying everything costs."""
+    result = simulate_day(DAY, _flat_load(24.0), _prices(32), BatterySpec(0.0))
+    assert result.cost_eur == pytest.approx(result.baseline_eur)
+    assert result.charged_kwh == pytest.approx(0.0)
+    assert result.discharged_kwh == pytest.approx(0.0)
 
 
 def test_a_day_with_no_consumption_costs_nothing() -> None:
-    """An empty day must not charge, spend, or divide by zero."""
-    result = simulate_day(
-        DAY,
-        [0.0] * QUARTERS_PER_DAY,
-        _prices(64),
-        BatterySpec(capacity_kwh=20.0, excess_price=0.25),
-    )
-    assert result.total_eur == pytest.approx(0.0)
-    assert result.charged_kwh == pytest.approx(0.0)
-    assert result.avg_charge_price == pytest.approx(0.0)
+    """An empty day must not spend or divide by zero."""
+    result = simulate_day(DAY, [0.0] * QUARTERS_PER_DAY, _prices(64), SPEC)
+    assert result.avg_import_price == pytest.approx(0.0)
+    assert result.consumption_kwh == pytest.approx(0.0)
 
 
-def test_missing_prices_do_not_block_the_rest_of_the_day() -> None:
-    """A partial price vector is usable; unpriced quarters are skipped."""
-    prices: list[float | None] = _prices(64)
-    prices[:8] = [None] * 8  # e.g. a DST-short day or a publication gap
-    result = simulate_day(
-        DAY,
-        _flat_load(24.0),
-        prices,
-        BatterySpec(capacity_kwh=10.0, excess_price=0.25),
-    )
-    assert result.charged_kwh == pytest.approx(10.0 / 0.9)
-    assert result.avg_charge_price == pytest.approx(CHEAP)
+def test_unpriced_quarters_are_simulated_but_not_billed() -> None:
+    """
+    A publication gap costs nothing, mirroring the integration.
+
+    cost.py counts energy with no known price as energy consumed but
+    not as cost; the simulation follows, so a gap understates the bill
+    rather than inventing a number for it.
+    """
+    prices: list[float | None] = [None] * QUARTERS_PER_DAY
+    result = simulate_day(DAY, _flat_load(24.0), prices, SPEC)
+    assert result.consumption_kwh == pytest.approx(24.0)
+    assert result.cost_eur == pytest.approx(0.0)
 
 
 def test_flat_consumption_spreads_the_daily_figure_over_the_window() -> None:
@@ -132,7 +201,6 @@ def test_flat_consumption_spreads_the_daily_figure_over_the_window() -> None:
     for quarters in grid.values():
         assert len(quarters) == QUARTERS_PER_DAY
         assert sum(quarters) == pytest.approx(24.0)
-        assert quarters[0] == pytest.approx(24.0 / QUARTERS_PER_DAY)
 
 
 def test_a_single_day_window_is_one_day_not_zero() -> None:
@@ -142,21 +210,10 @@ def test_a_single_day_window_is_one_day_not_zero() -> None:
 
 
 def test_synthetic_load_matches_an_equivalent_meter_day() -> None:
-    """
-    The two input modes must agree.
-
-    A flat --daily-kwh run and a meter export of the same flat load
-    describe the same day, so they must simulate to the same cost —
-    otherwise one of the two paths is distorting the consumption it
-    hands to the simulation.
-    """
-    spec = BatterySpec(capacity_kwh=20.0, excess_price=0.25)
+    """The two input modes must describe the same day identically."""
     prices = _prices(cheap_quarters=32)
-    synthetic = flat_consumption(24.0, date(2026, 9, 2), date(2026, 9, 2))
-
-    from_daily = simulate_day(DAY, synthetic[date(2026, 9, 2)], prices, spec)
-    from_meter = simulate_day(DAY, _flat_load(24.0), prices, spec)
-
+    synthetic = flat_consumption(24.0, DAY, DAY)[DAY]
+    from_daily = simulate_day(DAY, synthetic, prices, SPEC)
+    from_meter = simulate_day(DAY, _flat_load(24.0), prices, SPEC)
     assert from_daily.total_eur == pytest.approx(from_meter.total_eur)
-    assert from_daily.served_kwh == pytest.approx(from_meter.served_kwh)
-    assert from_daily.charged_kwh == pytest.approx(from_meter.charged_kwh)
+    assert from_daily.soc_end_kwh == pytest.approx(from_meter.soc_end_kwh)

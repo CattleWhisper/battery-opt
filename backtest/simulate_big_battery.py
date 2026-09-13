@@ -1,29 +1,38 @@
 r"""
 What-if: a large battery charged only in each day's cheapest quarters.
 
-A sizing/strategy sketch, deliberately simpler than `core/optimiser.py`:
-for each day, buy the whole day's usable energy in that day's CHEAPEST
-quarter-hours, serve the house from the battery for the rest of the
-day, and price whatever the battery cannot cover at a flat
-`--excess-price`. No day-chaining, no wear, no ponta targeting — the
-question here is "how big a bill would a big battery leave", not "what
-would the planner do".
+A sizing/strategy sketch, deliberately simpler than `core/optimiser.py`
+— no wear cost, no ponta targeting, no validator. The question is "how
+big a bill would a big battery leave", not "what would the planner do".
+
+The day is walked quarter by quarter and every kWh is priced where it
+actually falls; there is no assumed average anywhere. Quarters split
+into two kinds, chosen by price:
+
+- **cheap** — the house draws from the grid AND the battery charges
+  into whatever contracted-power headroom is left. Serving the load
+  from the grid here rather than from the pack is deliberate: it keeps
+  the stored energy for the dear quarters, which is the arbitrage.
+- **everything else** — the battery covers the load, and only the
+  shortfall it cannot meet is imported, at that quarter's own price.
 
 Prices come from OMIE through the project's own delivered-price
 formula (`core.prices.price`), so they are the same EUR/kWh the
 integration would compute. Days missing from the local OMIE cache are
 downloaded on demand (`backtest/download_omie.py`).
 
-Two constraints keep the answer honest rather than a pure price sort:
+Three things keep the answer honest rather than a pure price sort:
 
 - **Round-trip efficiency.** Delivering X kWh from the battery costs
-  X / eta at the meter, so the cheap-window purchase is always larger
-  than the energy it serves.
+  X / eta at the meter, so total import always EXCEEDS consumption.
 - **Contracted power.** Charging cannot exceed `--p-usable` minus the
   house load already drawn in that quarter, so the cheapest quarters
   have finite room and a big battery may simply not fit its charge
-  into one night. Shortfall spills to `--excess-price`, which is what
-  makes the result sensitive to capacity rather than linear in it.
+  into one night.
+- **Causality.** The walk is chronological and the state of charge
+  chains across midnight (as `backtest/run.py` does), so energy cannot
+  be spent before it is bought, and a cheap late-evening quarter is
+  not silently discarded at the day boundary.
 
 Consumption comes from either a real meter export (`--meter`) or a
 flat daily figure (`--daily-kwh`), so the tool can answer a sizing
@@ -68,34 +77,35 @@ class BatterySpec:
     """The what-if being simulated: pack, losses, and the power ceiling."""
 
     capacity_kwh: float
-    excess_price: float
     eta_roundtrip: float = DEFAULT_ETA_ROUNDTRIP
     p_usable_w: float = DEFAULT_P_USABLE_W
 
 
 @dataclass
 class DayResult:
-    """One simulated day."""
+    """One simulated day, every kWh priced at the quarter it was drawn in."""
 
     day: date
     consumption_kwh: float = 0.0
-    charged_kwh: float = 0.0  # bought at the meter to fill the battery
-    served_kwh: float = 0.0  # delivered out of the battery to the house
-    excess_kwh: float = 0.0  # bought outside the cheap window
-    charge_cost_eur: float = 0.0
-    excess_cost_eur: float = 0.0
+    grid_kwh: float = 0.0  # everything crossing the meter, load + charging
+    cost_eur: float = 0.0  # that import at each quarter's own price
+    charged_kwh: float = 0.0  # grid-side energy put into the battery
+    discharged_kwh: float = 0.0  # battery-side energy delivered to the load
+    uncovered_kwh: float = 0.0  # load the battery could not serve
     baseline_eur: float = 0.0  # same consumption, no battery, spot prices
-    quarters_used: int = 0
+    soc_start_kwh: float = 0.0
+    soc_end_kwh: float = 0.0
+    charge_quarters: int = 0
 
     @property
     def total_eur(self) -> float:
         """Simulated cost for the day."""
-        return self.charge_cost_eur + self.excess_cost_eur
+        return self.cost_eur
 
     @property
-    def avg_charge_price(self) -> float:
-        """Mean EUR/kWh actually paid to fill the battery."""
-        return self.charge_cost_eur / self.charged_kwh if self.charged_kwh else 0.0
+    def avg_import_price(self) -> float:
+        """Mean EUR/kWh actually paid across everything imported."""
+        return self.cost_eur / self.grid_kwh if self.grid_kwh else 0.0
 
 
 @dataclass
@@ -202,58 +212,189 @@ def delivered_prices(
     return prices
 
 
+def quarter_headroom_kwh(load_kwh: float, spec: BatterySpec) -> float:
+    """Charging room left in a quarter after its own house load."""
+    load_w = load_kwh / QUARTER_HOURS * 1000.0
+    return max(0.0, spec.p_usable_w - load_w) * QUARTER_HOURS / 1000.0
+
+
+def dischargeable_load_kwh(
+    load_kwh: list[float],
+    day_prices: list[float | None],
+    spec: BatterySpec,
+) -> float:
+    """
+    Load sitting in quarters dear enough to be worth serving from the pack.
+
+    A quarter is worth covering only if its price beats the cheapest
+    quarter's price grossed up for round-trip losses. Summing that load
+    gives the day's real storage NEED, which is what the charge window
+    should aim at — not the pack's nameplate.
+    """
+    priced = [q for q in range(len(day_prices)) if day_prices[q] is not None]
+    if not priced:
+        return 0.0
+    threshold = min(day_prices[q] for q in priced) / spec.eta_roundtrip
+    return sum(load_kwh[q] for q in priced if day_prices[q] > threshold)
+
+
+def select_charge_quarters(
+    load_kwh: list[float],
+    day_prices: list[float | None],
+    spec: BatterySpec,
+    soc_start_kwh: float = 0.0,
+) -> set[int]:
+    """
+    Pick the cheapest quarters worth charging in, enough to fill the pack.
+
+    Two stopping conditions, and the second one matters: charging stops
+    when the pack's target is met OR when the candidate is no longer
+    cheap enough to pay for itself. A kWh bought at `p` and delivered
+    later displaces one bought at `q`, and only pays if
+    `q > p / eta_roundtrip` — the same condition `core/optimiser.py`
+    calls C-8, minus the wear term this sketch deliberately omits.
+
+    Without that guard a large pack keeps buying into ever dearer
+    quarters simply because it has room, and the simulation reports a
+    BIGGER battery as more expensive — an artifact of the strategy,
+    not a property of the battery.
+    """
+    priced = [q for q in range(len(day_prices)) if day_prices[q] is not None]
+    if not priced:
+        return set()
+    dearest = max(day_prices[q] for q in priced)
+    eta_one_way = spec.eta_roundtrip**0.5
+    # Buy the lesser of what the day NEEDS and what the pack can still
+    # hold. Targeting the nameplate instead makes an oversized pack
+    # buy energy the window never uses, which reports a bigger battery
+    # as more expensive for no physical reason.
+    need_kwh = dischargeable_load_kwh(load_kwh, day_prices, spec)
+    room_kwh = max(0.0, spec.capacity_kwh - soc_start_kwh)
+    target = min(need_kwh / spec.eta_roundtrip, room_kwh / eta_one_way)
+    chosen: set[int] = set()
+    remaining = target
+    for quarter in sorted(priced, key=lambda q: day_prices[q]):
+        if remaining <= 1e-9:
+            break
+        if day_prices[quarter] / spec.eta_roundtrip >= dearest:
+            break  # cannot pay for itself even against the day's peak
+        headroom = quarter_headroom_kwh(load_kwh[quarter], spec)
+        if headroom <= 0:
+            continue
+        chosen.add(quarter)
+        remaining -= headroom
+    return chosen
+
+
+def select_discharge_quarters(
+    load_kwh: list[float],
+    day_prices: list[float | None],
+    charge_quarters: set[int],
+    available_kwh: float,
+) -> set[int]:
+    """
+    Pick the DEAREST quarters to spend the pack on; the rest just hold.
+
+    The missing third state. "Charge in the cheapest, discharge in
+    everything else" quietly empties the pack into whatever comes next
+    chronologically — which, on a day whose cheap block is longer than
+    the charge window, means discharging into cheap quarters and
+    arriving at the expensive ones empty. Selecting discharge targets
+    dearest-first instead makes HOLD the default, which is what the
+    real executor does (ADR-0006's three states).
+
+    `available_kwh` is meter-side energy the pack can deliver, so the
+    selection stops once the day's stored charge is spoken for.
+    """
+    priced = [
+        q
+        for q in range(len(day_prices))
+        if day_prices[q] is not None and q not in charge_quarters
+    ]
+    chosen: set[int] = set()
+    remaining = available_kwh
+    for quarter in sorted(priced, key=lambda q: day_prices[q], reverse=True):
+        if remaining <= 1e-9:
+            break
+        chosen.add(quarter)
+        remaining -= load_kwh[quarter]
+    return chosen
+
+
 def simulate_day(
     day: date,
     load_kwh: list[float],
     day_prices: list[float | None],
     spec: BatterySpec,
+    soc_start_kwh: float = 0.0,
 ) -> DayResult:
     """
-    Charge in the cheapest quarters, serve the rest of the day from it.
+    Walk the day quarter by quarter, pricing every kWh where it falls.
 
-    The battery is sized to the day: it never buys more than the house
-    will actually use. Charging is filled cheapest-quarter-first, each
-    quarter limited by the contracted-power headroom left after that
-    quarter's own measured load.
+    Three states, as the real executor has (ADR-0006):
+
+    - **CHARGE** (the cheapest quarters): the house draws from the grid
+      AND the battery charges into whatever contracted-power headroom
+      is left. Serving the load from the grid here is deliberate — it
+      keeps the stored energy for the dear quarters.
+    - **DISCHARGE** (the dearest quarters the stored energy can reach):
+      the battery covers the load, and only the shortfall is imported.
+    - **HOLD** (everything else): the pack sits still and the load is
+      simply bought. This is the state that makes the arbitrage work;
+      without it the pack drains into the first quarters that follow
+      the charge window, cheap or not, and arrives at the peak empty.
+
+    Every import is charged at that quarter's own delivered price, so
+    nothing rests on an assumed average. Unpriced quarters (a gap in
+    the OMIE publication) are still simulated physically but contribute
+    no cost, mirroring the integration's own cost tracker.
     """
-    result = DayResult(day=day)
+    result = DayResult(day=day, soc_start_kwh=soc_start_kwh)
     result.consumption_kwh = sum(load_kwh)
     result.baseline_eur = sum(
         kwh * day_prices[q]
         for q, kwh in enumerate(load_kwh)
         if day_prices[q] is not None
     )
-    if result.consumption_kwh <= 0:
-        return result
-
-    # Never store more than the day will consume, nor more than the pack holds.
-    target_served = min(spec.capacity_kwh, result.consumption_kwh)
-    target_charge = target_served / spec.eta_roundtrip
-
-    order = sorted(
-        (q for q in range(QUARTERS_PER_DAY) if day_prices[q] is not None),
-        key=lambda q: day_prices[q],
+    eta_one_way = spec.eta_roundtrip**0.5
+    charge_quarters = select_charge_quarters(load_kwh, day_prices, spec, soc_start_kwh)
+    # What the pack will be able to deliver today: what it already
+    # holds, plus what the charge window is about to put in.
+    incoming = sum(
+        min(
+            quarter_headroom_kwh(load_kwh[q], spec),
+            max(0.0, spec.capacity_kwh) / eta_one_way,
+        )
+        for q in charge_quarters
     )
-    remaining = target_charge
-    for quarter in order:
-        if remaining <= 1e-9:
-            break
-        load_w = load_kwh[quarter] / QUARTER_HOURS * 1000.0
-        headroom_kwh = max(0.0, spec.p_usable_w - load_w) * QUARTER_HOURS / 1000.0
-        take = min(remaining, headroom_kwh)
-        if take <= 0:
-            continue
-        result.charged_kwh += take
-        result.charge_cost_eur += take * day_prices[quarter]
-        result.quarters_used += 1
-        remaining -= take
-
-    # Whatever actually fit determines what the battery can serve.
-    result.served_kwh = min(
-        result.charged_kwh * spec.eta_roundtrip, result.consumption_kwh
+    available = min(spec.capacity_kwh, soc_start_kwh + incoming * eta_one_way)
+    discharge_quarters = select_discharge_quarters(
+        load_kwh, day_prices, charge_quarters, available * eta_one_way
     )
-    result.excess_kwh = max(0.0, result.consumption_kwh - result.served_kwh)
-    result.excess_cost_eur = result.excess_kwh * spec.excess_price
+    result.charge_quarters = len(charge_quarters)
+
+    soc = soc_start_kwh
+    for quarter, load in enumerate(load_kwh):
+        price_eur_kwh = day_prices[quarter] if quarter < len(day_prices) else None
+        if quarter in charge_quarters:
+            room_kwh = max(0.0, spec.capacity_kwh - soc)
+            take = min(quarter_headroom_kwh(load, spec), room_kwh / eta_one_way)
+            soc += take * eta_one_way
+            imported = load + take
+            result.charged_kwh += take
+        elif quarter in discharge_quarters:
+            served = min(load, soc * eta_one_way)
+            soc -= served / eta_one_way
+            imported = load - served
+            result.discharged_kwh += served
+            result.uncovered_kwh += imported
+        else:  # HOLD: the pack sits still, the load is bought
+            imported = load
+        result.grid_kwh += imported
+        if price_eur_kwh is not None:
+            result.cost_eur += imported * price_eur_kwh
+
+    result.soc_end_kwh = soc
     return result
 
 
@@ -261,15 +402,27 @@ def run(
     grid: dict[date, list[float]],
     prices: dict[date, list[float | None]],
     spec: BatterySpec,
+    soc_start_kwh: float = 0.0,
 ) -> Simulation:
-    """Simulate every day that has both meter data and prices."""
+    """
+    Simulate every day that has prices, chaining the state of charge.
+
+    Days are walked in order and the pack carries over midnight, as
+    `backtest/run.py` does: without chaining, energy bought in a cheap
+    late-evening quarter would simply vanish at midnight and the answer
+    would depend on where the window happened to start. A day with no
+    prices breaks the chain rather than guessing through it.
+    """
     simulation = Simulation()
+    soc = soc_start_kwh
     for day in sorted(grid):
         day_prices = prices.get(day)
         if day_prices is None or all(value is None for value in day_prices):
             simulation.missing_prices.add(day)
             continue
-        simulation.days.append(simulate_day(day, grid[day], day_prices, spec))
+        result = simulate_day(day, grid[day], day_prices, spec, soc)
+        soc = result.soc_end_kwh
+        simulation.days.append(result)
     return simulation
 
 
@@ -284,19 +437,17 @@ def report(simulation: Simulation, spec: BatterySpec, simples_rate: float) -> st
         )
         add("")
 
+    add(f"Per-day simulation ({spec.capacity_kwh:g} kWh battery, SoC chained)")
     add(
-        f"Per-day simulation ({spec.capacity_kwh:g} kWh battery, "
-        f"excess @ {spec.excess_price:.3f} EUR/kWh)"
-    )
-    add(
-        f"  {'day':<12}{'kWh':>8}{'from batt':>11}{'excess':>9}"
-        f"{'chg EUR/kWh':>13}{'sim EUR':>10}{'spot EUR':>10}"
+        f"  {'day':<12}{'used':>8}{'import':>9}{'from batt':>11}"
+        f"{'uncov':>8}{'SoC end':>9}{'EUR/kWh':>9}{'sim EUR':>9}{'spot EUR':>10}"
     )
     for day in simulation.days:
         add(
-            f"  {day.day!s:<12}{day.consumption_kwh:>8.2f}{day.served_kwh:>11.2f}"
-            f"{day.excess_kwh:>9.2f}{day.avg_charge_price:>13.4f}"
-            f"{day.total_eur:>10.2f}{day.baseline_eur:>10.2f}"
+            f"  {day.day!s:<12}{day.consumption_kwh:>8.2f}{day.grid_kwh:>9.2f}"
+            f"{day.discharged_kwh:>11.2f}{day.uncovered_kwh:>8.2f}"
+            f"{day.soc_end_kwh:>9.2f}{day.avg_import_price:>9.4f}"
+            f"{day.total_eur:>9.2f}{day.baseline_eur:>10.2f}"
         )
     add("")
 
@@ -304,36 +455,42 @@ def report(simulation: Simulation, spec: BatterySpec, simples_rate: float) -> st
     if not n:
         return "\n".join(lines)
     kwh = simulation.total("consumption_kwh")
-    sim = simulation.total("charge_cost_eur") + simulation.total("excess_cost_eur")
+    imported = simulation.total("grid_kwh")
+    sim = simulation.total("cost_eur")
     spot = simulation.total("baseline_eur")
     simples = kwh * simples_rate
 
-    add(f"Window totals ({n} day(s), {kwh:,.1f} kWh)")
+    add(f"Window totals ({n} day(s), {kwh:,.1f} kWh consumed)")
     add(
         f"  {'Simulated (big battery)':<32}{sim:>10,.2f} EUR   "
-        f"{sim / kwh:>7.4f} EUR/kWh"
+        f"{sim / kwh:>7.4f} EUR/kWh consumed"
     )
     add(
         f"  {'Indexada, no battery (spot)':<32}{spot:>10,.2f} EUR   "
-        f"{spot / kwh:>7.4f} EUR/kWh"
+        f"{spot / kwh:>7.4f} EUR/kWh consumed"
     )
     add(
         f"  {'Simples @ ' + format(simples_rate, '.4f'):<32}{simples:>10,.2f} EUR   "
-        f"{simples_rate:>7.4f} EUR/kWh"
+        f"{simples_rate:>7.4f} EUR/kWh consumed"
     )
     add("")
     add(f"  vs no battery : {sim - spot:>+10,.2f} EUR over the window")
     add(f"  vs Simples    : {sim - simples:>+10,.2f} EUR over the window")
-    if n:
-        add(
-            f"  annualised difference vs Simples: "
-            f"{(sim - simples) / n * 365:>+,.0f} EUR/yr"
-        )
-    add("")
     add(
-        f"  battery served {simulation.total('served_kwh') / kwh * 100:.1f}% "
-        f"of consumption; {simulation.total('excess_kwh'):,.1f} kWh "
-        f"fell to the flat excess price"
+        f"  annualised difference vs Simples: {(sim - simples) / n * 365:>+,.0f} EUR/yr"
+    )
+    add("")
+    served = simulation.total("discharged_kwh")
+    # Import EXCEEDS consumption by the round-trip losses: every kWh
+    # cycled through the pack is bought at 1/eta.
+    add(
+        f"  imported {imported:,.1f} kWh to consume {kwh:,.1f} kWh "
+        f"({imported - kwh:+,.1f} kWh of round-trip loss)"
+    )
+    add(
+        f"  battery covered {served / kwh * 100:.1f}% of consumption; "
+        f"{simulation.total('uncovered_kwh'):,.1f} kWh came from the grid "
+        f"at the going rate"
     )
     return "\n".join(lines)
 
@@ -398,12 +555,6 @@ def main() -> int:
         help="flat daily consumption instead of a meter export; needs --from and --to",
     )
     parser.add_argument("--capacity", type=float, default=20.0, help="kWh usable")
-    parser.add_argument(
-        "--excess-price",
-        type=float,
-        default=0.25,
-        help="EUR/kWh for energy the battery cannot cover (default 0.25)",
-    )
     parser.add_argument("--eta", type=float, default=DEFAULT_ETA_ROUNDTRIP)
     parser.add_argument("--p-usable", type=float, default=DEFAULT_P_USABLE_W)
     parser.add_argument("--simples-rate", type=float, default=0.1420)
@@ -427,7 +578,6 @@ def main() -> int:
 
     spec = BatterySpec(
         capacity_kwh=args.capacity,
-        excess_price=args.excess_price,
         eta_roundtrip=args.eta,
         p_usable_w=args.p_usable,
     )
