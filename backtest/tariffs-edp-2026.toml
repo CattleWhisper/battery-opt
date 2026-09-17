@@ -1,0 +1,524 @@
+# EDP fixed-price tariffs (electricity), for simulate_big_battery.py
+#
+#   python backtest/simulate_big_battery.py --tariffs backtest/tariffs-edp-2026.toml ...
+#
+# Transcribed from the EDP price sheets the owner downloaded (2026-09-17):
+#   tarifarios-eletricidade.pdf          general list, dated 02/01/2026,
+#                                        "contratos a partir de 22/01/2024" (p.N below)
+#   tarifarios-campanha-descontos-para-sempre_26fev26-3.pdf   scanned; read by OCR
+#   tarifario-digital-20.pdf, tarifarios-15-energia-2.pdf,
+#   tarifarios-30-potencia.pdf, tarifarios-50_60-em-fatura.pdf,
+#   tarifario-pingo-doce.pdf
+#
+# ONLY the 4,6 kVA rows (the contracted power; CONTEXT.md). The sheets
+# also list 1,15-41,4 kVA, and the energy price changes above 10,35 kVA.
+#
+# Verification: every value below equals the base price x (1 - discount),
+# rounded to 4 decimals as EDP prints it - checked for all 71 values,
+# which is what catches an OCR or transcription slip. Base at 4,6 kVA:
+#   simples  0.4347 EUR/day + 0.1671
+#   bi       0.5717 EUR/day + vazio 0.1119, fora de vazio 0.1935
+#   tri      0.5717 EUR/day + vazio 0.1119, cheias 0.1394, ponta 0.2856
+#
+# EUR excl. VAT: the sheets do not say, but the "15% desconto no consumo"
+# Simples energy price (0.1420) is exactly the invoiced energy price
+# excl. VAT that backtest/simulate_bill.py reproduces the bill from.
+#
+# Read before trusting a ranking:
+# - Offers that share a price set appear ONCE; the comment above each
+#   entry lists every offer that uses it.
+# - "12m" offers revert after 12 months. Their second year is the
+#   "base" entry for the same option.
+# - Every bi/tri-horaria offer can be contracted on either cycle at the
+#   same prices, so each appears twice: "... semanal" and "... diario".
+#   The prices are identical; only the ponta/cheias/vazio hours differ.
+# - Pack EASY/SMART/FULL service fees and one-off credits (50/60 EUR na
+#   fatura) are not on these sheets and are not modelled.
+# - Gas prices (dual offers) are ignored: electricity only. The dual
+#   "Gas e Eletricidade" versions carry the same electricity prices.
+# - The four "dinamica" entries at the end are NOT from these PDFs: they
+#   are EDP Indexada Horaria (docs/tariff-reference.md), kept so one run
+#   compares everything. Remove them to compare the fixed offers only.
+
+# Your current contract (the invoice): the "vs ref" column is against it.
+#reference = "fixa simples -15% energia (12m)"
+reference = "fixa simples especial"
+
+# The tariff that also gets the per-day / monthly battery report.
+detailed = "fixa tri-horaria -10% (sempre DD+FE) semanal"
+
+
+# =====================================================================
+# SIMPLES
+# =====================================================================
+
+# base, no discount: Eletricidade without direct debit (p.5); the price after the first 12 months of every '12 meses' offer below; Parceria Pingo Doce (whole contract); Eletricidade Verde 'desconto de 50 EUR na fatura' (its EUR 5/month x 10 credit is NOT modelled: take ~EUR 50 off its first year by hand)
+[[tariff]]
+name = "fixa simples base"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4347
+prices = { simples = 0.1671 }
+
+# Eletricidade (DD ou FE), first 12 months (p.3); Pack EASY without DD/FE, whole contract (p.8)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa simples -1% (12m / EASY)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4304
+prices = { simples = 0.1654 }
+
+# Pack EASY (DD), whole contract (p.7); Pack SMART without DD/FE (p.11)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa simples -2% (EASY DD / SMART)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4260
+prices = { simples = 0.1638 }
+
+# Eletricidade (DD+FE), first 12 months (p.1)
+[[tariff]]
+name = "fixa simples -3% (DD+FE 12m)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4217
+prices = { simples = 0.1621 }
+
+# Pack EASY (DD+FE) (p.6); Pack SMART (DD) (p.10); Pack FULL without DD/FE (p.14); all whole contract
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa simples -4% (EASY DD+FE / SMART DD / FULL)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4173
+prices = { simples = 0.1604 }
+
+# Campanha Desconto para Sempre (DD ou FE), whole contract
+[[tariff]]
+name = "fixa simples -5% (sempre DD ou FE)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4130
+prices = { simples = 0.1587 }
+
+# Pack SMART (DD+FE) (p.9); Pack FULL (DD) (p.13); whole contract
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa simples -6% (SMART DD+FE / FULL DD)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4086
+prices = { simples = 0.1571 }
+
+# Pack FULL (DD+FE), whole contract (p.12)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa simples -8% (FULL DD+FE)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.3999
+prices = { simples = 0.1537 }
+
+# Campanha Desconto para Sempre (DD+FE), whole contract
+[[tariff]]
+name = "fixa simples -10% (sempre DD+FE)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.3912
+prices = { simples = 0.1504 }
+
+# Eletricidade Verde 15% desconto no consumo (DD+FE), first 12 months - the offer on the 2 Aug-1 Sep 2026 invoice
+[[tariff]]
+name = "fixa simples -15% energia (12m)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4347
+prices = { simples = 0.1420 }
+
+# Eletricidade Verde Oferta Digital, 20% (DD+FE), first 12 months
+[[tariff]]
+name = "fixa simples -20% (digital 12m)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.3478
+prices = { simples = 0.1337 }
+
+# Eletricidade Verde 30% desconto na potencia (DD+FE), first 12 months
+[[tariff]]
+name = "fixa simples -30% potencia (12m)"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.3043
+prices = { simples = 0.1671 }
+
+
+# =====================================================================
+# BI-HORARIA
+# =====================================================================
+
+# base, no discount: Eletricidade without direct debit (p.5); the price after the first 12 months of every '12 meses' offer below; Parceria Pingo Doce (whole contract); Eletricidade Verde 'desconto de 50 EUR na fatura' (its EUR 5/month x 10 credit is NOT modelled: take ~EUR 50 off its first year by hand)
+[[tariff]]
+name = "fixa bi-horaria base semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5717
+prices = { vazio = 0.1119, fora_de_vazio = 0.1935 }
+
+# base, no discount: Eletricidade without direct debit (p.5); the price after the first 12 months of every '12 meses' offer below; Parceria Pingo Doce (whole contract); Eletricidade Verde 'desconto de 50 EUR na fatura' (its EUR 5/month x 10 credit is NOT modelled: take ~EUR 50 off its first year by hand)
+[[tariff]]
+name = "fixa bi-horaria base diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5717
+prices = { vazio = 0.1119, fora_de_vazio = 0.1935 }
+
+# Eletricidade (DD ou FE), first 12 months (p.3); Pack EASY without DD/FE, whole contract (p.8)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -1% (12m / EASY) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5660
+prices = { vazio = 0.1108, fora_de_vazio = 0.1916 }
+
+# Eletricidade (DD ou FE), first 12 months (p.3); Pack EASY without DD/FE, whole contract (p.8)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -1% (12m / EASY) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5660
+prices = { vazio = 0.1108, fora_de_vazio = 0.1916 }
+
+# Pack EASY (DD), whole contract (p.7); Pack SMART without DD/FE (p.11)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -2% (EASY DD / SMART) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5603
+prices = { vazio = 0.1097, fora_de_vazio = 0.1896 }
+
+# Pack EASY (DD), whole contract (p.7); Pack SMART without DD/FE (p.11)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -2% (EASY DD / SMART) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5603
+prices = { vazio = 0.1097, fora_de_vazio = 0.1896 }
+
+# Eletricidade (DD+FE), first 12 months (p.1)
+[[tariff]]
+name = "fixa bi-horaria -3% (DD+FE 12m) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5545
+prices = { vazio = 0.1085, fora_de_vazio = 0.1877 }
+
+# Eletricidade (DD+FE), first 12 months (p.1)
+[[tariff]]
+name = "fixa bi-horaria -3% (DD+FE 12m) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5545
+prices = { vazio = 0.1085, fora_de_vazio = 0.1877 }
+
+# Pack EASY (DD+FE) (p.6); Pack SMART (DD) (p.10); Pack FULL without DD/FE (p.14); all whole contract
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -4% (EASY DD+FE / SMART DD / FULL) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5488
+prices = { vazio = 0.1074, fora_de_vazio = 0.1858 }
+
+# Pack EASY (DD+FE) (p.6); Pack SMART (DD) (p.10); Pack FULL without DD/FE (p.14); all whole contract
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -4% (EASY DD+FE / SMART DD / FULL) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5488
+prices = { vazio = 0.1074, fora_de_vazio = 0.1858 }
+
+# Campanha Desconto para Sempre (DD ou FE), whole contract
+[[tariff]]
+name = "fixa bi-horaria -5% (sempre DD ou FE) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5431
+prices = { vazio = 0.1063, fora_de_vazio = 0.1838 }
+
+# Campanha Desconto para Sempre (DD ou FE), whole contract
+[[tariff]]
+name = "fixa bi-horaria -5% (sempre DD ou FE) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5431
+prices = { vazio = 0.1063, fora_de_vazio = 0.1838 }
+
+# Pack SMART (DD+FE) (p.9); Pack FULL (DD) (p.13); whole contract
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -6% (SMART DD+FE / FULL DD) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5374
+prices = { vazio = 0.1052, fora_de_vazio = 0.1819 }
+
+# Pack SMART (DD+FE) (p.9); Pack FULL (DD) (p.13); whole contract
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -6% (SMART DD+FE / FULL DD) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5374
+prices = { vazio = 0.1052, fora_de_vazio = 0.1819 }
+
+# Pack FULL (DD+FE), whole contract (p.12)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -8% (FULL DD+FE) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5260
+prices = { vazio = 0.1029, fora_de_vazio = 0.1780 }
+
+# Pack FULL (DD+FE), whole contract (p.12)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa bi-horaria -8% (FULL DD+FE) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5260
+prices = { vazio = 0.1029, fora_de_vazio = 0.1780 }
+
+# Campanha Desconto para Sempre (DD+FE), whole contract
+[[tariff]]
+name = "fixa bi-horaria -10% (sempre DD+FE) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5145
+prices = { vazio = 0.1007, fora_de_vazio = 0.1742 }
+
+# Campanha Desconto para Sempre (DD+FE), whole contract
+[[tariff]]
+name = "fixa bi-horaria -10% (sempre DD+FE) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5145
+prices = { vazio = 0.1007, fora_de_vazio = 0.1742 }
+
+# Eletricidade Verde 15% desconto no consumo (DD+FE), first 12 months - the offer on the 2 Aug-1 Sep 2026 invoice
+[[tariff]]
+name = "fixa bi-horaria -15% energia (12m) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.5717
+prices = { vazio = 0.0951, fora_de_vazio = 0.1645 }
+
+# Eletricidade Verde 15% desconto no consumo (DD+FE), first 12 months - the offer on the 2 Aug-1 Sep 2026 invoice
+[[tariff]]
+name = "fixa bi-horaria -15% energia (12m) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.5717
+prices = { vazio = 0.0951, fora_de_vazio = 0.1645 }
+
+# Eletricidade Verde Oferta Digital, 20% (DD+FE), first 12 months
+[[tariff]]
+name = "fixa bi-horaria -20% (digital 12m) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.4574
+prices = { vazio = 0.0895, fora_de_vazio = 0.1548 }
+
+# Eletricidade Verde Oferta Digital, 20% (DD+FE), first 12 months
+[[tariff]]
+name = "fixa bi-horaria -20% (digital 12m) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.4574
+prices = { vazio = 0.0895, fora_de_vazio = 0.1548 }
+
+# Eletricidade Verde 30% desconto na potencia (DD+FE), first 12 months
+[[tariff]]
+name = "fixa bi-horaria -30% potencia (12m) semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.4002
+prices = { vazio = 0.1119, fora_de_vazio = 0.1935 }
+
+# Eletricidade Verde 30% desconto na potencia (DD+FE), first 12 months
+[[tariff]]
+name = "fixa bi-horaria -30% potencia (12m) diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.4002
+prices = { vazio = 0.1119, fora_de_vazio = 0.1935 }
+
+
+# =====================================================================
+# TRI-HORARIA
+# =====================================================================
+
+# base, no discount: Eletricidade without direct debit (p.5); the price after the first 12 months of every '12 meses' offer below; Parceria Pingo Doce (whole contract); Eletricidade Verde 'desconto de 50 EUR na fatura' (its EUR 5/month x 10 credit is NOT modelled: take ~EUR 50 off its first year by hand)
+[[tariff]]
+name = "fixa tri-horaria base semanal"
+pricing = "fixa"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.5717
+prices = { vazio = 0.1119, cheias = 0.1394, ponta = 0.2856 }
+
+# base, no discount: Eletricidade without direct debit (p.5); the price after the first 12 months of every '12 meses' offer below; Parceria Pingo Doce (whole contract); Eletricidade Verde 'desconto de 50 EUR na fatura' (its EUR 5/month x 10 credit is NOT modelled: take ~EUR 50 off its first year by hand)
+[[tariff]]
+name = "fixa tri-horaria base diario"
+pricing = "fixa"
+option = "tri"
+cycle = "diario"
+fixed_eur_day = 0.5717
+prices = { vazio = 0.1119, cheias = 0.1394, ponta = 0.2856 }
+
+# Eletricidade (DD ou FE), first 12 months (p.3); Pack EASY without DD/FE, whole contract (p.8)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa tri-horaria -1% (12m / EASY) semanal"
+pricing = "fixa"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.5660
+prices = { vazio = 0.1108, cheias = 0.1380, ponta = 0.2827 }
+
+# Eletricidade (DD ou FE), first 12 months (p.3); Pack EASY without DD/FE, whole contract (p.8)
+# Packs: the EASY/SMART/FULL service fee is NOT on these sheets and is not included.
+[[tariff]]
+name = "fixa tri-horaria -1% (12m / EASY) diario"
+pricing = "fixa"
+option = "tri"
+cycle = "diario"
+fixed_eur_day = 0.5660
+prices = { vazio = 0.1108, cheias = 0.1380, ponta = 0.2827 }
+
+# Eletricidade (DD+FE), first 12 months (p.1)
+[[tariff]]
+name = "fixa tri-horaria -3% (DD+FE 12m) semanal"
+pricing = "fixa"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.5545
+prices = { vazio = 0.1085, cheias = 0.1352, ponta = 0.2770 }
+
+# Eletricidade (DD+FE), first 12 months (p.1)
+[[tariff]]
+name = "fixa tri-horaria -3% (DD+FE 12m) diario"
+pricing = "fixa"
+option = "tri"
+cycle = "diario"
+fixed_eur_day = 0.5545
+prices = { vazio = 0.1085, cheias = 0.1352, ponta = 0.2770 }
+
+# Campanha Desconto para Sempre (DD ou FE), whole contract
+[[tariff]]
+name = "fixa tri-horaria -5% (sempre DD ou FE) semanal"
+pricing = "fixa"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.5431
+prices = { vazio = 0.1063, cheias = 0.1324, ponta = 0.2713 }
+
+# Campanha Desconto para Sempre (DD ou FE), whole contract
+[[tariff]]
+name = "fixa tri-horaria -5% (sempre DD ou FE) diario"
+pricing = "fixa"
+option = "tri"
+cycle = "diario"
+fixed_eur_day = 0.5431
+prices = { vazio = 0.1063, cheias = 0.1324, ponta = 0.2713 }
+
+# Campanha Desconto para Sempre (DD+FE), whole contract
+[[tariff]]
+name = "fixa tri-horaria -10% (sempre DD+FE) semanal"
+pricing = "fixa"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.5145
+prices = { vazio = 0.1007, cheias = 0.1255, ponta = 0.2570 }
+
+# Campanha Desconto para Sempre (DD+FE), whole contract
+[[tariff]]
+name = "fixa tri-horaria -10% (sempre DD+FE) diario"
+pricing = "fixa"
+option = "tri"
+cycle = "diario"
+fixed_eur_day = 0.5145
+prices = { vazio = 0.1007, cheias = 0.1255, ponta = 0.2570 }
+
+[[tariff]]
+name = "fixa simples especial"
+pricing = "fixa"
+option = "simples"
+fixed_eur_day = 0.4347
+prices = { simples = 0.1086 }
+
+
+# =====================================================================
+# EDP Indexada Horaria (dinamica) - not from these PDFs
+# fixed_eur_day = K3 0.1171 + TAR potencia 0.2291 at 4,60 kVA
+# (docs/tariff-reference.md s1-2)
+# =====================================================================
+
+[[tariff]]
+name = "dinamica tri-horaria semanal"
+pricing = "indexada"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "dinamica tri-horaria diario"
+pricing = "indexada"
+option = "tri"
+cycle = "diario"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "dinamica bi-horaria semanal"
+pricing = "indexada"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "dinamica bi-horaria diario"
+pricing = "indexada"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.3462

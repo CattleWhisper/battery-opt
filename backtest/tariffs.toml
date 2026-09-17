@@ -1,0 +1,118 @@
+# Tariff parameters for backtest/simulate_big_battery.py
+#
+# Every tariff below is compared in ONE run, over the same consumption,
+# the same OMIE quarters and the same battery. The ranking is by the
+# whole bill excl. VAT: energy + daily fixed term.
+#
+# All money is EUR excl. VAT.
+#
+# ---------------------------------------------------------------------
+# Per [[tariff]]:
+#   name           unique display name
+#   pricing        "fixa"      fixed EUR/kWh per period, OMIE ignored
+#                  "indexada"  OMIE through the delivered-price formula
+#   option         "simples" | "bi" | "tri"
+#   cycle          "semanal" | "diario"   (required for bi and tri)
+#   fixed_eur_day  daily fixed term, EUR/day — REQUIRED for every tariff
+#
+# pricing = "fixa" also needs `prices`, with exactly these keys:
+#   simples:  { simples }
+#   bi:       { vazio, fora_de_vazio }
+#   tri:      { vazio, cheias, ponta }
+#
+# pricing = "indexada" takes no prices: TAR energia comes from the ERSE
+# 2026 tables (docs/tariff-reference.md §1). The offer's coefficients are
+# optional and default to EDP Indexada Horária (§2):
+#   k1 = 1.08    k2 = 0.0185    perdas = 0.164
+#
+# A value you do not have yet: write "TODO". The script then refuses to
+# run and lists EVERY TODO at once, rather than comparing against a
+# guess. To leave a tariff out, comment its whole block.
+# ---------------------------------------------------------------------
+
+# The "vs" column compares every tariff against this one: your contract.
+reference = "fixa simples"
+
+# The tariff that also gets the per-day / monthly battery report.
+detailed = "fixa tri-horaria semanal"
+
+
+# --- Fixed-price offers ----------------------------------------------
+
+[[tariff]]
+name = "fixa simples"
+pricing = "fixa"
+option = "simples"
+# The "termo de potência" line on the invoice, 4.60 kVA, excl. VAT.
+fixed_eur_day = 0.3478
+# Invoiced rate, 15% discount (CONTEXT.md "Current tariff state";
+# confirmed against the 2 Aug - 1 Sep 2026 invoice).
+prices = { simples = 0.1337 }
+
+[[tariff]]
+name = "fixa bi-horaria semanal"
+pricing = "fixa"
+option = "bi"
+cycle = "semanal"  # check the offer sheet: semanal or diario
+fixed_eur_day = 0.4574
+prices = { vazio = 0.0895, fora_de_vazio = 0.1548 }
+
+[[tariff]]
+name = "fixa bi-horaria diario"
+pricing = "fixa"
+option = "bi"
+cycle = "diario"  # check the offer sheet: semanal or diario
+fixed_eur_day = 0.4574
+prices = { vazio = 0.0895, fora_de_vazio = 0.1548 }
+
+[[tariff]]
+name = "fixa tri-horaria semanal"
+pricing = "fixa"
+option = "tri"
+cycle = "semanal"  # check the offer sheet: semanal or diario
+fixed_eur_day = 0.5145
+prices = { vazio = 0.1007, cheias = 0.1255, ponta = 0.2570 }
+
+[[tariff]]
+name = "fixa tri-horaria diario"
+pricing = "fixa"
+option = "tri"
+cycle = "diario"  # check the offer sheet: semanal or diario
+fixed_eur_day = 0.5145
+prices = { vazio = 0.1007, cheias = 0.1255, ponta = 0.2570 }
+
+
+# --- EDP Indexada Horária (dinâmica) -----------------------------------
+#
+# fixed_eur_day = K3 0.1171 + TAR potência 0.2291 at 4.60 kVA
+# (docs/tariff-reference.md §1-2). TAR potência does not vary with the
+# option, so all four share it. tests/test_tariffs.py fails if this
+# drifts from core/prices.py.
+
+[[tariff]]
+name = "dinamica tri-horaria semanal"
+pricing = "indexada"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "dinamica tri-horaria diario"
+pricing = "indexada"
+option = "tri"
+cycle = "diario"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "dinamica bi-horaria semanal"
+pricing = "indexada"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "dinamica bi-horaria diario"
+pricing = "indexada"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.3462

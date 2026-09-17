@@ -21,6 +21,14 @@ formula (`core.prices.price`), so they are the same EUR/kWh the
 integration would compute. Days missing from the local OMIE cache are
 downloaded on demand (`backtest/download_omie.py`).
 
+The same consumption is then priced under every tariff in the
+parameters file (`backtest/tariffs.toml`, `--tariffs`) and the battery
+is simulated against each; the ranking is the whole bill excl. VAT —
+energy plus each tariff's daily fixed term. The strategy is price-driven,
+so it adapts per tariff on its own: on a flat tariff the
+profitability guard never lets it charge, and the battery column
+equals the no-battery one.
+
 Three things keep the answer honest rather than a pure price sort:
 
 - **Round-trip efficiency.** Delivering X kWh from the battery costs
@@ -44,6 +52,15 @@ Usage:
 
     python backtest/simulate_big_battery.py --daily-kwh 23.6 \
         --capacity 20 --from 2026-08-31 --to 2026-09-08
+
+    # only some of the tariffs (names as in the parameters file)
+    python backtest/simulate_big_battery.py --daily-kwh 23.6 \
+        --from 2026-08-31 --to 2026-09-08 \
+        --only "dinamica tri-horaria semanal" "dinamica bi-horaria semanal"
+
+    # a different parameters file (default: backtest/tariffs.toml)
+    python backtest/simulate_big_battery.py --daily-kwh 23.6 \
+        --from 2026-08-31 --to 2026-09-08 --tariffs my-offers.toml
 """
 
 from __future__ import annotations
@@ -52,7 +69,7 @@ import argparse
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 
@@ -61,7 +78,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backtest.download_omie import DATA_DIR, download
 from backtest.load_omie import load_series
 from backtest.simulate_bill import load_meter, quarter_index
-from custom_components.battery_opt.core.prices import price
+from backtest.tariffs import (
+    DEFAULT_TARIFFS_FILE,
+    Tariff,
+    TariffFileError,
+    load_tariffs,
+)
 
 QUARTERS_PER_DAY = 96
 QUARTER_HOURS = 0.25
@@ -164,11 +186,15 @@ def flat_consumption(
     return grid
 
 
-def delivered_prices(
+def omie_by_quarter(
     days: list[date], omie_dir: Path, *, allow_download: bool
 ) -> dict[date, list[float | None]]:
     """
-    Build 96 delivered prices per Lisbon day from the OMIE cache.
+    Build 96 raw OMIE prices (EUR/MWh) per Lisbon day from the cache.
+
+    Raw rather than delivered: every tariff turns the SAME OMIE quarter
+    into its own EUR/kWh (`tariff_prices`), so the market data is read
+    once and no tariff can end up priced on different quarters.
 
     A Lisbon day draws on OMIE delivery days D and D+1 (the market day
     is Madrid-local), so the fetch window is padded on both sides.
@@ -193,22 +219,38 @@ def delivered_prices(
     if not records:
         return {}
 
-    prices: dict[date, list[float | None]] = {}
+    omie: dict[date, list[float | None]] = {}
     for record in records:
         local = record.start
         day = local.date()
-        if day not in prices:
-            prices[day] = [None] * QUARTERS_PER_DAY
+        if day not in omie:
+            omie[day] = [None] * QUARTERS_PER_DAY
         index = quarter_index(local)
         # marginalpdbc is hourly before Oct 2025 and quarter-hourly
         # after; an hourly record fills its four quarters.
         span = max(1, round(record.duration_hours / QUARTER_HOURS))
         for offset in range(span):
             if index + offset < QUARTERS_PER_DAY:
-                prices[day][index + offset] = price(
-                    record.price_eur_mwh,
-                    local.replace(tzinfo=None) + timedelta(minutes=15 * offset),
-                )
+                omie[day][index + offset] = record.price_eur_mwh
+    return omie
+
+
+def tariff_prices(
+    omie: dict[date, list[float | None]], tariff: Tariff
+) -> dict[date, list[float | None]]:
+    """
+    Price every OMIE quarter under one tariff (EUR/kWh, None where unpriced).
+
+    Quarter q of a Lisbon day starts at local midnight + 15q minutes, in
+    naive Portugal legal time — the calendar API contract.
+    """
+    prices: dict[date, list[float | None]] = {}
+    for day, quarters in omie.items():
+        midnight = datetime(day.year, day.month, day.day)
+        prices[day] = [
+            tariff.quarter_price(value, midnight + timedelta(minutes=15 * q))
+            for q, value in enumerate(quarters)
+        ]
     return prices
 
 
@@ -434,9 +476,9 @@ def by_month(days: list[DayResult]) -> dict[str, list[DayResult]]:
     return dict(sorted(months.items()))
 
 
-def _monthly_lines(simulation: Simulation, simples_rate: float) -> list[str]:
+def _monthly_lines(simulation: Simulation, reference_rate: float) -> list[str]:
     """
-    Render the per-month rollup.
+    Render the per-month rollup; "ref" is the reference tariff's energy.
 
     Calendar months, which is NOT the billing period: EDP invoices run
     2nd-to-1st, so a month here will not tie out exactly against a
@@ -450,19 +492,19 @@ def _monthly_lines(simulation: Simulation, simples_rate: float) -> list[str]:
         "Monthly summary",
         f"  {'month':<10}{'days':>6}{'used':>10}{'import':>10}"
         f"{'EUR/kWh':>9}{'sim EUR':>10}{'spot EUR':>10}"
-        f"{'simples':>10}{'vs simples':>12}",
+        f"{'ref EUR':>10}{'vs ref':>12}",
     ]
     for month, days in months.items():
         used = sum(day.consumption_kwh for day in days)
         imported = sum(day.grid_kwh for day in days)
         sim = sum(day.cost_eur for day in days)
         spot = sum(day.baseline_eur for day in days)
-        simples = used * simples_rate
+        ref = used * reference_rate
         rate = sim / used if used else 0.0
         lines.append(
             f"  {month:<10}{len(days):>6}{used:>10.1f}{imported:>10.1f}"
             f"{rate:>9.4f}{sim:>10.2f}{spot:>10.2f}"
-            f"{simples:>10.2f}{sim - simples:>+12.2f}"
+            f"{ref:>10.2f}{sim - ref:>+12.2f}"
         )
     lines.append("")
     return lines
@@ -471,11 +513,19 @@ def _monthly_lines(simulation: Simulation, simples_rate: float) -> list[str]:
 def report(
     simulation: Simulation,
     spec: BatterySpec,
-    simples_rate: float,
+    reference_rate: float,
     *,
     daily: bool = True,
+    reference_label: str = "Simples",
 ) -> str:
-    """Render the per-day table, the monthly rollup and the window summary."""
+    """
+    Render the per-day table, the monthly rollup and the window summary.
+
+    ENERGY only, excl. VAT and fixed terms: this report is about what
+    the battery does on one tariff. `reference_rate` is the reference
+    tariff's effective EUR/kWh; the whole-bill comparison across
+    tariffs is `comparison_lines`.
+    """
     lines: list[str] = []
     add = lines.append
     if simulation.missing_prices:
@@ -499,7 +549,7 @@ def report(
                 f"{day.total_eur:>9.2f}{day.baseline_eur:>10.2f}"
             )
         add("")
-    lines.extend(_monthly_lines(simulation, simples_rate))
+    lines.extend(_monthly_lines(simulation, reference_rate))
 
     n = len(simulation.days)
     if not n:
@@ -508,27 +558,26 @@ def report(
     imported = simulation.total("grid_kwh")
     sim = simulation.total("cost_eur")
     spot = simulation.total("baseline_eur")
-    simples = kwh * simples_rate
+    ref = kwh * reference_rate
+    ref_name = f"{reference_label} @ {reference_rate:.4f}"
 
-    add(f"Window totals ({n} day(s), {kwh:,.1f} kWh consumed)")
+    add(f"Window totals ({n} day(s), {kwh:,.1f} kWh consumed; energy only)")
     add(
-        f"  {'Simulated (big battery)':<32}{sim:>10,.2f} EUR   "
+        f"  {'Simulated (with battery)':<32}{sim:>10,.2f} EUR   "
         f"{sim / kwh:>7.4f} EUR/kWh consumed"
     )
     add(
-        f"  {'Indexada, no battery (spot)':<32}{spot:>10,.2f} EUR   "
+        f"  {'Same tariff, no battery':<32}{spot:>10,.2f} EUR   "
         f"{spot / kwh:>7.4f} EUR/kWh consumed"
     )
     add(
-        f"  {'Simples @ ' + format(simples_rate, '.4f'):<32}{simples:>10,.2f} EUR   "
-        f"{simples_rate:>7.4f} EUR/kWh consumed"
+        f"  {ref_name[:32]:<32}{ref:>10,.2f} EUR   "
+        f"{reference_rate:>7.4f} EUR/kWh consumed"
     )
     add("")
     add(f"  vs no battery : {sim - spot:>+10,.2f} EUR over the window")
-    add(f"  vs Simples    : {sim - simples:>+10,.2f} EUR over the window")
-    add(
-        f"  annualised difference vs Simples: {(sim - simples) / n * 365:>+,.0f} EUR/yr"
-    )
+    add(f"  vs reference  : {sim - ref:>+10,.2f} EUR over the window")
+    add(f"  annualised difference vs reference: {(sim - ref) / n * 365:>+,.0f} EUR/yr")
     add("")
     served = simulation.total("discharged_kwh")
     # Import EXCEEDS consumption by the round-trip losses: every kWh
@@ -543,6 +592,139 @@ def report(
         f"at the going rate"
     )
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class TariffRun:
+    """One tariff's simulation over the shared consumption window."""
+
+    tariff: Tariff
+    simulation: Simulation
+
+    def energy_eur(self, *, battery: bool) -> float:
+        """Energy cost over the window, with or without the battery."""
+        return self.simulation.total("cost_eur" if battery else "baseline_eur")
+
+    @property
+    def fixed_eur(self) -> float:
+        """The tariff's daily fixed term over every simulated day."""
+        return self.tariff.daily_fixed_eur * len(self.simulation.days)
+
+    def total_eur(self, *, battery: bool) -> float:
+        """Return the bill excl. VAT: energy plus fixed terms."""
+        return self.energy_eur(battery=battery) + self.fixed_eur
+
+
+def compare(
+    grid: dict[date, list[float]],
+    omie: dict[date, list[float | None]],
+    tariffs: list[Tariff],
+    spec: BatterySpec,
+) -> list[TariffRun]:
+    """
+    Simulate the same consumption and battery under every tariff.
+
+    All tariffs price the same OMIE quarters (`Tariff.quarter_price`
+    returns None wherever OMIE is missing, fixed offers included), so
+    every run covers the same days and the totals are comparable.
+    """
+    return [
+        TariffRun(tariff, run(grid, tariff_prices(omie, tariff), spec))
+        for tariff in tariffs
+    ]
+
+
+def _money(value: float) -> float:
+    """
+    Round to cents without printing "-0.00".
+
+    `sum()` uses compensated summation while the day walk accumulates
+    with `+=`, so two costs that are equal in every quarter can differ
+    by ~1e-15 and format as a negative zero — which on a flat tariff
+    reads as "the battery lost money".
+    """
+    return round(value, 2) + 0.0
+
+
+def comparison_lines(
+    runs: list[TariffRun], spec: BatterySpec, reference: str
+) -> list[str]:
+    """
+    Render the ranking: cheapest bill with the battery first.
+
+    The bill is energy plus the daily fixed term, excl. VAT. Ranking on
+    energy alone would favour any offer that moves its margin from the
+    kWh price into the fixed term; `vs` and `/yr` compare that whole
+    bill against the `reference` tariff (by name).
+    """
+    if not runs or not runs[0].simulation.days:
+        return []
+    ref_run = next(r for r in runs if r.tariff.name == reference)
+    ref_total = ref_run.total_eur(battery=True)
+    n = len(runs[0].simulation.days)
+    kwh = runs[0].simulation.total("consumption_kwh")
+    name_width = max(30, *(len(r.tariff.name) + 2 for r in runs))
+    lines = [
+        f"Tariff comparison ({n} day(s), {kwh:,.1f} kWh consumed, "
+        f"{spec.capacity_kwh:g} kWh battery; EUR excl. VAT)",
+        f"  {'':<{name_width}}{'--- energy ---':^26}{'--- bill, with battery ---':^46}",
+        f"  {'tariff':<{name_width}}{'no batt':>9}{'w/ batt':>9}{'saved':>8}"
+        f"{'fixed':>8}{'total':>9}{'EUR/kWh':>9}{'vs ref':>10}{'/yr':>10}",
+    ]
+    for tariff_run in sorted(runs, key=lambda r: r.total_eur(battery=True)):
+        without = tariff_run.energy_eur(battery=False)
+        with_battery = tariff_run.energy_eur(battery=True)
+        total = tariff_run.total_eur(battery=True)
+        delta = total - ref_total
+        marker = "  <- ref" if tariff_run is ref_run else ""
+        lines.append(
+            f"  {tariff_run.tariff.name:<{name_width}}{without:>9.2f}"
+            f"{with_battery:>9.2f}{_money(without - with_battery):>8.2f}"
+            f"{tariff_run.fixed_eur:>8.2f}{total:>9.2f}{total / kwh:>9.4f}"
+            f"{_money(delta):>+10.2f}{round(delta / n * 365) + 0:>+10d}{marker}"
+        )
+    lines += [
+        "",
+        f"  ref = {reference}. fixed = each tariff's daily fixed term over the",
+        "  window; EUR/kWh = the whole bill per kWh consumed.",
+        "",
+    ]
+    return lines
+
+
+def monthly_comparison_lines(runs: list[TariffRun]) -> list[str]:
+    """
+    Render the bill with the battery (energy + fixed), tariff by month.
+
+    One row per tariff, in the ranking's order, one column per month: a
+    parameters file can hold dozens of tariffs but a window only a few
+    months, so this shape stays readable where a column per tariff did
+    not. Calendar months — not EDP's 2nd-to-1st billing window (see
+    `_monthly_lines`) — so use --from/--to to reconcile an invoice.
+    """
+    if not runs or not runs[0].simulation.days:
+        return []
+    ranked = sorted(runs, key=lambda r: r.total_eur(battery=True))
+    months = list(by_month(runs[0].simulation.days))
+    name_width = max(30, *(len(r.tariff.name) + 2 for r in ranked))
+    lines = [
+        "Monthly bill with battery, by tariff (energy + fixed, EUR excl. VAT)",
+        f"  {'tariff':<{name_width}}"
+        + "".join(f"{month:>10}" for month in months)
+        + f"{'total':>10}",
+    ]
+    for tariff_run in ranked:
+        by_month_days = by_month(tariff_run.simulation.days)
+        cells = ""
+        for month in months:
+            days = by_month_days.get(month, [])
+            bill = sum(d.cost_eur for d in days)
+            bill += tariff_run.tariff.daily_fixed_eur * len(days)
+            cells += f"{bill:>10.2f}"
+        total = tariff_run.total_eur(battery=True)
+        lines.append(f"  {tariff_run.tariff.name:<{name_width}}{cells}{total:>10.2f}")
+    lines.append("")
+    return lines
 
 
 def _synthetic_grid(args: argparse.Namespace) -> dict[date, list[float]] | None:
@@ -607,7 +789,23 @@ def main() -> int:
     parser.add_argument("--capacity", type=float, default=20.0, help="kWh usable")
     parser.add_argument("--eta", type=float, default=DEFAULT_ETA_ROUNDTRIP)
     parser.add_argument("--p-usable", type=float, default=DEFAULT_P_USABLE_W)
-    parser.add_argument("--simples-rate", type=float, default=0.1420)
+    parser.add_argument(
+        "--tariffs",
+        type=Path,
+        default=DEFAULT_TARIFFS_FILE,
+        help="tariff parameters file (default: backtest/tariffs.toml)",
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        metavar="NAME",
+        default=None,
+        help=(
+            "compare only these tariffs, by their name in the parameters file "
+            '(quote names with spaces: --only "fixa simples" '
+            '"dinamica tri-horaria semanal"); tariffs left out may still hold TODOs'
+        ),
+    )
     parser.add_argument("--omie-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--from", dest="start", type=date.fromisoformat, default=None)
     parser.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
@@ -621,13 +819,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Before any download: a file with TODOs should fail in a second,
+    # not after fetching a month of OMIE.
+    try:
+        parameters = load_tariffs(args.tariffs, only=args.only)
+    except TariffFileError as err:
+        print(err, file=sys.stderr)
+        return 2
+
     grid = build_grid(args)
     if grid is None:
         return 1
-    prices = delivered_prices(
+    omie = omie_by_quarter(
         sorted(grid), args.omie_dir, allow_download=not args.no_download
     )
-    if not prices:
+    if not omie:
         print("No prices available; cannot simulate.", file=sys.stderr)
         return 1
 
@@ -636,9 +842,29 @@ def main() -> int:
         eta_roundtrip=args.eta,
         p_usable_w=args.p_usable,
     )
-    simulation = run(grid, prices, spec)
+    for note in parameters.notes:
+        print(f"Note: {note}")
+    runs = compare(grid, omie, parameters.tariffs, spec)
+    by_name = {r.tariff.name: r for r in runs}
+    if parameters.detailed is not None:
+        reference = by_name[parameters.reference]
+        detailed = by_name[parameters.detailed]
+        kwh = reference.simulation.total("consumption_kwh")
+        reference_rate = reference.energy_eur(battery=True) / kwh if kwh else 0.0
+        print()
+        print(f"Detailed battery report: {parameters.detailed}")
+        print(
+            report(
+                detailed.simulation,
+                spec,
+                reference_rate,
+                daily=not args.no_daily,
+                reference_label=parameters.reference,
+            )
+        )
     print()
-    print(report(simulation, spec, args.simples_rate, daily=not args.no_daily))
+    print("\n".join(comparison_lines(runs, spec, parameters.reference)))
+    print("\n".join(monthly_comparison_lines(runs)))
     return 0
 
 

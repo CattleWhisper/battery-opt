@@ -44,6 +44,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from backtest.tariffs import TAR_SIMPLES_2026
 from custom_components.battery_opt.core.calendar import (
     TZ_PORTUGAL,
     period,
@@ -59,7 +60,8 @@ from custom_components.battery_opt.core.prices import (
 
 # The invoice's own Simples TAR energia (ERSE 2026, BTN <=20.7 kVA),
 # docs/tariff-reference.md §1. Simples has no period differentiation.
-TAR_ENERGIA_SIMPLES = 0.0607
+# Defined once, with the other options' TAR, in backtest/tariffs.py.
+TAR_ENERGIA_SIMPLES = TAR_SIMPLES_2026
 
 # Portugal: the reduced VAT rate applies to the first 200 kWh per 30
 # days on contracts <= 6.9 kVA, prorated by the billing window's

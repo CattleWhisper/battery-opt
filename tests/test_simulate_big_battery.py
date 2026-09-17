@@ -21,12 +21,17 @@ from backtest.simulate_big_battery import (
     QUARTERS_PER_DAY,
     BatterySpec,
     by_month,
+    compare,
+    comparison_lines,
     flat_consumption,
+    monthly_comparison_lines,
     report,
     run,
     select_charge_quarters,
     simulate_day,
+    tariff_prices,
 )
+from backtest.tariffs import bi_table, dynamic, fixed, flat_table, tri_table
 
 DAY = date(2026, 9, 2)
 CHEAP, DEAR = 0.05, 0.40
@@ -271,3 +276,193 @@ def test_the_monthly_section_survives_hiding_the_daily_table() -> None:
     assert "Per-day simulation" in with_daily
     assert "Per-day simulation" not in without
     assert "2026-09-01" not in without  # the daily rows are gone
+
+
+# --- tariff comparison -----------------------------------------------
+#
+# A winter week with a flat OMIE price: the TAR alone sets each
+# tariff's intraday spread, so the rankings below are statements about
+# the tariffs, not about market noise.
+
+WINTER_WEEK = (date(2026, 1, 12), date(2026, 1, 18))
+
+
+def _flat_omie(start: date, end: date, eur_mwh: float = 80.0) -> dict:
+    """Raw OMIE per quarter, one flat price for every day in [start, end]."""
+    return {
+        day: [eur_mwh] * QUARTERS_PER_DAY for day in flat_consumption(1.0, start, end)
+    }
+
+
+INDEXADA_FIXED = 0.3462
+
+
+def _all_seven(simples_fixed: float = 0.30) -> list:
+    """Build the seven kinds the parameters file lists, with test values."""
+    return [
+        fixed("simples", flat_table(0.1420), simples_fixed, name="fixa simples"),
+        fixed("bi", bi_table(0.10, 0.20), 0.30, name="fixa bi"),
+        fixed("tri", tri_table(0.10, 0.18, 0.30), 0.30, name="fixa tri"),
+        dynamic("tri", "semanal", INDEXADA_FIXED, name="din tri sem"),
+        dynamic("tri", "diario", INDEXADA_FIXED, name="din tri dia"),
+        dynamic("bi", "semanal", INDEXADA_FIXED, name="din bi sem"),
+        dynamic("bi", "diario", INDEXADA_FIXED, name="din bi dia"),
+    ]
+
+
+def _rows(lines: list[str], runs: list) -> list[str]:
+    """Tariff names in the order the comparison lists them."""
+    names = [r.tariff.name for r in runs]
+    return [
+        line.strip().split("  ")[0]
+        for line in lines
+        if line.strip().split("  ")[0] in names
+    ]
+
+
+def test_every_tariff_is_simulated_over_the_same_days() -> None:
+    """
+    Including when a day has no OMIE at all.
+
+    A tariff that skipped a day another tariff paid for would look
+    cheaper by exactly that day's bill — and would be charged one fewer
+    day of fixed term.
+    """
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    omie = _flat_omie(*WINTER_WEEK)
+    omie[date(2026, 1, 14)] = [None] * QUARTERS_PER_DAY  # a publication gap
+    runs = compare(grid, omie, _all_seven(), SPEC)
+    day_sets = {tuple(d.day for d in r.simulation.days) for r in runs}
+    assert len(day_sets) == 1
+    assert date(2026, 1, 14) not in next(iter(day_sets))
+    assert all(r.fixed_eur == pytest.approx(r.tariff.daily_fixed_eur * 6) for r in runs)
+
+
+def test_a_flat_tariff_never_cycles_the_battery() -> None:
+    """
+    On fixa simples the pack can only lose to round-trip losses.
+
+    The strategy is price-driven, so this is not special-cased: the
+    profitability guard simply never finds a quarter worth charging.
+    """
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    simples = fixed("simples", flat_table(0.1420), 0.30)
+    simulation = run(grid, tariff_prices(_flat_omie(*WINTER_WEEK), simples), SPEC)
+    assert simulation.total("charged_kwh") == pytest.approx(0.0)
+    assert simulation.total("cost_eur") == pytest.approx(
+        simulation.total("baseline_eur")
+    )
+
+
+def test_the_battery_earns_more_on_tri_than_on_bi_horaria() -> None:
+    """
+    A wider spread is worth more to a pack: ponta is dearer than fora de vazio.
+
+    Energy-only, same OMIE, same week — the ordering is the TAR tables'.
+    """
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    runs = {
+        r.tariff.name: r
+        for r in compare(grid, _flat_omie(*WINTER_WEEK), _all_seven(), SPEC)
+    }
+
+    def saved(name: str) -> float:
+        run_ = runs[name]
+        return run_.energy_eur(battery=False) - run_.energy_eur(battery=True)
+
+    assert saved("din tri sem") > saved("din bi sem")
+
+
+def test_the_bill_is_energy_plus_the_fixed_term() -> None:
+    """Total = energy with battery + daily fixed term x simulated days."""
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    runs = compare(grid, _flat_omie(*WINTER_WEEK), _all_seven(), SPEC)
+    for tariff_run in runs:
+        assert tariff_run.total_eur(battery=True) == pytest.approx(
+            tariff_run.energy_eur(battery=True) + tariff_run.tariff.daily_fixed_eur * 7
+        )
+
+
+def test_the_comparison_ranks_by_the_whole_bill() -> None:
+    """The decision view: ascending total (energy + fixed) with the battery."""
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    runs = compare(grid, _flat_omie(*WINTER_WEEK), _all_seven(), SPEC)
+    listed = _rows(comparison_lines(runs, SPEC, "fixa simples"), runs)
+    totals = {r.tariff.name: r.total_eur(battery=True) for r in runs}
+    assert len(listed) == len(runs)
+    assert [totals[name] for name in listed] == sorted(totals.values())
+
+
+def test_a_large_fixed_term_can_outweigh_cheaper_energy() -> None:
+    """
+    Why the ranking is on the bill, not on energy.
+
+    The same fixa simples offer, once with a fixed term big enough to
+    lose to an indexed tariff whose ENERGY is dearer. Ranking on energy
+    alone would list it first either way.
+    """
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    omie = _flat_omie(*WINTER_WEEK)
+    cheap_fixed = compare(grid, omie, _all_seven(simples_fixed=0.30), SPEC)
+    dear_fixed = compare(grid, omie, _all_seven(simples_fixed=5.00), SPEC)
+
+    def position(runs: list, name: str) -> int:
+        return _rows(comparison_lines(runs, SPEC, "fixa simples"), runs).index(name)
+
+    simples = next(r for r in dear_fixed if r.tariff.name == "fixa simples")
+    indexed = next(r for r in dear_fixed if r.tariff.name == "din tri sem")
+    assert simples.energy_eur(battery=True) < indexed.energy_eur(battery=True)
+    assert position(dear_fixed, "fixa simples") > position(dear_fixed, "din tri sem")
+    assert position(cheap_fixed, "fixa simples") < position(cheap_fixed, "din tri sem")
+
+
+def test_the_reference_row_is_marked_and_zero() -> None:
+    """The "vs" column is relative to the reference, so its own delta is 0."""
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    runs = compare(grid, _flat_omie(*WINTER_WEEK), _all_seven(), SPEC)
+    row = next(
+        line
+        for line in comparison_lines(runs, SPEC, "fixa simples")
+        if line.strip().startswith("fixa simples")
+    )
+    assert row.endswith("<- ref")
+    assert "+0.00" in row
+
+
+def test_a_flat_tariff_never_prints_a_negative_zero_saving() -> None:
+    """
+    Float summation noise must not read as "the battery lost money".
+
+    `sum()` and a `+=` walk can disagree by ~1e-15 on identical costs.
+    """
+    grid = flat_consumption(24.0, *WINTER_WEEK)
+    runs = compare(grid, _flat_omie(*WINTER_WEEK), _all_seven(), SPEC)
+    lines = comparison_lines(runs, SPEC, "fixa simples")
+    assert not any("-0.00" in line for line in lines)
+
+
+def test_the_monthly_comparison_bills_each_month_with_its_fixed_terms() -> None:
+    """
+    One row per tariff, one column per month, each cell energy + fixed.
+
+    Rows, not columns, per tariff: a parameters file can hold dozens of
+    tariffs, and a column each made the table unreadable.
+    """
+    start, end = date(2026, 1, 30), date(2026, 2, 2)
+    grid = flat_consumption(24.0, start, end)
+    tariffs = _all_seven()
+    runs = compare(grid, _flat_omie(start, end), tariffs, SPEC)
+    lines = [line for line in monthly_comparison_lines(runs) if line.strip()]
+    header, *rows = lines[1:]
+    assert header.split()[-3:] == ["2026-01", "2026-02", "total"]
+    assert len(rows) == len(tariffs)
+    listed = [row.strip().rsplit(maxsplit=3)[0] for row in rows]
+    assert sorted(listed) == sorted(t.name for t in tariffs)
+
+    by_name = {r.tariff.name: r for r in runs}
+    row = next(r for r in rows if r.strip().startswith("fixa simples"))
+    january, february, total = (float(x) for x in row.split()[-3:])
+    days = by_name["fixa simples"].simulation.days
+    energy_jan = sum(d.cost_eur for d in days if d.day.month == 1)
+    assert january == pytest.approx(energy_jan + 0.30 * 2, abs=0.005)
+    assert january + february == pytest.approx(total, abs=0.011)

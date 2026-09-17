@@ -75,10 +75,51 @@ Source: EDP standardised offer sheets "Eletricidade Indexada média DD + FE" and
 
 **Hours/week:** Vazio 76 · Ponta **25** · Cheias 67
 
-### Daily cycle (reference only — not used)
+### Daily cycle (not used by the integration — tariff comparison only)
 
-Ponta 4 h/day every day of the year; vazio 22:00–08:00; cheias the remainder.
-Rejected: exposes 46% more consumption to ponta, costing ~€105/year more.
+Identical every day of the week, weekends included. Rejected for the
+integration: exposes 46% more consumption to ponta, costing ~€105/year
+more. Priced in `backtest/tariffs.py` (`DAILY_CALENDARS`) so the
+simulations can compare it.
+
+| Season | Vazio | Ponta | Cheias |
+|---|---|---|---|
+| Summer | 00:00–08:00, 22:00–24:00 | **10:30–13:00, 19:30–21:00** | 08:00–10:30, 13:00–19:30, 21:00–22:00 |
+| Winter | 00:00–08:00, 22:00–24:00 | **09:00–10:30, 18:00–20:30** | 08:00–09:00, 10:30–18:00, 20:30–22:00 |
+
+**Hours/week:** Vazio 70 · Ponta **28** · Cheias 70 (both seasons). Season
+switches follow the weekly cycle (last Sunday of March / October).
+
+### Bi-horária (both cycles)
+
+Two periods: **vazio** and **fora de vazio**. In each cycle the bi-horária
+vazio is exactly the tri-horária vazio above; fora de vazio is ponta plus
+cheias. So bi-horária needs no calendar of its own — it prices ponta and
+cheias alike (TAR: fora de vazio 0.0835, vazio 0.0158, §1).
+
+### Source and verification status (daily cycle, bi-horária)
+
+Added 2026-09-17 for the tariff comparison. Taken from
+<https://www.tiagofelicia.pt/periodos-horarios.html>, a **secondary
+source**, cross-checked three ways:
+
+1. Its weekly tri-horária tables match §3 above exactly — the tables the
+   invoice validated (8.7% ponta measured vs 8.93% modelled).
+2. Its daily cycle matches this document's previous summary (ponta 4 h/day,
+   vazio 22:00–08:00) and the §5 identity `(10·vazio + 10·cheias + 4·ponta)/24`.
+3. Its bi-horária weekly vazio (including the Saturday spans) is identical
+   to the tri-horária weekly vazio.
+
+**Not yet read against ERSE directly:** ERSE's own period documents
+(<https://www.erse.pt/media/s0wh5zf0/periodoshorariosele.pdf>) publish the
+tables as graphics that could not be machine-read. Verify against them
+before relying on a daily-cycle result for a contract decision.
+`tests/test_tariffs.py` pins every boundary, so a correction is a one-row
+edit.
+
+ERSE's period reform applies to BTN bi/tri-horária between July and
+December 2027 (and drops the summer/winter distinction from the daily
+cycle): a new row in `DAILY_CALENDARS`, never an edit (ADR-0005).
 
 ---
 
