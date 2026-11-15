@@ -11,26 +11,17 @@ The candidates themselves live in a parameters file
 (`backtest/tariffs.toml`, read by `load_tariffs`), so the whole
 comparison is one run and every number in it has one visible home.
 
-Two families, one mechanism:
+The tariff model itself — fixa / indexada Média / indexada Horária,
+simples / bi / tri, semanal / diário — lives in `core.tariff.Tariff`
+(ADR-0012), the same object the integration prices with. This module
+adds only the parameters file and two builders:
 
-- **indexada** (e.g. EDP Indexada Horária): `core.prices.price`, the
-  integration's own delivered-price formula, called with the option's
-  TAR table, the cycle's calendar and the offer's K1/K2/losses. Never
-  re-implemented here.
+- **indexada** (EDP Indexada Horária or Média): `core.prices.price`,
+  the integration's own delivered-price formula, with the option's
+  TAR table, the cycle's calendar and the offer's K1/K2/losses. Média
+  prices each group at the billing window's average OMIE
+  (`simulate_big_battery.tariff_prices`). Never re-implemented here.
 - **fixa**: a fixed EUR/kWh per period, OMIE ignored.
-
-Bi-horária needs no calendar of its own. In both cycles its vazio is
-exactly the tri-horária vazio, and "fora de vazio" is everything else
-(docs/tariff-reference.md §3), so a bi-horária table simply prices
-ponta and cheias alike and reuses the tri-horária calendar. That keeps
-ONE calendar per cycle, and the weekly one stays the invoice-validated
-`core.calendar.CALENDARS`.
-
-The daily cycle is a `CalendarTable` whose weekday, Saturday and
-Sunday spans are identical, so `core.calendar.period` and
-`weekly_hours` — DST, season switches and all — work on it unchanged.
-It lives here, not in `core/`, because the integration does not use
-it: it exists to price a contract the owner is not on.
 
 Regulatory values (TAR energia, the calendars) stay in code: they are
 the same for every retailer, and docs/tariff-reference.md §1 and §3
@@ -43,113 +34,68 @@ from __future__ import annotations
 import tomllib
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from custom_components.battery_opt.core.calendar import (
-    CALENDARS,
-    Calendars,
-    CalendarTable,
-    DaySpans,
+    CYCLE_CALENDARS,
+    DAILY_CALENDARS,
+    Cycle,
     Period,
-    period,
 )
 from custom_components.battery_opt.core.prices import (
-    K1_HORARIA,
     K2,
-    K3,
     PERDAS,
+    TAR_BI_FORA_DE_VAZIO_2026,
+    TAR_BI_VAZIO_2026,
     TAR_ENERGIA_2026,
-    TAR_POTENCIA_2026,
-    price,
+    TAR_SIMPLES_2026,
+    Option,
+    bi_table,
+    flat_table,
+    tri_table,
+)
+from custom_components.battery_opt.core.tariff import (
+    INDEXADA_DAILY_FIXED_EUR,
+    PriceGroup,
+    Pricing,
+    Tariff,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import datetime
 
-Option = Literal["simples", "bi", "tri"]
-Cycle = Literal["semanal", "diario"]
-Pricing = Literal["indexada", "fixa"]
+__all__ = [
+    "CYCLE_CALENDARS",
+    "DAILY_CALENDARS",
+    "INDEXADA_DAILY_FIXED_EUR",
+    "TAR_BI_FORA_DE_VAZIO_2026",
+    "TAR_BI_VAZIO_2026",
+    "TAR_SIMPLES_2026",
+    "Cycle",
+    "Option",
+    "PriceGroup",
+    "Pricing",
+    "Tariff",
+    "bi_table",
+    "dynamic",
+    "fixed",
+    "flat_table",
+    "load_tariffs",
+    "tri_table",
+]
+
+# The file's `pricing` values. "indexada" is the original spelling and
+# stays an alias of Horária, so existing parameter files keep loading.
+FilePricing = Literal["fixa", "indexada", "indexada_horaria", "indexada_media"]
+_FILE_PRICING: dict[str, Pricing] = {
+    "fixa": "fixa",
+    "indexada": "indexada_horaria",
+    "indexada_horaria": "indexada_horaria",
+    "indexada_media": "indexada_media",
+}
 
 DEFAULT_TARIFFS_FILE = Path(__file__).with_name("tariffs.toml")
-
-# --- TAR energia, ERSE 2026, BTN <=20.7 kVA (docs/tariff-reference.md §1) ---
-TAR_SIMPLES_2026 = 0.0607
-TAR_BI_FORA_DE_VAZIO_2026 = 0.0835
-TAR_BI_VAZIO_2026 = 0.0158
-
-# --- Daily cycle, Portugal continental BTN (docs/tariff-reference.md §3) ---
-# Vazio 22:00-08:00 every day of the year; ponta 4 h a day, placed by
-# season. Identical for all three day classes — that is what makes it
-# the daily cycle.
-_DAILY_SUMMER: DaySpans = (
-    (0, 8 * 60, "vazio"),  # 00:00-08:00
-    (8 * 60, 10 * 60 + 30, "cheias"),  # 08:00-10:30
-    (10 * 60 + 30, 13 * 60, "ponta"),  # 10:30-13:00
-    (13 * 60, 19 * 60 + 30, "cheias"),  # 13:00-19:30
-    (19 * 60 + 30, 21 * 60, "ponta"),  # 19:30-21:00
-    (21 * 60, 22 * 60, "cheias"),  # 21:00-22:00
-    (22 * 60, 1440, "vazio"),  # 22:00-24:00
-)
-_DAILY_WINTER: DaySpans = (
-    (0, 8 * 60, "vazio"),  # 00:00-08:00
-    (8 * 60, 9 * 60, "cheias"),  # 08:00-09:00
-    (9 * 60, 10 * 60 + 30, "ponta"),  # 09:00-10:30
-    (10 * 60 + 30, 18 * 60, "cheias"),  # 10:30-18:00
-    (18 * 60, 20 * 60 + 30, "ponta"),  # 18:00-20:30
-    (20 * 60 + 30, 22 * 60, "cheias"),  # 20:30-22:00
-    (22 * 60, 1440, "vazio"),  # 22:00-24:00
-)
-_DAILY_2025: CalendarTable = {
-    "summer": {
-        "weekday": _DAILY_SUMMER,
-        "saturday": _DAILY_SUMMER,
-        "sunday": _DAILY_SUMMER,
-    },
-    "winter": {
-        "weekday": _DAILY_WINTER,
-        "saturday": _DAILY_WINTER,
-        "sunday": _DAILY_WINTER,
-    },
-}
-# Versioned like core.calendar.CALENDARS (ADR-0005): ERSE's period
-# reform reaches BTN bi/tri-horária in the second half of 2027 and gets
-# a new row, never an edit.
-DAILY_CALENDARS: Calendars = ((date(2025, 1, 1), _DAILY_2025),)
-
-CYCLE_CALENDARS: dict[Cycle, Calendars] = {
-    "semanal": CALENDARS,
-    "diario": DAILY_CALENDARS,
-}
-
-# EDP Indexada's daily fixed term: K3 plus TAR potência at 4.60 kVA
-# (docs/tariff-reference.md §1-2). TAR potência does not vary with the
-# tariff option, so this is the same for every Indexada option. The
-# parameters file carries it as a number; a test pins it to these.
-INDEXADA_DAILY_FIXED_EUR = K3 + TAR_POTENCIA_2026
-
-
-# The calendars emit tri-horária period names, so every option's
-# values are keyed by those: bi-horária prices ponta and cheias alike
-# ("fora de vazio"), simples prices all three alike.
-
-
-def flat_table(rate: float) -> dict[Period, float]:
-    """Simples: one value for every period."""
-    return {"ponta": rate, "cheias": rate, "vazio": rate}
-
-
-def bi_table(vazio: float, fora_de_vazio: float) -> dict[Period, float]:
-    """Bi-horária: ponta and cheias are both fora de vazio."""
-    return {"ponta": fora_de_vazio, "cheias": fora_de_vazio, "vazio": vazio}
-
-
-def tri_table(vazio: float, cheias: float, ponta: float) -> dict[Period, float]:
-    """Tri-horária: one value per period."""
-    return {"ponta": ponta, "cheias": cheias, "vazio": vazio}
-
 
 _TAR_BY_OPTION: dict[Option, dict[Period, float]] = {
     "simples": flat_table(TAR_SIMPLES_2026),
@@ -158,76 +104,33 @@ _TAR_BY_OPTION: dict[Option, dict[Period, float]] = {
 }
 
 
-@dataclass(frozen=True)
-class Tariff:
-    """One contract option: how a quarter is priced, and its daily fixed term."""
-
-    name: str
-    option: Option
-    cycle: Cycle
-    indexed: bool
-    # Indexed: the TAR energia table. Fixed: the full EUR/kWh price.
-    energy_by_period: dict[Period, float]
-    daily_fixed_eur: float
-    # Indexed offers only; defaults are EDP Indexada Horária.
-    k1: float = K1_HORARIA
-    k2: float = K2
-    perdas: float = PERDAS
-
-    @property
-    def calendars(self) -> Calendars:
-        """The period calendar this tariff's cycle uses."""
-        return CYCLE_CALENDARS[self.cycle]
-
-    def period_of(self, when: datetime) -> Period:
-        """Tri-horária period of a naive Portugal-legal-time instant."""
-        return period(when, self.calendars)
-
-    def quarter_price(self, omie_eur_mwh: float | None, when: datetime) -> float | None:
-        """
-        EUR/kWh for the quarter starting at `when`, or None if unpriceable.
-
-        A fixed tariff ignores OMIE but still returns None where OMIE is
-        missing: every tariff must be priced on the SAME quarters, or a
-        publication gap would quietly make an indexed tariff look cheaper
-        (its gap costs nothing) than a fixed one (whose would not).
-        """
-        if omie_eur_mwh is None:
-            return None
-        if self.indexed:
-            return price(
-                omie_eur_mwh,
-                when,
-                k1=self.k1,
-                k2=self.k2,
-                perdas=self.perdas,
-                tar_energia=self.energy_by_period,
-                calendars=self.calendars,
-            )
-        return self.energy_by_period[self.period_of(when)]
-
-
-def dynamic(  # noqa: PLR0913 - the offer's three coefficients are keyword-only
+def dynamic(  # noqa: PLR0913 - the offer's coefficients are keyword-only
     option: Option,
     cycle: Cycle,
     daily_fixed_eur: float,
     *,
     name: str | None = None,
-    k1: float = K1_HORARIA,
+    pricing: Pricing = "indexada_horaria",
+    k1: float | None = None,
     k2: float = K2,
     perdas: float = PERDAS,
 ) -> Tariff:
-    """Build an indexed offer: OMIE through the delivered-price formula, plus TAR."""
+    """
+    Build an indexed offer: OMIE through the delivered-price formula, plus TAR.
+
+    `k1` defaults to the pricing's EDP value (Horária 1.08, Média 1.10).
+    """
+    label = "indexada" if pricing == "indexada_horaria" else "indexada media"
     return Tariff(
-        name=name or f"indexada {option} {cycle}",
+        pricing=pricing,
         option=option,
         cycle=cycle,
-        indexed=True,
         energy_by_period=dict(_TAR_BY_OPTION[option]),
         daily_fixed_eur=daily_fixed_eur,
         k1=k1,
         k2=k2,
         perdas=perdas,
+        name=name or f"{label} {option} {cycle}",
     )
 
 
@@ -246,12 +149,12 @@ def fixed(
     discount-specific, so nothing here supplies a default.
     """
     return Tariff(
-        name=name or f"fixa {option} {cycle}",
+        pricing="fixa",
         option=option,
         cycle=cycle,
-        indexed=False,
         energy_by_period=energy_by_period,
         daily_fixed_eur=daily_fixed_eur,
+        name=name or f"fixa {option} {cycle}",
     )
 
 
@@ -352,7 +255,7 @@ def _entry(entry: Any, index: int, problems: list[str]) -> Tariff | None:
     problems.extend(
         f"{where}: unknown key {key!r}" for key in sorted(set(entry) - _ENTRY_KEYS)
     )
-    pricing = _choice(entry.get("pricing"), Pricing, f"{where}: pricing", problems)
+    pricing = _choice(entry.get("pricing"), FilePricing, f"{where}: pricing", problems)
     option = _choice(entry.get("option"), Option, f"{where}: option", problems)
     # Simples has no periods, so its cycle is irrelevant and optional.
     cycle = "semanal"
@@ -372,7 +275,7 @@ def _entry(entry: Any, index: int, problems: list[str]) -> Tariff | None:
             for key in _COEFFICIENTS
             if key in entry
         )
-    elif pricing == "indexada":
+    elif pricing is not None:
         if "prices" in entry:
             problems.append(f"{where}: indexada takes no prices (OMIE + TAR set them)")
         coefficients = {
@@ -385,7 +288,14 @@ def _entry(entry: Any, index: int, problems: list[str]) -> Tariff | None:
         return None
     if pricing == "fixa":
         return fixed(option, prices, fixed_eur_day, cycle, name=name)
-    return dynamic(option, cycle, fixed_eur_day, name=name, **coefficients)
+    return dynamic(
+        option,
+        cycle,
+        fixed_eur_day,
+        name=name,
+        pricing=_FILE_PRICING[pricing],
+        **coefficients,
+    )
 
 
 def load_tariffs(

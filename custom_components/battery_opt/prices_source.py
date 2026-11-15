@@ -15,20 +15,31 @@ in the backtest. Nothing here assumes prices are positive.
 starts, which `archive.py` needs to write the daily price archive.
 `day_price_vector_from_service` is kept as a thin wrapper over it for
 callers that only need the delivered vector.
+
+ADR-0012: the delivered vector follows the configured `Tariff`. The
+default (Indexada Horária, tri-horária, weekly) is bit-for-bit the
+pre-ADR-0012 `price(omie, start)`. Indexada Média prices each group at
+an ESTIMATE of the billing window's average OMIE (the archived
+`omie_history` plus the day itself) and flags the series `estimated`.
+A fixa contract needs no OMIE at all: `fixed_day_series` builds its
+day from the contract prices alone.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from .core.prices import price
+from .core.tariff import DEFAULT_TARIFF
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import date
+
+    from .core.tariff import Tariff
 
 _TZ_LISBON = ZoneInfo("Europe/Lisbon")
 _ONE_DAY = timedelta(days=1)
@@ -56,11 +67,15 @@ class DaySeries:
     omie_points: tuple[tuple[datetime, float], ...]
     delivered_eur_kwh: tuple[float, ...]
     padded: bool
+    # Indexada Média: priced at an estimated window average (ADR-0012).
+    estimated: bool = False
 
 
 def day_series_from_service(
     day: date,
     entries: list[dict[str, Any]],
+    tariff: Tariff = DEFAULT_TARIFF,
+    omie_history: Sequence[tuple[datetime, float]] = (),
 ) -> DaySeries | None:
     """
     Build a Lisbon day from core OMIE service entries.
@@ -91,9 +106,7 @@ def day_series_from_service(
     # elapsed time — a plain count set cannot tell a DST-short day
     # from a normal day missing its tail.
     day_start = datetime(day.year, day.month, day.day, tzinfo=_TZ_LISBON)
-    next_day = day_start + _ONE_DAY
-    day_end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=_TZ_LISBON)
-    expected = round((day_end.timestamp() - day_start.timestamp()) / 900)
+    expected = _quarters_in(day)
     for index, (start, _omie) in enumerate(local_points):
         if round(start.timestamp() - day_start.timestamp()) != index * 900:
             _LOGGER.error(
@@ -105,12 +118,20 @@ def day_series_from_service(
                 (day_start + timedelta(seconds=index * 900)).isoformat(),
             )
             return None
-    vector = [price(omie, start) for start, omie in local_points]
+    averages = None
+    if tariff.pricing == "indexada_media":
+        averages = tariff.period_averages([*omie_history, *local_points])
+    vector: list[float] = [
+        tariff.quarter_price(omie, start, averages)  # type: ignore[misc]
+        for start, omie in local_points
+    ]
+    estimated = averages is not None
     if len(vector) == expected:
         return DaySeries(
             omie_points=tuple(local_points),
             delivered_eur_kwh=tuple(vector),
             padded=False,
+            estimated=estimated,
         )
     missing = expected - len(vector)
     if 0 < missing <= _MAX_TAIL_PAD_QUARTERS:
@@ -127,8 +148,33 @@ def day_series_from_service(
             omie_points=tuple(padded_points),
             delivered_eur_kwh=tuple(vector),
             padded=True,
+            estimated=estimated,
         )
     return None
+
+
+def fixed_day_series(day: date, tariff: Tariff) -> DaySeries:
+    """
+    Build a fixa contract's day: every quarter at its contract price, no OMIE.
+
+    Always buildable (no publication to wait for), never padded, and
+    carries no OMIE points — there is nothing market-side to archive.
+    """
+    day_start = datetime(day.year, day.month, day.day, tzinfo=_TZ_LISBON)
+    origin = day_start.astimezone(UTC)
+    vector = [
+        tariff.fixed_price((origin + timedelta(minutes=15 * q)).astimezone(_TZ_LISBON))
+        for q in range(_quarters_in(day))
+    ]
+    return DaySeries(omie_points=(), delivered_eur_kwh=tuple(vector), padded=False)
+
+
+def _quarters_in(day: date) -> int:
+    """Return the day's true quarter count (92/96/100 across DST)."""
+    day_start = datetime(day.year, day.month, day.day, tzinfo=_TZ_LISBON)
+    next_day = day_start + _ONE_DAY
+    day_end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=_TZ_LISBON)
+    return round((day_end.timestamp() - day_start.timestamp()) / 900)
 
 
 def day_price_vector_from_service(

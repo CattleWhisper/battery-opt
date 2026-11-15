@@ -120,23 +120,31 @@ class CostTracker:
     load-MAE concern only).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the fixed term is the contract's
         self,
         hass: HomeAssistant,
         entry_id: str,
         entity_id: str,
         get_price_eur_kwh: Callable[[], float | None],
         on_change: Callable[[], None] | None = None,
+        fixed_eur_per_day: float = FIXED_EUR_PER_DAY,
     ) -> None:
-        """Bind to the meter entity and the coordinator's price lookup."""
+        """
+        Bind to the meter entity and the coordinator's price lookup.
+
+        `fixed_eur_per_day` is the contract's daily fixed term
+        (ADR-0012: `Tariff.daily_fixed_eur`); the default is EDP
+        Indexada's K3 + TAR potência.
+        """
         self.hass = hass
+        self._fixed_eur_per_day = fixed_eur_per_day
         self.entity_id = entity_id
         self._get_price_eur_kwh = get_price_eur_kwh
         self._on_change = on_change or (lambda: None)
         self._store: Store[dict[str, Any]] = Store(
             hass, _STORE_VERSION, f"{DOMAIN}_{entry_id}_cost_today"
         )
-        self.state = CostToday(day=dt_util.now().date().isoformat())
+        self.state = self._new_day(dt_util.now().date().isoformat())
         self._last_energy_kwh: float | None = None
         self._unsub_state: Callable[[], None] | None = None
         self._unsub_midnight: Callable[[], None] | None = None
@@ -148,8 +156,11 @@ class CostTracker:
         self.state = (
             CostToday.from_dict(stored)
             if stored is not None and stored.get("day") == today
-            else CostToday(day=today)
+            else self._new_day(today)
         )
+        # The fixed term follows the ACTIVE contract, even on a day
+        # restored from before a tariff change.
+        self.state.fixed_eur = self._fixed_eur_per_day
         current = self.hass.states.get(self.entity_id)
         if current is not None:
             self._last_energy_kwh = _state_value(current.state)
@@ -159,6 +170,9 @@ class CostTracker:
         self._unsub_midnight = async_track_time_change(
             self.hass, self._handle_midnight, hour=0, minute=0, second=0
         )
+
+    def _new_day(self, day: str) -> CostToday:
+        return CostToday(day=day, fixed_eur=self._fixed_eur_per_day)
 
     def async_stop(self) -> None:
         """Unsubscribe both listeners."""
@@ -172,7 +186,7 @@ class CostTracker:
     def _maybe_roll_day(self) -> None:
         today = dt_util.now().date().isoformat()
         if self.state.day != today:
-            self.state = CostToday(day=today)
+            self.state = self._new_day(today)
             self._last_energy_kwh = None  # a stale cross-day delta is not consumption
 
     @callback

@@ -126,7 +126,7 @@ async def _set_lisbon(hass: HomeAssistant) -> None:
 
 
 async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
-    """The single-step form creates the house-level entry (v2)."""
+    """The single-step form creates the house-level entry (indexed tariff)."""
     _register_core_omie_service(hass)
     await _set_lisbon(hass)
     result = await hass.config_entries.flow.async_init(
@@ -142,7 +142,15 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     # ADR-0009: batteries are subentries; the parent form carries only
     # the house-level parameters. Task 12: dry_run defaults ON; the
     # measured standby drain (owner 2026-08-17) defaults to 19 W.
-    assert result["data"] == {**PARAMETERS, "dry_run": True, "self_discharge_w": 19.0}
+    # ADR-0012: the tariff axes default to the pre-ADR-0012 contract.
+    assert result["data"] == {
+        **PARAMETERS,
+        "dry_run": True,
+        "self_discharge_w": 19.0,
+        "tariff_pricing": "indexada_horaria",
+        "tariff_option": "tri",
+        "tariff_cycle": "semanal",
+    }
 
 
 async def test_battery_subentry_flow_adds_a_unit(hass: HomeAssistant) -> None:
@@ -225,7 +233,8 @@ async def test_v1_entry_migrates_the_battery_into_a_subentry(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert entry.version == 2
+    # v1 -> v2 (this test) -> v3 (ADR-0012 tariff defaults) in one go.
+    assert entry.version == 3
     subentries = [
         subentry
         for subentry in entry.subentries.values()

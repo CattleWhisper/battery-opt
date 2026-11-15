@@ -16,7 +16,7 @@ ERSE 2026 tariff order and the EDP standardised offer sheets.
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from .calendar import CALENDARS, Calendars, Period, period
 
@@ -40,13 +40,48 @@ TAR_POTENCIA_2026 = 0.2291  # EUR/day @ 4.6 kVA — constant, reporting only
 VAT = 1.23  # uniform multiplier — reporting only
 
 TarTable = dict[Period, float]
+TarTables = tuple[tuple[date, TarTable], ...]
+
+# The tariff option (docs/tariff-reference.md §1). The calendars emit
+# tri-horária period names, so every option's table is keyed by those:
+# bi-horária prices ponta and cheias alike ("fora de vazio"), simples
+# prices all three alike.
+Option = Literal["simples", "bi", "tri"]
+
+
+def flat_table(rate: float) -> TarTable:
+    """Simples: one value for every period."""
+    return {"ponta": rate, "cheias": rate, "vazio": rate}
+
+
+def bi_table(vazio: float, fora_de_vazio: float) -> TarTable:
+    """Bi-horária: ponta and cheias are both fora de vazio."""
+    return {"ponta": fora_de_vazio, "cheias": fora_de_vazio, "vazio": vazio}
+
+
+def tri_table(vazio: float, cheias: float, ponta: float) -> TarTable:
+    """Tri-horária: one value per period."""
+    return {"ponta": ponta, "cheias": cheias, "vazio": vazio}
+
+
+# --- TAR energia, ERSE 2026, BTN <=20.7 kVA, simples / bi-horária ---
+TAR_SIMPLES_2026 = 0.0607
+TAR_BI_FORA_DE_VAZIO_2026 = 0.0835
+TAR_BI_VAZIO_2026 = 0.0158
 
 # TAR values are versioned by effective date on an axis INDEPENDENT of
 # the hour-span calendar (see ADR-0005 consequences): ERSE revises the
 # values annually (+3.5% BTN 2025->2026) on a different cadence from
 # period-hour reforms. Adding a 2027 row here must never touch
 # calendar.CALENDARS, and vice versa.
-TAR_TABLES: tuple[tuple[date, TarTable], ...] = ((date(2026, 1, 1), TAR_ENERGIA_2026),)
+TAR_TABLES: TarTables = ((date(2026, 1, 1), TAR_ENERGIA_2026),)
+
+# Same versioning, one series per option. "tri" IS `TAR_TABLES`.
+TAR_TABLES_BY_OPTION: dict[Option, TarTables] = {
+    "simples": ((date(2026, 1, 1), flat_table(TAR_SIMPLES_2026)),),
+    "bi": ((date(2026, 1, 1), bi_table(TAR_BI_VAZIO_2026, TAR_BI_FORA_DE_VAZIO_2026)),),
+    "tri": TAR_TABLES,
+}
 
 # "forward": apply the CURRENT (latest) TAR table to every date. The
 # backtest estimates forward economics under the tariff we are moving
@@ -59,10 +94,17 @@ TAR_POLICY = "forward"
 def tar_energia_for(
     on: date,
     *,
-    tables: tuple[tuple[date, TarTable], ...] = TAR_TABLES,
+    tables: TarTables | None = None,
     policy: str = TAR_POLICY,
+    option: Option = "tri",
 ) -> TarTable:
-    """Return the TAR energia table to apply on a date, per policy."""
+    """
+    Return the TAR energia table to apply on a date, per policy.
+
+    `option` picks the option's series; explicit `tables` win over it.
+    """
+    if tables is None:
+        tables = TAR_TABLES_BY_OPTION[option]
     if policy == "forward":
         return tables[-1][1]
     if policy == "historical":

@@ -47,6 +47,7 @@ from .archive import (
     async_archive_load_day,
     async_recent_delivered_prices,
     async_recent_load_days,
+    async_recent_omie_points,
 )
 from .const import (
     BASE_LOAD_W,
@@ -67,6 +68,7 @@ from .const import (
     DEVICE_MAX_CHARGE_W,
     DEVICE_MAX_DISCHARGE_W,
     DOMAIN,
+    MEDIA_LOOKBACK_DAYS,
     SOC_SYNC_MAX_AGE_MINUTES,
     SOC_SYNC_WINDOW_MINUTES,
     UPDATE_INTERVAL_MINUTES,
@@ -86,8 +88,9 @@ from .core.ups import ups_plan, ups_start_soc_kwh
 from .executor import DynamicDayPlan
 from .fleet import battery_units, fleet_soc_sensors
 from .load_history import LOOKBACK_DAYS, async_load_samples
-from .prices_source import day_series_from_service
+from .prices_source import day_series_from_service, fixed_day_series
 from .soc_sync import measured_soc_kwh, within_sync_window
+from .tariff_config import tariff_from_config
 
 # A normal day; DST-short/long days (92/100) are a fallback-only edge
 # case (no real prices to size the vector from) and are not material.
@@ -119,6 +122,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from .core.forecast import DaySample
+    from .core.tariff import Tariff
     from .driver import BatteryDriver
     from .prices_source import DaySeries
 
@@ -151,6 +155,9 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the switch's single source of truth, and the executor reads
         # it from here so the two can never disagree.
         self.ups_mode = False
+        # ADR-0012: the supply contract. Fixed for the entry's lifetime
+        # (every option change reloads the entry).
+        self.tariff: Tariff = tariff_from_config({**entry.data, **entry.options})
         self._load_mae_w: float | None = None
         self._mae_store: Store[dict[str, Any]] = Store(
             hass, _MAE_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_load_mae"
@@ -279,6 +286,29 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return None
 
     @property
+    def ups_active(self) -> bool:
+        """
+        True when today's plans are UPS plans (ADR-0011, ADR-0012).
+
+        Either the owner turned the switch on, or the contract is flat
+        (fixa simples, Média simples): with no cheaper quarter to buy
+        in, there is nothing to arbitrage, and holding the pack as
+        backup is the only use left. The switch keeps its own state
+        either way — a flat tariff adds a reason, it never overrides
+        the owner's choice — so changing tariff restores it intact.
+        """
+        return self.ups_mode or self.tariff.is_flat
+
+    @property
+    def ups_reason(self) -> str | None:
+        """Why UPS is active: `switch`, `tariff`, or None when it is not."""
+        if self.ups_mode:
+            return "switch"
+        if self.tariff.is_flat:
+            return "tariff"
+        return None
+
+    @property
     def planning_only(self) -> bool:
         """True while no battery is configured."""
         return self.driver is None
@@ -361,7 +391,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # ponta discharge on modelled-empty.
             return measured
         if self.dry_run:
-            return chained_start_soc(day, load, solar, params)
+            return chained_start_soc(day, load, solar, params, tariff=self.tariff)
         return params.cap_min_kwh
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -376,11 +406,14 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data.update(self._advisory_plan(params, prices, load))
         data["prices_eur_kwh"] = prices if data["prices_ok"] else None
         data["prices_padded"] = series.padded if series is not None else False
+        data["prices_estimated"] = series.estimated if series is not None else False
         data["load_mae_w"] = self._load_mae_w
+        data["tariff"] = self.tariff.key
+        data["ups_reason"] = self.ups_reason if self.ups_active else None
         if series is not None:
             # Decision 4: archive every successful full-day build; the
             # same path is overwritten once a padded tail resolves.
-            await async_archive_day(self.hass, today, series)
+            await async_archive_day(self.hass, today, series, self.tariff.key)
         # Best-periods history (owner 2026-08-27): the trailing
         # BEST_PERIODS_LOOKBACK_DAYS days of ARCHIVED prices, strictly
         # before today — `async_recent_delivered_prices` starts at
@@ -394,7 +427,10 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # reduces every day to its own range (core.appliance's
         # fallback) exactly as before this feature existed.
         data["best_periods_history_eur_kwh"] = await async_recent_delivered_prices(
-            self.hass, today, BEST_PERIODS_LOOKBACK_DAYS
+            self.hass,
+            today,
+            BEST_PERIODS_LOOKBACK_DAYS,
+            tariff_key=self.tariff.key,
         )
         greedy_end = data["plan_soc_kwh"][-1] if data["fallback"] is None else None
         data.update(await self._tomorrow_preview(today, params, greedy_end))
@@ -448,8 +484,8 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         # The static baseline needs no prices — published alongside the
         # greedy preview for the plan-comparison dashboard.
-        static = static_plan(tomorrow, load, solar, static_params)
-        if self.ups_mode:
+        static = static_plan(tomorrow, load, solar, static_params, tariff=self.tariff)
+        if self.ups_active:
             return self._ups_preview(
                 tomorrow,
                 params,
@@ -544,7 +580,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 params,
             ),
         )
-        plan = ups_plan(tomorrow, load, ups_params, prices)
+        plan = ups_plan(tomorrow, load, ups_params, prices, tariff=self.tariff)
         static_soc = [
             round(v, 3)
             for v in soc_trajectory(static, static_params, include_self_discharge=True)
@@ -632,13 +668,20 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _prices_for_day(self, day: date) -> DaySeries | None:
         """
-        Price series for a Lisbon-local day from core OMIE.
+        Price series for a Lisbon-local day under the entry's tariff.
 
         `omie.get_prices_for_date` needs market dates D and D+1 to
         cover a Lisbon day; a missing D+1 pads the final hour,
         flagged on the returned series. Shared by today's plan
         (decisions 4/6) and tomorrow's preview (decision 9).
+
+        ADR-0012: a fixa contract never calls OMIE — its day is always
+        priceable. Indexada Média estimates the window average from
+        the archived OMIE of the trailing `MEDIA_LOOKBACK_DAYS` plus
+        the day itself.
         """
+        if not self.tariff.needs_omie:
+            return fixed_day_series(day, self.tariff)
         if not self.hass.services.has_service(
             OMIE_SERVICE_DOMAIN, OMIE_SERVICE_GET_PRICES
         ):
@@ -664,7 +707,12 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entries.extend(payload.get("pt") or payload.get("PT") or [])
         if not entries:
             return None
-        return day_series_from_service(day, entries)
+        history: list[tuple[datetime, float]] = []
+        if self.tariff.pricing == "indexada_media":
+            history = await async_recent_omie_points(
+                self.hass, day, MEDIA_LOOKBACK_DAYS
+            )
+        return day_series_from_service(day, entries, self.tariff, history)
 
     def _advisory_plan(
         self,
@@ -675,7 +723,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Compute today's capped-greedy plan, or the static fallback."""
         today = dt_util.now().date()
         solar = [0.0] * len(load)
-        if self.ups_mode:
+        if self.ups_active:
             return self._ups_plan_data(today, params, prices, load, solar)
         # Two virtual batteries (owner 2026-08-13). The STATIC baseline
         # seeds per the actuated regime (_day_start_soc): dry-run
@@ -695,7 +743,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if prices is None:
             self.executor_plan = None
-            return self._static_fallback(today, load, solar, static_params)
+            return self._static_fallback(today, load, solar, static_params, self.tariff)
         greedy_start = self._greedy_chain_seed(today)
         greedy_params = dataclasses.replace(
             params,
@@ -713,7 +761,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Cannot happen by construction; fail closed (decision 6:
             # any untrustworthy dynamic plan falls back to static).
             self.executor_plan = None
-            return self._static_fallback(today, load, solar, static_params)
+            return self._static_fallback(today, load, solar, static_params, self.tariff)
         # Task 12: publish the validated greedy for the executor,
         # together with the exact inputs it was built with — the
         # executor re-validates each tick with these, never with its
@@ -731,7 +779,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result.plan, greedy_params, include_self_discharge=True
         )
         self._record_greedy_day(today, greedy_params.start_soc_kwh, greedy_soc[-1])
-        static = static_plan(today, load, solar, static_params)
+        static = static_plan(today, load, solar, static_params, tariff=self.tariff)
         greedy_saving = saving_vs_no_cycling(result.plan, prices, greedy_params)
         static_saving = saving_vs_no_cycling(static, prices, static_params)
         return {
@@ -784,7 +832,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             params,
             soc_start_kwh=ups_start_soc_kwh(self.measured_start_soc_kwh(today), params),
         )
-        plan = ups_plan(today, load, ups_params, prices)
+        plan = ups_plan(today, load, ups_params, prices, tariff=self.tariff)
         static_params = dataclasses.replace(
             params, soc_start_kwh=self._day_start_soc(today, load, solar, params)
         )
@@ -798,7 +846,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("UPS plan failed validation; publishing the baseline")
             self.executor_plan = None
             return {
-                **self._static_fallback(today, load, solar, static_params),
+                **self._static_fallback(today, load, solar, static_params, self.tariff),
                 "ups_mode": True,
             }
         self.executor_plan = DynamicDayPlan(
@@ -809,7 +857,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             solar_w=tuple(solar),
             ups=True,
         )
-        static = static_plan(today, load, solar, static_params)
+        static = static_plan(today, load, solar, static_params, tariff=self.tariff)
         ups_soc = soc_trajectory(plan, ups_params, include_self_discharge=True)
         # A UPS plan only buys, so its "saving" is negative: it is the
         # standing cost of holding the reserve. Reported as-is — the
@@ -859,6 +907,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         load: list[float],
         solar: list[float],
         plan_params: BatteryParams,
+        tariff: Tariff,
     ) -> dict[str, Any]:
         """
         No trustworthy dynamic plan: publish the static schedule instead.
@@ -871,7 +920,7 @@ class BatteryOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # plan_params arrive day-chained from _advisory_plan, matching
         # the executor: the summer static plan only discharges if the
         # previous weekday's midday charge carries over.
-        fallback_plan = static_plan(today, load, solar, plan_params)
+        fallback_plan = static_plan(today, load, solar, plan_params, tariff=tariff)
         fallback_soc = [
             round(v, 3)
             for v in soc_trajectory(

@@ -24,10 +24,16 @@ from .const import (
     CONF_GRID_POWER_SENSOR,
     CONF_RESERVE_FLOOR_PCT,
     CONF_SELF_DISCHARGE_W,
+    CONF_TARIFF_CYCLE,
+    CONF_TARIFF_OPTION,
+    CONF_TARIFF_PRICING,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_DRY_RUN,
     DEFAULT_RESERVE_FLOOR_PCT,
     DEFAULT_SELF_DISCHARGE_W,
+    DEFAULT_TARIFF_CYCLE,
+    DEFAULT_TARIFF_OPTION,
+    DEFAULT_TARIFF_PRICING,
     DEVICE_MAX_CHARGE_W,
     SUBENTRY_TYPE_BATTERY,
 )
@@ -50,7 +56,8 @@ PLATFORMS: list[str] = ["binary_sensor", "button", "sensor", "switch"]
 
 # Config-entry schema version; must match BatteryOptConfigFlow.VERSION.
 # v2 = ADR-0009 fleet shape (batteries live in subentries).
-_ENTRY_VERSION = 2
+# v3 = ADR-0012 tariff parameter (pricing / option / cycle).
+_ENTRY_VERSION = 3
 
 # Plan Task 10 / spec §9: aligned fetch at 13:45 local (OMIE D+1
 # publishes ~13:30), retried at 14:15, 15:00 and 16:00 in case it was
@@ -157,8 +164,10 @@ def _wire_actuation(  # noqa: PLR0913 - one wiring point, many collaborators
         get_measured_start_soc=coordinator.measured_start_soc_kwh,
         # ADR-0011: read live on every tick, so switch.battery_opt_ups_mode
         # cannot be out of step with what actuates.
-        get_ups_mode=lambda: coordinator.ups_mode,
+        # ADR-0012: a flat tariff forces UPS on top of the switch.
+        get_ups_mode=lambda: coordinator.ups_active,
         dynamic_enabled=not merged.get(CONF_DRY_RUN, DEFAULT_DRY_RUN),
+        tariff=coordinator.tariff,
     )
 
     grid_power_id = merged.get(CONF_GRID_POWER_SENSOR)
@@ -201,14 +210,20 @@ def _wire_actuation(  # noqa: PLR0913 - one wiring point, many collaborators
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
-    Migrate v1 entries to the ADR-0009 fleet shape (v2).
+    Migrate older entries step by step to the current shape (v3).
 
+    v1 -> v2 (ADR-0009 fleet shape):
     The flat battery entity group — plus the per-unit physical
     parameters (capacity, standby self-discharge) and the unit's power
     sensor — moves into a `battery` subentry. The parent keys are left
     in place but ignored from then on (`battery_units`: subentries win
     outright); planning-only entries just get the version bump, and
     their parent-level values remain the no-subentry fallback.
+
+    v2 -> v3 (ADR-0012): the tariff axes are written with the contract
+    the integration priced before the parameter existed — Indexada
+    Horária, tri-horária, weekly — so a migrated entry behaves exactly
+    as it did. Keys already present are left alone.
     """
     from types import MappingProxyType  # noqa: PLC0415
 
@@ -216,7 +231,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if entry.version > _ENTRY_VERSION:
         return False
-    if entry.version < _ENTRY_VERSION:
+    if entry.version < 2:  # noqa: PLR2004 - schema version 2
         merged = {**entry.data, **entry.options}
         if all(merged.get(key) for key in BATTERY_ENTITY_KEYS):
             moved_keys = (
@@ -244,7 +259,18 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     unique_id=None,
                 ),
             )
-        hass.config_entries.async_update_entry(entry, version=_ENTRY_VERSION)
+        hass.config_entries.async_update_entry(entry, version=2)
+    if entry.version < 3:  # noqa: PLR2004 - schema version 3
+        tariff_defaults = {
+            CONF_TARIFF_PRICING: DEFAULT_TARIFF_PRICING,
+            CONF_TARIFF_OPTION: DEFAULT_TARIFF_OPTION,
+            CONF_TARIFF_CYCLE: DEFAULT_TARIFF_CYCLE,
+        }
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**tariff_defaults, **entry.data},
+            version=_ENTRY_VERSION,
+        )
     return True
 
 
@@ -345,7 +371,8 @@ async def async_setup_entry(
         # Spec §9: the two season-switch days a year get a manual-
         # verification prompt — the calendar is the #1 silent trap.
         new_season = season_switch(dt_util.as_local(now).date())
-        if new_season is None:
+        # Simples has one price all day: the season moves nothing.
+        if new_season is None or coordinator.tariff.option == "simples":
             return
         await hass.services.async_call(
             "persistent_notification",
@@ -353,8 +380,9 @@ async def async_setup_entry(
             {
                 "title": "Battery Opt: tariff season switch",
                 "message": (
-                    f"Today is the last Sunday of the month: the tri-horária "
-                    f"calendar switches to {new_season} hours. Verify the "
+                    f"Today is the last Sunday of the month: the "
+                    f"{coordinator.tariff.key} tariff calendar switches to "
+                    f"{new_season} hours. Verify the "
                     f"plan's charge/discharge windows against the new "
                     f"season (spec §9)."
                 ),

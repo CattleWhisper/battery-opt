@@ -12,7 +12,7 @@ assumption used to paper over.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -20,6 +20,7 @@ from backtest.simulate_big_battery import (
     QUARTER_HOURS,
     QUARTERS_PER_DAY,
     BatterySpec,
+    billing_window_start,
     by_month,
     compare,
     comparison_lines,
@@ -466,3 +467,27 @@ def test_the_monthly_comparison_bills_each_month_with_its_fixed_terms() -> None:
     energy_jan = sum(d.cost_eur for d in days if d.day.month == 1)
     assert january == pytest.approx(energy_jan + 0.30 * 2, abs=0.005)
     assert january + february == pytest.approx(total, abs=0.011)
+
+
+def test_billing_window_runs_from_day_two_to_day_two() -> None:
+    """EDP's Média window: day 1 still belongs to the previous month's."""
+    assert billing_window_start(date(2026, 9, 2)) == date(2026, 9, 2)
+    assert billing_window_start(date(2026, 9, 30)) == date(2026, 9, 2)
+    assert billing_window_start(date(2026, 10, 1)) == date(2026, 9, 2)
+    assert billing_window_start(date(2026, 1, 1)) == date(2025, 12, 2)
+
+
+def test_media_prices_every_quarter_at_its_windows_average() -> None:
+    """Média: one price per group across the window, whatever each quarter did."""
+    media = dynamic("simples", "semanal", 0.3462, pricing="indexada_media")
+    sept = {
+        date(2026, 9, 2): [10.0] * QUARTERS_PER_DAY,
+        date(2026, 9, 3): [30.0] * QUARTERS_PER_DAY,
+    }
+    october = {date(2026, 10, 2): [100.0] * QUARTERS_PER_DAY}
+    priced = tariff_prices({**sept, **october}, media)
+    september_prices = {p for day in sept for p in priced[day]}
+    assert len(september_prices) == 1  # averaged over both days: 20 EUR/MWh
+    assert set(priced[date(2026, 10, 2)]) != september_prices
+    horaria = dynamic("simples", "semanal", 0.3462, k1=media.k1)
+    assert september_prices == {horaria.quarter_price(20.0, datetime(2026, 9, 2, 12))}

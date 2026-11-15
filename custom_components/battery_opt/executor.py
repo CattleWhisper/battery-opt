@@ -64,6 +64,7 @@ from .charge_loop import CHARGE_FALLBACK_W
 from .const import BASE_LOAD_W
 from .core.plan import BatteryParams, Plan, soc_trajectory, validate_plan
 from .core.static_schedule import chained_start_soc, static_plan
+from .core.tariff import DEFAULT_TARIFF
 from .core.ups import ups_plan, ups_start_soc_kwh
 from .driver import DriverError, DriverUnavailableError
 
@@ -71,6 +72,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from datetime import date, datetime
 
+    from .core.tariff import Tariff
     from .driver import BatteryDriver, BatteryState
 
     PlanFactory = Callable[
@@ -139,6 +141,7 @@ class BatteryOptExecutor:
         get_ups_mode: Callable[[], bool] | None = None,
         *,
         dynamic_enabled: bool = False,
+        tariff: Tariff = DEFAULT_TARIFF,
     ) -> None:
         """
         Wire the driver and the coordinator-backed data sources.
@@ -162,10 +165,20 @@ class BatteryOptExecutor:
         ADR-0011: `get_ups_mode` is read LIVE on every tick, never
         cached at construction — the switch must take effect on the
         next tick whatever the coordinator has published.
+
+        ADR-0012: `tariff` shapes the offline plans — the static
+        schedule's calendar and discharge periods, and the UPS ranking.
+        `get_ups_mode` must already fold in a flat tariff (the
+        coordinator's `ups_active`).
         """
         self._driver = driver
         self._get_params = get_params
-        self._plan_factory: PlanFactory = plan_factory or static_plan
+        self._tariff = tariff
+        self._plan_factory: PlanFactory = plan_factory or (
+            lambda day, load, solar, params: static_plan(
+                day, load, solar, params, tariff=tariff
+            )
+        )
         self._notify = notify or (lambda _message: None)
         self._get_charge_entry_w = get_charge_entry_w or (lambda: CHARGE_FALLBACK_W)
         self._on_charge_entry = on_charge_entry or (lambda _watts: None)
@@ -300,7 +313,7 @@ class BatteryOptExecutor:
             base,
             soc_start_kwh=ups_start_soc_kwh(self._get_measured_start_soc(today), base),
         )
-        self.plan = ups_plan(today, self._load_w, params)
+        self.plan = ups_plan(today, self._load_w, params, tariff=self._tariff)
         self.plan_day = today
         self._plan_params = params
         self._plan_load_w = list(self._load_w)
@@ -334,7 +347,9 @@ class BatteryOptExecutor:
             start = (
                 base.cap_min_kwh
                 if self.dynamic_enabled
-                else chained_start_soc(today, self._load_w, self._solar_w, base)
+                else chained_start_soc(
+                    today, self._load_w, self._solar_w, base, tariff=self._tariff
+                )
             )
         params = dataclasses.replace(base, soc_start_kwh=start)
         self.plan = self._plan_factory(today, self._load_w, self._solar_w, params)

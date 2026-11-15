@@ -39,13 +39,14 @@ the coordinator).
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 
 from .core.forecast import DaySample
+from .core.tariff import DEFAULT_TARIFF
 
 if TYPE_CHECKING:
     from datetime import date
@@ -63,11 +64,14 @@ def _archive_path(hass: HomeAssistant, day: date) -> Path:
     return Path(hass.config.path(ARCHIVE_SUBDIR)) / f"{day.isoformat()}.json"
 
 
-def _build_payload(day: date, series: DaySeries) -> dict[str, Any]:
+def _build_payload(day: date, series: DaySeries, tariff_key: str) -> dict[str, Any]:
     return {
         "date": day.isoformat(),
         "fetched_at": dt_util.utcnow().isoformat(),
         "padded": series.padded,
+        # ADR-0012: `delivered_eur_kwh` is priced under THIS contract.
+        # Files without the key predate it: DEFAULT_TARIFF priced them.
+        "tariff": tariff_key,
         "omie_eur_mwh": [
             {"start": start.isoformat(), "price": omie_price}
             for start, omie_price in series.omie_points
@@ -85,29 +89,76 @@ async def async_archive_day(
     hass: HomeAssistant,
     day: date,
     series: DaySeries,
+    tariff_key: str = DEFAULT_TARIFF.key,
 ) -> None:
     """Write today's price series to the archive, overwriting in place."""
     path = _archive_path(hass, day)
-    payload = _build_payload(day, series)
+    payload = _build_payload(day, series, tariff_key)
     await hass.async_add_executor_job(_write_file, path, payload)
 
 
-def _read_delivered_prices(path: Path) -> list[float]:
-    """Best-effort read; a missing or corrupt file yields no prices."""
+def _read_payload(path: Path) -> dict[str, Any]:
+    """Best-effort read; a missing or corrupt file yields an empty payload."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except OSError, json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_delivered_prices(path: Path, tariff_key: str) -> list[float]:
+    """
+    Delivered prices of a day archived under `tariff_key`, else none.
+
+    A day priced under another contract is not comparable (a fixa day
+    next to an indexada one would skew every cutoff), so it is skipped.
+    """
+    payload = _read_payload(path)
+    if payload.get("tariff", DEFAULT_TARIFF.key) != tariff_key:
         return []
     values = payload.get("delivered_eur_kwh")
     return list(values) if isinstance(values, list) else []
 
 
-async def async_recent_delivered_prices(
+def _read_omie_points(path: Path) -> list[tuple[datetime, float]]:
+    """Raw OMIE (EUR/MWh) points of a day, whatever contract priced it."""
+    points: list[tuple[datetime, float]] = []
+    for entry in _read_payload(path).get("omie_eur_mwh") or []:
+        try:
+            points.append(
+                (datetime.fromisoformat(entry["start"]), float(entry["price"]))
+            )
+        except KeyError, TypeError, ValueError:
+            continue
+    return points
+
+
+async def async_recent_omie_points(
+    hass: HomeAssistant,
+    day: date,
+    lookback_days: int,
+) -> list[tuple[datetime, float]]:
+    """
+    Pool the raw OMIE points of the `lookback_days` days before `day`.
+
+    Feeds Indexada Média's window-average estimate (ADR-0012). Days
+    without OMIE (missing, unreadable, or archived under a fixa
+    contract, which fetches none) contribute nothing.
+    """
+    pooled: list[tuple[datetime, float]] = []
+    for offset in range(1, lookback_days + 1):
+        path = _archive_path(hass, day - timedelta(days=offset))
+        pooled.extend(await hass.async_add_executor_job(_read_omie_points, path))
+    return pooled
+
+
+async def async_recent_delivered_prices(  # noqa: PLR0913 - tariff_key is a filter
     hass: HomeAssistant,
     day: date,
     lookback_days: int,
     first_quarter: int = 0,
     last_quarter: int | None = None,
+    tariff_key: str = DEFAULT_TARIFF.key,
 ) -> list[float]:
     """
     Pool delivered-price quarters from the `lookback_days` days before `day`.
@@ -118,12 +169,15 @@ async def async_recent_delivered_prices(
     via `after` gets a reference that excludes it too, on every
     pooled day, not just today's. Missing or unreadable days
     contribute nothing; the pool can come back empty (fresh install,
-    or a `day` before the archive started).
+    or a `day` before the archive started). Only days archived under
+    `tariff_key` are pooled (ADR-0012).
     """
     pooled: list[float] = []
     for offset in range(1, lookback_days + 1):
         path = _archive_path(hass, day - timedelta(days=offset))
-        values = await hass.async_add_executor_job(_read_delivered_prices, path)
+        values = await hass.async_add_executor_job(
+            _read_delivered_prices, path, tariff_key
+        )
         if not values:
             continue
         hi = len(values) if last_quarter is None else min(last_quarter, len(values))

@@ -3,17 +3,32 @@
     "step": {
       "user": {
         "title": "Battery Opt",
-        "description": "Prices come from Home Assistant's own OMIE integration - set it up first (Settings > Devices & services > Add > OMIE). This form is house-level only: meter sensors (all optional - everything degrades gracefully until they are set) and the planning parameters. Batteries are added afterwards from the integration page via 'Add battery' (each battery is its own sub-entry with its marstek_modbus entities, power sensor, capacity and self-discharge); with no battery the integration runs in planning-only mode.",
+        "description": "Pick your supply contract: fixed price (fixa), indexed to the monthly OMIE average (indexada média) or indexed per quarter-hour (indexada horária / dynamic), with its option and cycle. Indexed tariffs take their prices from Home Assistant's own OMIE integration - set it up first (Settings > Devices & services > Add > OMIE); a fixed-price tariff asks for its prices on the next step. A flat tariff (fixa or média, simples) has nothing to arbitrage, so the battery is held as backup (UPS mode). This form is house-level only: meter sensors (all optional - everything degrades gracefully until they are set) and the planning parameters. Batteries are added afterwards from the integration page via 'Add battery' (each battery is its own sub-entry with its marstek_modbus entities, power sensor, capacity and self-discharge); with no battery the integration runs in planning-only mode.",
         "data": {
           "load_sensor": "House load sensor (power W or energy kWh, optional)",
           "grid_energy_sensor": "Grid import energy sensor (kWh, optional)",
           "grid_power_sensor": "Grid import power sensor (W, charge-power loop)",
+          "tariff_pricing": "Tariff pricing",
+          "tariff_option": "Tariff option",
+          "tariff_cycle": "Tariff cycle (ignored for simples)",
           "capacity_kwh": "Usable capacity (kWh) - planning-only fallback; each battery sub-entry carries its own",
           "reserve_floor_pct": "Reserve floor (%)",
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
           "plan_wear_eur_kwh": "Planning wear — cycle cap (EUR/kWh)",
           "self_discharge_w": "Standby self-discharge (W) - planning-only fallback; each battery sub-entry carries its own",
           "dry_run": "Dry-run (Task 12): keep actuating the static plan; the greedy stays advisory. Disable only after Checkpoint C"
+        }
+      },
+      "tariff_prices": {
+        "title": "Fixed-price tariff",
+        "description": "The prices on your fixed-price contract, excl. VAT, for the option you picked, and its daily fixed term (power term plus any fixed charge). They price the plan and the cost sensor; with simples (one price all day) the battery is held as backup (UPS mode), since there is no cheaper hour to charge in.",
+        "data": {
+          "price_simples": "Energy price, simples (EUR/kWh excl. VAT)",
+          "price_vazio": "Energy price, vazio (EUR/kWh excl. VAT)",
+          "price_fora_de_vazio": "Energy price, fora de vazio (EUR/kWh excl. VAT)",
+          "price_cheias": "Energy price, cheias (EUR/kWh excl. VAT)",
+          "price_ponta": "Energy price, ponta (EUR/kWh excl. VAT)",
+          "fixed_eur_day": "Daily fixed term (EUR/day excl. VAT)"
         }
       }
     },
@@ -30,6 +45,9 @@
           "load_sensor": "House load sensor (power W or energy kWh, optional)",
           "grid_energy_sensor": "Grid import energy sensor (kWh, optional)",
           "grid_power_sensor": "Grid import power sensor (W, charge-power loop)",
+          "tariff_pricing": "Tariff pricing",
+          "tariff_option": "Tariff option",
+          "tariff_cycle": "Tariff cycle (ignored for simples)",
           "capacity_kwh": "Usable capacity (kWh) - planning-only fallback; each battery sub-entry carries its own",
           "reserve_floor_pct": "Reserve floor (%)",
           "wear_cost_eur_kwh": "Wear cost (EUR/kWh)",
@@ -38,6 +56,18 @@
           "dry_run": "Dry-run (Task 12): keep actuating the static plan; the greedy stays advisory. Disable only after Checkpoint C"
         },
         "description": "House-level entities and parameters; the integration reloads on save. Batteries are managed as sub-entries on the integration page ('Add battery' / reconfigure) - capacity and self-discharge live there per unit, and the values here apply only while no battery is configured (planning-only)."
+      },
+      "tariff_prices": {
+        "title": "Fixed-price tariff",
+        "description": "The prices on your fixed-price contract, excl. VAT, for the option you picked, and its daily fixed term (power term plus any fixed charge). They price the plan and the cost sensor; with simples (one price all day) the battery is held as backup (UPS mode), since there is no cheaper hour to charge in.",
+        "data": {
+          "price_simples": "Energy price, simples (EUR/kWh excl. VAT)",
+          "price_vazio": "Energy price, vazio (EUR/kWh excl. VAT)",
+          "price_fora_de_vazio": "Energy price, fora de vazio (EUR/kWh excl. VAT)",
+          "price_cheias": "Energy price, cheias (EUR/kWh excl. VAT)",
+          "price_ponta": "Energy price, ponta (EUR/kWh excl. VAT)",
+          "fixed_eur_day": "Daily fixed term (EUR/day excl. VAT)"
+        }
       }
     },
     "error": {
@@ -82,6 +112,26 @@
       "options": {
         "today": "Today",
         "tomorrow": "Tomorrow"
+      }
+    },
+    "tariff_pricing": {
+      "options": {
+        "fixa": "Fixed price (fixa)",
+        "indexada_media": "Indexed - monthly average (indexada média)",
+        "indexada_horaria": "Indexed - quarter-hourly (indexada horária, dynamic)"
+      }
+    },
+    "tariff_option": {
+      "options": {
+        "simples": "Simples (one price all day)",
+        "bi": "Bi-horária (vazio / fora de vazio)",
+        "tri": "Tri-horária (vazio / cheias / ponta)"
+      }
+    },
+    "tariff_cycle": {
+      "options": {
+        "semanal": "Weekly cycle (semanal)",
+        "diario": "Daily cycle (diário)"
       }
     }
   },

@@ -80,6 +80,7 @@ from backtest.load_omie import load_series
 from backtest.simulate_bill import load_meter, quarter_index
 from backtest.tariffs import (
     DEFAULT_TARIFFS_FILE,
+    PriceGroup,
     Tariff,
     TariffFileError,
     load_tariffs,
@@ -243,15 +244,46 @@ def tariff_prices(
 
     Quarter q of a Lisbon day starts at local midnight + 15q minutes, in
     naive Portugal legal time — the calendar API contract.
+
+    Indexada Média prices each group at its average OMIE over the EDP
+    billing window [day 2 of M, day 2 of M+1) holding the day
+    (docs/tariff-reference.md §5), over the quarters actually priced.
     """
+    averages: dict[date, dict[PriceGroup, float]] = {}
+    if tariff.pricing == "indexada_media":
+        windows: dict[date, list[tuple[datetime, float]]] = {}
+        for day, quarters in omie.items():
+            points = windows.setdefault(billing_window_start(day), [])
+            points.extend(
+                (_quarter_start(day, q), value)
+                for q, value in enumerate(quarters)
+                if value is not None
+            )
+        averages = {
+            start: tariff.period_averages(points) for start, points in windows.items()
+        }
     prices: dict[date, list[float | None]] = {}
     for day, quarters in omie.items():
-        midnight = datetime(day.year, day.month, day.day)
+        window = averages.get(billing_window_start(day))
         prices[day] = [
-            tariff.quarter_price(value, midnight + timedelta(minutes=15 * q))
+            tariff.quarter_price(value, _quarter_start(day, q), window)
             for q, value in enumerate(quarters)
         ]
     return prices
+
+
+def billing_window_start(day: date) -> date:
+    """Day 2 of the EDP billing month holding `day` (day 1 is the previous one)."""
+    if day.day >= 2:
+        return date(day.year, day.month, 2)
+    if day.month == 1:
+        return date(day.year - 1, 12, 2)
+    return date(day.year, day.month - 1, 2)
+
+
+def _quarter_start(day: date, quarter: int) -> datetime:
+    """Naive Portugal-legal-time start of quarter `quarter` of `day`."""
+    return datetime(day.year, day.month, day.day) + timedelta(minutes=15 * quarter)
 
 
 def quarter_headroom_kwh(load_kwh: float, spec: BatterySpec) -> float:

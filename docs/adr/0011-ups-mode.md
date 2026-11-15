@@ -1,6 +1,6 @@
 # ADR-0011: UPS mode — charge on the cheapest energy, never discharge
 
-**Status:** Accepted (owner, 2026-09-13) · **Date:** 2026-09
+**Status:** Accepted (owner, 2026-09-13); amended by ADR-0012 · **Date:** 2026-09
 **Relates to:** ADR-0006 (the three states it uses), ADR-0007 (armed
 charge windows), ADR-0010 (the seed that keeps it honest)
 
@@ -153,3 +153,14 @@ refinement, and `ups_plan` already targets `cap_usable_kwh` through a
 single expression. Left out of v1 because the owner's stated want is
 backup power, and the right default for backup is "as much as
 possible".
+
+## Amendment (ADR-0012, 2026-11-15)
+
+A **flat tariff** (fixa simples, Média simples) now also selects the
+UPS builder: with every quarter priced alike there is nothing to
+arbitrage. The switch is still the owner's single source of truth for
+*choosing* UPS — it is never written by the tariff, keeps working on
+every periodic tariff, and its state survives a tariff change. The
+coordinator exposes `ups_active = ups_mode or tariff.is_flat`, which is
+what the executor reads, and the plan sensor reports `ups_reason`
+(`switch` or `tariff`).

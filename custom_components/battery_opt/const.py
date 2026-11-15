@@ -85,6 +85,35 @@ DEFAULT_PLAN_WEAR = 0.0467  # WEAR_COST_MAX; Checkpoint B cycle cap
 CONF_SELF_DISCHARGE_W = "self_discharge_w"
 DEFAULT_SELF_DISCHARGE_W = 19.0
 
+# Supply contract (ADR-0012): three axes plus, for fixa, its prices.
+# Translated into a core `Tariff` in ONE place (tariff_config.py).
+# Defaults are the pre-ADR-0012 contract — Indexada Horária,
+# tri-horária, weekly cycle — which the v3 migration writes into every
+# existing entry, so nothing changes until the owner picks otherwise.
+CONF_TARIFF_PRICING = "tariff_pricing"  # fixa | indexada_media | indexada_horaria
+CONF_TARIFF_OPTION = "tariff_option"  # simples | bi | tri
+CONF_TARIFF_CYCLE = "tariff_cycle"  # semanal | diario (ignored for simples)
+DEFAULT_TARIFF_PRICING = "indexada_horaria"
+DEFAULT_TARIFF_OPTION = "tri"
+DEFAULT_TARIFF_CYCLE = "semanal"
+# Fixa only: EUR/kWh excl. VAT per price group, and the daily fixed
+# term (EUR/day excl. VAT). Indexed contracts keep EDP's Indexada term.
+CONF_PRICE_SIMPLES = "price_simples"
+CONF_PRICE_VAZIO = "price_vazio"
+CONF_PRICE_FORA_DE_VAZIO = "price_fora_de_vazio"
+CONF_PRICE_CHEIAS = "price_cheias"
+CONF_PRICE_PONTA = "price_ponta"
+CONF_FIXED_EUR_DAY = "fixed_eur_day"
+# The price fields a fixa contract needs, per option.
+FIXA_PRICE_KEYS: dict[str, tuple[str, ...]] = {
+    "simples": (CONF_PRICE_SIMPLES,),
+    "bi": (CONF_PRICE_VAZIO, CONF_PRICE_FORA_DE_VAZIO),
+    "tri": (CONF_PRICE_VAZIO, CONF_PRICE_CHEIAS, CONF_PRICE_PONTA),
+}
+# Indexada Média plans against an ESTIMATE of the billing window's
+# average OMIE: the archived days of the trailing window plus today.
+MEDIA_LOOKBACK_DAYS = 30
+
 UPDATE_INTERVAL_MINUTES = 15
 
 # Best-periods advisory (the get_best_periods service and the

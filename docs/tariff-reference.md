@@ -75,12 +75,13 @@ Source: EDP standardised offer sheets "Eletricidade Indexada média DD + FE" and
 
 **Hours/week:** Vazio 76 · Ponta **25** · Cheias 67
 
-### Daily cycle (not used by the integration — tariff comparison only)
+### Daily cycle (selectable since ADR-0012)
 
-Identical every day of the week, weekends included. Rejected for the
-integration: exposes 46% more consumption to ponta, costing ~€105/year
-more. Priced in `backtest/tariffs.py` (`DAILY_CALENDARS`) so the
-simulations can compare it.
+Identical every day of the week, weekends included. Not the owner's
+choice: exposes 46% more consumption to ponta, costing ~€105/year
+more. Lives in `core/calendar.py` (`DAILY_CALENDARS`) since ADR-0012:
+the integration plans and prices with it when the configured tariff
+uses the daily cycle, and the simulations compare it.
 
 | Season | Vazio | Ponta | Cheias |
 |---|---|---|---|
@@ -113,7 +114,8 @@ source**, cross-checked three ways:
 **Not yet read against ERSE directly:** ERSE's own period documents
 (<https://www.erse.pt/media/s0wh5zf0/periodoshorariosele.pdf>) publish the
 tables as graphics that could not be machine-read. Verify against them
-before relying on a daily-cycle result for a contract decision.
+before relying on a daily-cycle result for a contract decision — and,
+since ADR-0012, before actuating a battery on a daily-cycle contract.
 `tests/test_tariffs.py` pins every boundary, so a correction is a one-row
 edit.
 

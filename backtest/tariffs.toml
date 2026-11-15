@@ -9,8 +9,11 @@
 # ---------------------------------------------------------------------
 # Per [[tariff]]:
 #   name           unique display name
-#   pricing        "fixa"      fixed EUR/kWh per period, OMIE ignored
-#                  "indexada"  OMIE through the delivered-price formula
+#   pricing        "fixa"              fixed EUR/kWh per period, OMIE ignored
+#                  "indexada_horaria"  each quarter at its own OMIE price
+#                                      ("indexada" is the same, older name)
+#                  "indexada_media"    each group at the billing window's
+#                                      average OMIE (day 2 of M to day 2 of M+1)
 #   option         "simples" | "bi" | "tri"
 #   cycle          "semanal" | "diario"   (required for bi and tri)
 #   fixed_eur_day  daily fixed term, EUR/day — REQUIRED for every tariff
@@ -20,10 +23,10 @@
 #   bi:       { vazio, fora_de_vazio }
 #   tri:      { vazio, cheias, ponta }
 #
-# pricing = "indexada" takes no prices: TAR energia comes from the ERSE
+# An indexada pricing takes no prices: TAR energia comes from the ERSE
 # 2026 tables (docs/tariff-reference.md §1). The offer's coefficients are
-# optional and default to EDP Indexada Horária (§2):
-#   k1 = 1.08    k2 = 0.0185    perdas = 0.164
+# optional and default to the EDP offer for the pricing (§2):
+#   k1 = 1.08 (Horária) / 1.10 (Média)    k2 = 0.0185    perdas = 0.164
 #
 # A value you do not have yet: write "TODO". The script then refuses to
 # run and lists EVERY TODO at once, rather than comparing against a
@@ -114,5 +117,49 @@ fixed_eur_day = 0.3462
 name = "dinamica bi-horaria diario"
 pricing = "indexada"
 option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.3462
+
+# --- Indexada Horaria simples and Indexada Media (ADR-0012) ----------
+# Same daily fixed term as every Indexada (K3 + TAR potencia @ 4.6 kVA).
+# Media: each group at the billing window's average OMIE, K1 = 1.10.
+
+[[tariff]]
+name = "dinamica simples"
+pricing = "indexada_horaria"
+option = "simples"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media simples"
+pricing = "indexada_media"
+option = "simples"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media bi-horaria semanal"
+pricing = "indexada_media"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media bi-horaria diario"
+pricing = "indexada_media"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media tri-horaria semanal"
+pricing = "indexada_media"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media tri-horaria diario"
+pricing = "indexada_media"
+option = "tri"
 cycle = "diario"
 fixed_eur_day = 0.3462

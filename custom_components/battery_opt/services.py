@@ -152,6 +152,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             BEST_PERIODS_LOOKBACK_DAYS,
             first_quarter,
             bound_hi,
+            tariff_key=coordinator.tariff.key,
         )
         reference.extend(prices[first_quarter:bound_hi])
         cutoff = price_cutoff(

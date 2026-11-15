@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 from .calendar import TZ_PORTUGAL, period
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from datetime import date, tzinfo
 
 # Numeric slack for float comparisons in the validator: refers to
@@ -233,6 +233,7 @@ def price_segments(
     prices_eur_kwh: Sequence[float],
     tz: tzinfo = TZ_PORTUGAL,
     interval: timedelta = timedelta(minutes=15),
+    period_of: Callable[[datetime], str] = period,
 ) -> list[dict[str, str | float]]:
     """
     Merge a day's delivered-price vector into display segments.
@@ -244,11 +245,16 @@ def price_segments(
     starts a fresh segment so each one is checkable against the
     tariff table. Same timestamp convention as `schedule_segments`,
     so consecutive days concatenate.
+
+    `period_of` names each interval's period; the default is the
+    tri-horária weekly calendar. Pass `Tariff.group_of` (ADR-0012) to
+    label by the contract's own groups (bi: vazio / fora_de_vazio,
+    simples: simples).
     """
     # Naive = Portugal legal time, the calendar API contract.
     naive_midnight = datetime(day.year, day.month, day.day)  # noqa: DTZ001
     values: list[tuple[float, str]] = [
-        (round(p, 5), period(naive_midnight + i * interval))
+        (round(p, 5), period_of(naive_midnight + i * interval))
         for i, p in enumerate(prices_eur_kwh)
     ]
     midnight = naive_midnight.replace(tzinfo=tz)

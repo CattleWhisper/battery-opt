@@ -1,5 +1,10 @@
 """
-Tri-horária weekly-cycle tariff period calendar (ERSE, BTN, Portugal).
+Tariff period calendars (ERSE, BTN, Portugal): weekly and daily cycles.
+
+`CALENDARS` is the tri-horária weekly cycle (invoice-validated, the
+default everywhere); `DAILY_CALENDARS` is the daily cycle. Both emit
+tri-horária period names; bi-horária and simples are priced on top of
+them (`core/tariff.py`).
 
 Pure functions: no I/O, no clock reads, no mutable globals. Times are
 Portugal continental legal time (Europe/Lisbon). Naive datetimes are
@@ -13,7 +18,7 @@ regulatory terms and stay in Portuguese. Source tables:
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -77,6 +82,60 @@ _WEEKLY_2025: CalendarTable = {
 Calendars = tuple[tuple[date, CalendarTable], ...]
 
 CALENDARS: Calendars = ((date(2025, 1, 1), _WEEKLY_2025),)
+
+# --- Daily cycle, Portugal continental BTN (docs/tariff-reference.md §3) ---
+# Vazio 22:00-08:00 every day of the year; ponta 4 h a day, placed by
+# season. Identical for all three day classes — that is what makes it
+# the daily cycle, and why `period` and `weekly_hours` (DST, season
+# switches and all) work on it unchanged.
+#
+# VERIFICATION DEBT: these spans come from a secondary source and have
+# not yet been read against the ERSE order directly
+# (docs/tariff-reference.md §3). Confirm them before actuating a battery
+# on a daily-cycle contract.
+_DAILY_SUMMER: DaySpans = (
+    (0, 8 * 60, "vazio"),  # 00:00-08:00
+    (8 * 60, 10 * 60 + 30, "cheias"),  # 08:00-10:30
+    (10 * 60 + 30, 13 * 60, "ponta"),  # 10:30-13:00
+    (13 * 60, 19 * 60 + 30, "cheias"),  # 13:00-19:30
+    (19 * 60 + 30, 21 * 60, "ponta"),  # 19:30-21:00
+    (21 * 60, 22 * 60, "cheias"),  # 21:00-22:00
+    (22 * 60, 1440, "vazio"),  # 22:00-24:00
+)
+_DAILY_WINTER: DaySpans = (
+    (0, 8 * 60, "vazio"),  # 00:00-08:00
+    (8 * 60, 9 * 60, "cheias"),  # 08:00-09:00
+    (9 * 60, 10 * 60 + 30, "ponta"),  # 09:00-10:30
+    (10 * 60 + 30, 18 * 60, "cheias"),  # 10:30-18:00
+    (18 * 60, 20 * 60 + 30, "ponta"),  # 18:00-20:30
+    (20 * 60 + 30, 22 * 60, "cheias"),  # 20:30-22:00
+    (22 * 60, 1440, "vazio"),  # 22:00-24:00
+)
+_DAILY_2025: CalendarTable = {
+    "summer": {
+        "weekday": _DAILY_SUMMER,
+        "saturday": _DAILY_SUMMER,
+        "sunday": _DAILY_SUMMER,
+    },
+    "winter": {
+        "weekday": _DAILY_WINTER,
+        "saturday": _DAILY_WINTER,
+        "sunday": _DAILY_WINTER,
+    },
+}
+# Versioned like CALENDARS (ADR-0005): ERSE's period reform reaches BTN
+# bi/tri-horária in 2027 and gets a new row, never an edit.
+DAILY_CALENDARS: Calendars = ((date(2025, 1, 1), _DAILY_2025),)
+
+Cycle = Literal["semanal", "diario"]
+
+# Bi-horária needs no calendar of its own: in both cycles its vazio is
+# exactly the tri-horária vazio and "fora de vazio" is everything else,
+# so one calendar per cycle serves every option.
+CYCLE_CALENDARS: dict[Cycle, Calendars] = {
+    "semanal": CALENDARS,
+    "diario": DAILY_CALENDARS,
+}
 
 
 def last_sunday(year: int, month: int) -> date:
@@ -153,6 +212,26 @@ def period(dt: datetime, calendars: Calendars = CALENDARS) -> Period:
             return name
     msg = f"Calendar table does not cover minute {minute} of {dt.date()}"
     raise ValueError(msg)
+
+
+def interval_starts(day: date, n: int, interval_hours: float = 0.25) -> list[datetime]:
+    """
+    Naive Portugal-legal-time starts of a day's `n` plan intervals.
+
+    Intervals are ELAPSED time from local midnight (a DST day has 92 or
+    100 quarters), so each start is midnight + i·interval in real time,
+    read back as the wall clock. On every non-DST day this is exactly
+    midnight + i·interval; on a switch day it keeps the intervals after
+    the switch on their true wall-clock hour.
+    """
+    midnight = datetime(day.year, day.month, day.day, tzinfo=TZ_PORTUGAL)
+    origin = midnight.astimezone(UTC)
+    return [
+        (origin + timedelta(hours=i * interval_hours))
+        .astimezone(TZ_PORTUGAL)
+        .replace(tzinfo=None)
+        for i in range(n)
+    ]
 
 
 def weekly_hours(

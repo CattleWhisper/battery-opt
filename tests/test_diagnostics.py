@@ -44,7 +44,13 @@ async def test_diagnostics_returns_entry_and_coordinator_snapshot(
 
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
 
-    assert diagnostics["entry_data"] == dict(PARAMETERS)
+    # ADR-0012: the v3 migration writes the pre-ADR-0012 contract in.
+    assert diagnostics["entry_data"] == {
+        **PARAMETERS,
+        "tariff_pricing": "indexada_horaria",
+        "tariff_option": "tri",
+        "tariff_cycle": "semanal",
+    }
     assert diagnostics["entry_options"] == {}
     assert diagnostics["coordinator_data"] is not None
     assert "prices_ok" in diagnostics["coordinator_data"]

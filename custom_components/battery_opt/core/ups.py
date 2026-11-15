@@ -47,16 +47,17 @@ Pure module: no I/O, no clock reads, no Home Assistant imports
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from .calendar import CALENDARS, Calendars, period
+from .calendar import CALENDARS, Calendars, interval_starts, period
 from .plan import ARMED_CHARGE_KWH, BatteryParams, Plan
 from .prices import tar_energia_for
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import date
+
+    from .tariff import Tariff
 
 
 # Modelling headroom held back from usable capacity so every interval
@@ -98,6 +99,8 @@ def tar_rank(
     n: int,
     params: BatteryParams,
     calendars: Calendars = CALENDARS,
+    *,
+    tariff: Tariff | None = None,
 ) -> list[float]:
     """
     Per-interval TAR energia (EUR/kWh) — a RANKING proxy, not a price.
@@ -109,22 +112,31 @@ def tar_rank(
     TAR spread (0.0158 vazio to 0.2452 ponta) dominates the intraday
     commodity spread, which is why this project arbitrages TAR in the
     first place.
+
+    With a `tariff` (ADR-0012) the ranking uses its calendar and its
+    `rates`: the TAR of its option when indexed, the contract prices
+    when fixa — on a flat tariff every interval ties, and the tie-break
+    toward the earlier interval charges as soon as the day starts.
     """
-    tar = tar_energia_for(day)
-    # Naive = Portugal legal time, the calendar API contract.
-    midnight = datetime(day.year, day.month, day.day)  # noqa: DTZ001
+    if tariff is not None:
+        calendars = tariff.calendars
+        tar = tariff.rates(day)
+    else:
+        tar = tar_energia_for(day)
     return [
-        tar[period(midnight + timedelta(hours=i * params.interval_hours), calendars)]
-        for i in range(n)
+        tar[period(when, calendars)]
+        for when in interval_starts(day, n, params.interval_hours)
     ]
 
 
-def ups_plan(
+def ups_plan(  # noqa: PLR0913 - `tariff` is keyword-only
     day: date,
     load_w: Sequence[float],
     params: BatteryParams,
     prices_eur_kwh: Sequence[float] | None = None,
     calendars: Calendars = CALENDARS,
+    *,
+    tariff: Tariff | None = None,
 ) -> Plan:
     """
     Build one day's UPS plan: charge cheapest-first, never discharge.
@@ -147,7 +159,7 @@ def ups_plan(
     prices = (
         list(prices_eur_kwh)
         if prices_eur_kwh is not None
-        else tar_rank(day, n, params, calendars)
+        else tar_rank(day, n, params, calendars, tariff=tariff)
     )
 
     # Grid-side charge capacity per interval (C-3). Gross load, not

@@ -36,13 +36,14 @@
 #   fatura) are not on these sheets and are not modelled.
 # - Gas prices (dual offers) are ignored: electricity only. The dual
 #   "Gas e Eletricidade" versions carry the same electricity prices.
-# - The four "dinamica" entries at the end are NOT from these PDFs: they
-#   are EDP Indexada Horaria (docs/tariff-reference.md), kept so one run
-#   compares everything. Remove them to compare the fixed offers only.
+# - The "dinamica" and "media" entries at the end are NOT from these
+#   PDFs: they are EDP Indexada Horaria and Indexada Media
+#   (docs/tariff-reference.md §2), kept so one run compares everything.
+#   Remove them to compare the fixed offers only.
 
 # Your current contract (the invoice): the "vs ref" column is against it.
-#reference = "fixa simples -15% energia (12m)"
-reference = "fixa simples especial"
+reference = "fixa simples -15% energia (12m)"
+#reference = "fixa simples especial"
 
 # The tariff that also gets the per-day / monthly battery report.
 detailed = "fixa tri-horaria -10% (sempre DD+FE) semanal"
@@ -520,5 +521,49 @@ fixed_eur_day = 0.3462
 name = "dinamica bi-horaria diario"
 pricing = "indexada"
 option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.3462
+
+# --- Indexada Horaria simples and Indexada Media (ADR-0012) ----------
+# Same daily fixed term as every Indexada (K3 + TAR potencia @ 4.6 kVA).
+# Media: each group at the billing window's average OMIE, K1 = 1.10.
+
+[[tariff]]
+name = "dinamica simples"
+pricing = "indexada_horaria"
+option = "simples"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media simples"
+pricing = "indexada_media"
+option = "simples"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media bi-horaria semanal"
+pricing = "indexada_media"
+option = "bi"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media bi-horaria diario"
+pricing = "indexada_media"
+option = "bi"
+cycle = "diario"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media tri-horaria semanal"
+pricing = "indexada_media"
+option = "tri"
+cycle = "semanal"
+fixed_eur_day = 0.3462
+
+[[tariff]]
+name = "media tri-horaria diario"
+pricing = "indexada_media"
+option = "tri"
 cycle = "diario"
 fixed_eur_day = 0.3462

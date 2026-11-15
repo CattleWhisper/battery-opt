@@ -8,7 +8,12 @@ ids (ADR-0004: chosen by the user, never hardcoded), its power sensor
 and its physical parameters — added or reconfigured from the
 integration page at any time; the entry reloads on change. Prices
 need no entity: they come exclusively from HA core's OMIE integration
-via its get_prices_for_date service, whose presence is validated here.
+via its get_prices_for_date service, whose presence is validated here
+whenever the tariff is indexed.
+
+ADR-0012: the supply contract is three selectors on the main form
+(pricing, option, cycle — defaulting to the pre-ADR-0012 contract), and
+a fixa contract adds one step for its prices and daily fixed term.
 
 Note on the reserve floor: 27% is the documented default and spec §11
 lists lowering it as an ask-first action — the form allows it because
@@ -38,6 +43,7 @@ from .const import (
     CONF_CHARGE_TO_SOC_NUMBER,
     CONF_DISCHARGE_CUTOFF_NUMBER,
     CONF_DRY_RUN,
+    CONF_FIXED_EUR_DAY,
     CONF_GRID_ENERGY_SENSOR,
     CONF_GRID_POWER_SENSOR,
     CONF_LOAD_SENSOR,
@@ -47,6 +53,9 @@ from .const import (
     CONF_RS485_SWITCH,
     CONF_SELF_DISCHARGE_W,
     CONF_SOC_SENSOR,
+    CONF_TARIFF_CYCLE,
+    CONF_TARIFF_OPTION,
+    CONF_TARIFF_PRICING,
     CONF_WEAR_COST,
     CONF_WORK_MODE_SELECT,
     DEFAULT_CAPACITY_KWH,
@@ -54,10 +63,15 @@ from .const import (
     DEFAULT_PLAN_WEAR,
     DEFAULT_RESERVE_FLOOR_PCT,
     DEFAULT_SELF_DISCHARGE_W,
+    DEFAULT_TARIFF_CYCLE,
+    DEFAULT_TARIFF_OPTION,
+    DEFAULT_TARIFF_PRICING,
     DEFAULT_WEAR_COST,
     DOMAIN,
+    FIXA_PRICE_KEYS,
     SUBENTRY_TYPE_BATTERY,
 )
+from .tariff_config import CYCLES, OPTIONS, PRICINGS, tariff_axes
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -70,7 +84,7 @@ def _entity(domain: str) -> selector.EntitySelector:
 
 
 def _number(
-    minimum: float, maximum: float, step: float, unit: str | None = None
+    minimum: float, maximum: float, step: float | str, unit: str | None = None
 ) -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
@@ -81,6 +95,51 @@ def _number(
             unit_of_measurement=unit,
         ),
     )
+
+
+def _select(options: tuple[str, ...], translation_key: str) -> selector.SelectSelector:
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=list(options),
+            translation_key=translation_key,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        ),
+    )
+
+
+def _tariff_schema(defaults: dict[str, Any]) -> dict[vol.Marker, Any]:
+    """Return the supply contract's three axes (ADR-0012), for setup and options."""
+    return {
+        vol.Required(
+            CONF_TARIFF_PRICING,
+            default=defaults.get(CONF_TARIFF_PRICING, DEFAULT_TARIFF_PRICING),
+        ): _select(PRICINGS, CONF_TARIFF_PRICING),
+        vol.Required(
+            CONF_TARIFF_OPTION,
+            default=defaults.get(CONF_TARIFF_OPTION, DEFAULT_TARIFF_OPTION),
+        ): _select(OPTIONS, CONF_TARIFF_OPTION),
+        # Ignored for simples (one price group all day).
+        vol.Required(
+            CONF_TARIFF_CYCLE,
+            default=defaults.get(CONF_TARIFF_CYCLE, DEFAULT_TARIFF_CYCLE),
+        ): _select(CYCLES, CONF_TARIFF_CYCLE),
+    }
+
+
+def _tariff_prices_schema(option: str, defaults: dict[str, Any]) -> vol.Schema:
+    """Return a fixa contract's price fields for its option, plus its fixed term."""
+
+    def field(key: str) -> vol.Required:
+        value = defaults.get(key)
+        return vol.Required(key) if value is None else vol.Required(key, default=value)
+
+    schema: dict[vol.Marker, Any] = {
+        # "any": EDP prints prices to 4 decimals, below HA's step floor.
+        field(key): _number(0.0, 2.0, "any", "EUR/kWh")
+        for key in FIXA_PRICE_KEYS[option]
+    }
+    schema[field(CONF_FIXED_EUR_DAY)] = _number(0.0, 5.0, "any", "EUR/day")
+    return vol.Schema(schema)
 
 
 def _parameter_schema(defaults: dict[str, Any]) -> dict[vol.Marker, Any]:
@@ -222,10 +281,13 @@ def _battery_schema(current: dict[str, Any]) -> vol.Schema:
 REQUIRED_TIME_ZONE = "Europe/Lisbon"
 
 
-def _validate(hass: Any, merged: dict[str, Any]) -> dict[str, str]:  # noqa: ARG001 - merged kept for future shared checks
-    """Shared validation: OMIE set up, Lisbon timezone."""
+def _validate(hass: Any, merged: dict[str, Any]) -> dict[str, str]:
+    """Shared validation: OMIE set up (indexed tariffs), Lisbon timezone."""
     errors: dict[str, str] = {}
-    if not hass.services.has_service("omie", "get_prices_for_date"):
+    pricing, _option, _cycle = tariff_axes(merged)
+    if pricing != "fixa" and not hass.services.has_service(
+        "omie", "get_prices_for_date"
+    ):
         # Prices come exclusively from HA core's OMIE integration.
         errors["base"] = "omie_not_set_up"
         return errors
@@ -239,7 +301,13 @@ class BatteryOptConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # v2 (ADR-0009, Task 16): batteries are subentries; the v1 flat
     # entity group migrates in __init__.async_migrate_entry.
-    VERSION = 2
+    # v3 (ADR-0012): the tariff parameter.
+    VERSION = 3
+
+    def __init__(self) -> None:
+        """Hold the main form while a fixa contract's prices are asked."""
+        super().__init__()
+        self._data: dict[str, Any] = {}
 
     async def async_step_user(
         self,
@@ -250,11 +318,36 @@ class BatteryOptConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             errors = _validate(self.hass, user_input)
             if not errors:
+                if user_input.get(CONF_TARIFF_PRICING) == "fixa":
+                    self._data = dict(user_input)
+                    return await self.async_step_tariff_prices()
                 return self.async_create_entry(title="Battery Opt", data=user_input)
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({**_entity_schema({}), **_parameter_schema({})}),
+            data_schema=vol.Schema(
+                {
+                    **_entity_schema({}),
+                    **_tariff_schema({}),
+                    **_parameter_schema({}),
+                }
+            ),
             errors=errors,
+        )
+
+    async def async_step_tariff_prices(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Fixa only (ADR-0012): the contract's prices and daily fixed term."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title="Battery Opt", data={**self._data, **user_input}
+            )
+        return self.async_show_form(
+            step_id="tariff_prices",
+            data_schema=_tariff_prices_schema(
+                self._data[CONF_TARIFF_OPTION], self._data
+            ),
         )
 
     @staticmethod
@@ -319,6 +412,11 @@ class BatteryOptOptionsFlow(OptionsFlow):
     arrives requires no remove-and-re-add.
     """
 
+    def __init__(self) -> None:
+        """Hold the main form while a fixa contract's prices are asked."""
+        super().__init__()
+        self._options: dict[str, Any] = {}
+
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
@@ -335,11 +433,33 @@ class BatteryOptOptionsFlow(OptionsFlow):
             merged = {**self.config_entry.data, **user_input}
             errors = _validate(self.hass, merged)
             if not errors:
+                if user_input.get(CONF_TARIFF_PRICING) == "fixa":
+                    self._options = dict(user_input)
+                    return await self.async_step_tariff_prices()
                 return self.async_create_entry(data=user_input)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
-                {**_entity_schema(current), **_parameter_schema(current)}
+                {
+                    **_entity_schema(current),
+                    **_tariff_schema(current),
+                    **_parameter_schema(current),
+                }
             ),
             errors=errors,
+        )
+
+    async def async_step_tariff_prices(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Fixa only (ADR-0012): prices pre-filled with the current ones."""
+        if user_input is not None:
+            return self.async_create_entry(data={**self._options, **user_input})
+        current = {**self.config_entry.data, **self.config_entry.options}
+        return self.async_show_form(
+            step_id="tariff_prices",
+            data_schema=_tariff_prices_schema(
+                self._options[CONF_TARIFF_OPTION], current
+            ),
         )

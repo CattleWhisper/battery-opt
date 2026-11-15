@@ -24,6 +24,8 @@ Practical consequence: **any strategy that ignores the TAR and follows OMIE pric
 | **Period** | `ponta` (peak), `cheias` (shoulder) or `vazio` (off-peak). Determines the applicable TAR energia |
 | **Cycle** | `diário` (daily) or `semanal` (weekly). Defines how hours map to periods. **We use semanal** |
 | **Tariff option** | `simples`, `bi-horária` or `tri-horária`. **We use tri-horária** |
+| **Tariff** | The configured supply contract (ADR-0012): pricing (`fixa` / `indexada_media` / `indexada_horaria`) × option × cycle. `core/tariff.py`; default Indexada Horária, tri-horária, semanal |
+| **Flat tariff** | Fixa simples or Média simples: every quarter of a day costs the same, so there is nothing to arbitrage and the battery is held in UPS mode (ADR-0012). Horária simples is *not* flat |
 | **OMIE** | Iberian electricity market. Next-day prices published ~13:30 |
 | **Indexada Média** | EDP tariff billing at the monthly average OMIE price per period. K₁ = 1.10 |
 | **Indexada Horária** | EDP tariff billing at the quarter-hourly OMIE price. K₁ = 1.08. **This is the target** |
@@ -60,6 +62,11 @@ TAR_VAZIO = 0.0158
 TAR_POTENCIA = 0.2291  # EUR/day @ 4.6 kVA - constant, outside the optimisation
 
 VAT = 1.23  # uniform multiplier; reporting only
+
+# --- TAR energia, ERSE 2026, simples / bi-horária (ADR-0012) ---
+TAR_SIMPLES = 0.0607
+TAR_BI_FORA_DE_VAZIO = 0.0835
+TAR_BI_VAZIO = 0.0158
 
 # --- Battery: Marstek Venus E 3.0 ---
 CAP_NOMINAL = 5.12  # kWh
@@ -160,7 +167,7 @@ Violating any of these is a bug, not a configuration choice.
 3. **Never plan below the reserve floor.** `SoC[i] >= CAP_MIN` in every plan's modelled trajectory (C-4). Run-time floor enforcement is delegated to the battery (ADR-0008, owner 2026-08-07): the firmware discharge cutoff where the register exists, the device's own minimum otherwise. The integration reads no SoC at run time; the single exception is ADR-0010's once-daily midnight seed sync, which feeds planning only and never the floor.
 4. **Never charge and discharge in the same interval.**
 5. **Never open a second Modbus connection.** The device accepts one at a time, and the `marstek_venus_modbus` integration already owns it.
-6. **The tariff calendar is versioned by effective date.** Never hardcoded to the current year.
+6. **The tariff calendar is versioned by effective date.** Never hardcoded to the current year. This covers both cycles (`CALENDARS`, `DAILY_CALENDARS`) and every option's TAR (`TAR_TABLES_BY_OPTION`).
 7. **`core/` imports nothing from `homeassistant`.** This is what makes testing and backtesting outside HA possible.
 
 ---

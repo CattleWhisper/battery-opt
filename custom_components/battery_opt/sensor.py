@@ -60,7 +60,6 @@ from .const import (
     CONF_GRID_ENERGY_SENSOR,
 )
 from .core.appliance import cheap_periods, expensive_periods, price_cutoff
-from .core.calendar import period
 from .core.plan import price_segments, schedule_segments
 from .cost import CostTracker
 from .entity import device_info_for
@@ -76,6 +75,7 @@ if TYPE_CHECKING:
     from . import BatteryOptConfigEntry
     from .charge_loop import ChargePowerLoop
     from .coordinator import BatteryOptCoordinator
+    from .core.tariff import Tariff
     from .executor import BatteryOptExecutor
 
 
@@ -201,6 +201,11 @@ class PlanSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
             # `static_schedule` attribute then shows the arbitrage
             # being given up, and `vs_static` prices it.
             "ups_mode": bool(data.get("ups_mode", False)),
+            # ADR-0012: why UPS is on — "switch" (the owner's choice)
+            # or "tariff" (a flat contract has nothing to arbitrage).
+            "ups_reason": data.get("ups_reason"),
+            # ADR-0012: the supply contract every price here is under.
+            "tariff": data.get("tariff"),
             # Decision 6: set to "static" whenever no trustworthy
             # dynamic plan exists (missing prices, or defensively an
             # invalid solve) and the fixed seasonal schedule is
@@ -274,7 +279,7 @@ class ForecastSavingsSensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEn
 
 
 class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordinator"]):
-    """Delivered energy price now, per the EDP Indexada formula."""
+    """Delivered energy price now, under the configured tariff (ADR-0012)."""
 
     _attr_has_entity_name = True
     _attr_name = "Current price"
@@ -299,11 +304,17 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose the TAR period and the day's prices for graphing."""
         data = self.coordinator.data or {}
+        tariff = self.coordinator.tariff
         return {
-            "tar_period": period(dt_util.now()),
+            # The contract's own price group: bi shows vazio /
+            # fora_de_vazio, simples shows simples (ADR-0012).
+            "tar_period": tariff.group_of(dt_util.now()),
+            "tariff": tariff.key,
             "plan_date": str(data.get("plan_date") or ""),
-            "prices": self._price_segments(data),
+            "prices": self._price_segments(data, tariff),
             "prices_padded": data.get("prices_padded"),
+            # Indexada Média: priced at an ESTIMATED window average.
+            "prices_estimated": data.get("prices_estimated"),
             # Decision 9: tomorrow joins `prices` only once D+1 itself
             # builds. Its padding flag stays separate — structurally
             # almost always "yes" (D+2 never exists yet), exposed for
@@ -313,7 +324,7 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
         }
 
     @staticmethod
-    def _price_segments(data: dict[str, Any]) -> list[dict[str, Any]]:
+    def _price_segments(data: dict[str, Any], tariff: Tariff) -> list[dict[str, Any]]:
         """
         Merge the delivered prices into multi-day display segments.
 
@@ -327,10 +338,14 @@ class CurrentPriceSensor(QuarterHourMixin, CoordinatorEntity["BatteryOptCoordina
         segments: list[dict[str, Any]] = []
         prices = data.get("prices_eur_kwh")
         if prices:
-            segments += price_segments(plan_date, prices)
+            segments += price_segments(plan_date, prices, period_of=tariff.group_of)
         tomorrow_prices = data.get("tomorrow_prices_eur_kwh")
         if tomorrow_prices:
-            segments += price_segments(plan_date + timedelta(days=1), tomorrow_prices)
+            segments += price_segments(
+                plan_date + timedelta(days=1),
+                tomorrow_prices,
+                period_of=tariff.group_of,
+            )
         return segments
 
 
@@ -679,6 +694,7 @@ class CostTodaySensor(CoordinatorEntity["BatteryOptCoordinator"], SensorEntity):
                 entity_id,
                 coordinator.current_price_eur_kwh,
                 on_change=self.async_write_ha_state,
+                fixed_eur_per_day=coordinator.tariff.daily_fixed_eur,
             )
             if entity_id
             else None

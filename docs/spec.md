@@ -86,6 +86,16 @@ Include both in the reporting module only.
 
 ---
 
+**Tariff parameter (ADR-0012).** The formula above is Indexada Horária. The
+configured `Tariff` (`core/tariff.py`) selects the pricing — `fixa` (a
+contract price per period, no OMIE), `indexada_media` (each price group at
+the billing window's average OMIE, K1 1.10; estimated in production from
+the trailing 30 archived days) or `indexada_horaria` (the formula above,
+K1 1.08) — the option (simples / bi / tri, each with its own TAR energia)
+and the cycle (semanal / diário). The default, and every entry migrated
+from before the parameter, is Indexada Horária tri-horária semanal. A flat
+tariff (fixa or Média, simples) forces UPS mode (ADR-0011 amendment).
+
 ## 5. Tri-horária Weekly Calendar
 
 A pure function, no I/O, versioned by effective date (ADR-0005). See `docs/tariff-reference.md` for the full tables and the mandatory test cases.
@@ -101,6 +111,10 @@ Summary:
 | **Sunday** | all day | — | — |
 
 Summer = last Sunday of March → last Sunday of October.
+
+The daily cycle (same spans every day, vazio 22:00–08:00) and bi-horária
+(vazio as above, fora de vazio = ponta + cheias) are selectable through the
+tariff parameter (ADR-0012); tables in `docs/tariff-reference.md` §3.
 
 ---
 

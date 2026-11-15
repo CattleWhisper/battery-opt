@@ -523,3 +523,24 @@ def _problems_only(tmp_path: Path, text: str, only: list[str]) -> str:
     with pytest.raises(TariffFileError) as caught:
         load_tariffs(_write(tmp_path, text), only=only)
     return str(caught.value)
+
+
+def test_file_pricing_names_horaria_media_and_the_old_alias(tmp_path: Path) -> None:
+    """`indexada` stays Horária; `indexada_media` is Média with K1 = 1.10."""
+    path = tmp_path / "tariffs.toml"
+    path.write_text(
+        'reference = "old"\n'
+        '[[tariff]]\nname = "old"\npricing = "indexada"\noption = "tri"\n'
+        'cycle = "semanal"\nfixed_eur_day = 0.3462\n'
+        '[[tariff]]\nname = "hor"\npricing = "indexada_horaria"\noption = "simples"\n'
+        "fixed_eur_day = 0.3462\n"
+        '[[tariff]]\nname = "med"\npricing = "indexada_media"\noption = "bi"\n'
+        'cycle = "diario"\nfixed_eur_day = 0.3462\n',
+        encoding="utf-8",
+    )
+    tariffs = {t.name: t for t in load_tariffs(path).tariffs}
+    assert tariffs["old"].pricing == "indexada_horaria"
+    assert tariffs["hor"].pricing == "indexada_horaria"
+    assert tariffs["med"].pricing == "indexada_media"
+    assert tariffs["med"].k1 == K1_MEDIA
+    assert tariffs["med"].calendars is DAILY_CALENDARS
